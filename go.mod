@@ -1,3 +1,3 @@
-module github.com/ruomio123/SignalWatch
+module signalwatch
 
 go 1.26.5

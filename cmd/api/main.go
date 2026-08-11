@@ -5,13 +5,22 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/ruomio123/SignalWatch/internal/platform/config"
+	"signalwatch/internal/platform/config"
+	"signalwatch/internal/platform/logging"
 )
+
+const serviceName = "signalwatch-api"
 
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("load config failed", "service", "signalwatch-api", "error", err)
+		slog.Error("load config failed", "service", serviceName, "error", err)
+		os.Exit(1)
+	}
+
+	logger, err := logging.New(os.Stdout, serviceName, cfg.LogLevel)
+	if err != nil {
+		slog.Error("initialize logger failed", "service", serviceName, "error", err)
 		os.Exit(1)
 	}
 
@@ -25,7 +34,7 @@ func main() {
 		w.WriteHeader(200)                                                       //2.设置状态码
 		_, err := w.Write([]byte(`{"status":"ok","service":"signalwatch-api"}`)) //3.写入响应正文
 		if err != nil {
-			slog.Error("API server stopped", "error", err)
+			logger.Error("write health response failed", "module", "http", "error", err)
 			return
 		}
 	})
@@ -36,15 +45,16 @@ func main() {
 		Handler: mux,
 	}
 	//启动服务；出现错误时记录日志并退出
-	slog.Info(
+
+	logger.Info(
 		"api server starting",
-		"service", "signalwatch-api",
+		"module", "http",
 		"address", cfg.HTTPAddr,
 		"env", cfg.AppEnv,
 	)
 	err = server.ListenAndServe()
 	if err != nil {
-		slog.Error("API server stopped", "error", err)
+		logger.Error("api server stopped", "module", "http", "error", err)
 		return
 	}
 }
