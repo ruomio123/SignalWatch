@@ -1,0 +1,50 @@
+package main
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+)
+
+const (
+	serviceName       = "signalwatch-worker"
+	heartbeatInterval = 10 * time.Second
+)
+
+func main() {
+	// 创建能够监听 os.Interrupt 和 syscall.SIGTERM 的 Context。
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	// 准备 logger，并记录 Worker 启动日志。
+	logger := slog.Default()
+	logger.Info("worker starting", "service", serviceName)
+	// 调用 run，启动 Worker 的长期运行循环。
+	run(ctx, logger, heartbeatInterval)
+	// run 返回后，记录 Worker 已停止的日志。
+	logger.Info("worker stopped", "service", serviceName)
+}
+
+func run(ctx context.Context, logger *slog.Logger, interval time.Duration) {
+	// 按照 interval 创建 Ticker(定时器)，并确保函数退出时停止它。
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	// 使用循环和 select，同时等待退出信号与心跳事件。
+	// 收到退出信号时记录日志并返回。
+	// 收到心跳事件时记录心跳日志。
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info("worker stopping", "service", serviceName)
+			return
+		case tickedAt := <-ticker.C:
+			logger.Info(
+				"worker heartbeat",
+				"service", serviceName,
+				"time", tickedAt,
+			)
+		}
+	}
+}
