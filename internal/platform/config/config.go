@@ -4,23 +4,42 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"time"
 )
 
 type Config struct {
-	AppEnv          string
-	HTTPAddr        string
-	LogLevel        string
-	WorkerHeartbeat time.Duration
+	AppEnv            string
+	HTTPAddr          string
+	LogLevel          string
+	WorkerHeartbeat   time.Duration
+	MySQLDSN          string
+	MySQLMaxOpenConns int
+	MySQLMaxIdleConns int
+	RedisAddr         string
+	RedisPassword     string
+	RedisDB           int
 }
 
+// 把环境变量的名字集中管理，避免项目中到处直接写字符串
 const (
-	envAppEnv          = "APP_ENV"
-	envHTTPAddr        = "HTTP_ADDR"
-	envLogLevel        = "LOG_LEVEL"
-	envWorkerHeartbeat = "WORKER_HEARTBEAT"
+	envAppEnv            = "APP_ENV"
+	envHTTPAddr          = "HTTP_ADDR"
+	envLogLevel          = "LOG_LEVEL"
+	envWorkerHeartbeat   = "WORKER_HEARTBEAT"
+	envMySQLDSN          = "MYSQL_DSN"
+	envMySQLMaxOpenConns = "MYSQL_MAX_OPEN_CONNS"
+	envMySQLMaxIdleConns = "MYSQL_MAX_IDLE_CONNS"
+	envRedisAddr         = "REDIS_ADDR"
+	envRedisPassword     = "REDIS_PASSWORD"
+	envRedisDB           = "REDIS_DB"
 )
 
+/*
+功能：读取、解析并校验应用运行所需的全部环境变量。
+参数：无。
+返回值：校验通过的 Config；配置缺失或非法时返回错误。
+*/
 func Load() (Config, error) {
 	appEnv, err := requiredEnv(envAppEnv)
 	if err != nil {
@@ -47,11 +66,41 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("invalid %s: %w", envWorkerHeartbeat, err)
 	}
 
+	mysqlDSN, err := requiredEnv(envMySQLDSN)
+	if err != nil {
+		return Config{}, err
+	}
+	mysqlMaxOpenConns, err := requiredInt(envMySQLMaxOpenConns)
+	if err != nil {
+		return Config{}, err
+	}
+	mysqlMaxIdleConns, err := requiredInt(envMySQLMaxIdleConns)
+	if err != nil {
+		return Config{}, err
+	}
+	redisAddr, err := requiredEnv(envRedisAddr)
+	if err != nil {
+		return Config{}, err
+	}
+	redisPassword, err := requiredEnv(envRedisPassword)
+	if err != nil {
+		return Config{}, err
+	}
+	redisDB, err := requiredInt(envRedisDB)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
-		AppEnv:          appEnv,
-		HTTPAddr:        httpAddr,
-		LogLevel:        logLevel,
-		WorkerHeartbeat: heartbeat,
+		AppEnv:            appEnv,
+		HTTPAddr:          httpAddr,
+		LogLevel:          logLevel,
+		WorkerHeartbeat:   heartbeat,
+		MySQLDSN:          mysqlDSN,
+		MySQLMaxOpenConns: mysqlMaxOpenConns,
+		MySQLMaxIdleConns: mysqlMaxIdleConns,
+		RedisAddr:         redisAddr,
+		RedisPassword:     redisPassword,
+		RedisDB:           redisDB,
 	}
 
 	if err := validate(cfg); err != nil {
@@ -61,6 +110,11 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+/*
+功能：读取一个必填环境变量。
+参数：key 为环境变量名称。
+返回值：环境变量值；变量不存在或为空时返回错误。
+*/
 func requiredEnv(key string) (string, error) {
 	value, ok := os.LookupEnv(key)
 	if !ok || value == "" {
@@ -69,6 +123,11 @@ func requiredEnv(key string) (string, error) {
 	return value, nil
 }
 
+/*
+功能：校验 Config 中各字段的枚举值、地址格式与数值范围。
+参数：cfg 为待校验的完整配置。
+返回值：配置合法时返回 nil；否则返回不包含秘密值的错误。
+*/
 func validate(cfg Config) error {
 	// 校验 cfg.AppEnv
 	switch cfg.AppEnv {
@@ -81,7 +140,7 @@ func validate(cfg Config) error {
 	switch cfg.LogLevel {
 	case "debug", "info", "warn", "error":
 	default:
-		return fmt.Errorf("invalid LOG_ENV: %s", cfg.LogLevel)
+		return fmt.Errorf("invalid LOG_LEVEL: %s", cfg.LogLevel)
 	}
 	// 校验 cfg.HTTPAddr，检查 host 和 port 都不为空。
 	host, post, err := net.SplitHostPort(cfg.HTTPAddr)
@@ -92,5 +151,40 @@ func validate(cfg Config) error {
 	if cfg.WorkerHeartbeat <= 0 {
 		return fmt.Errorf("invalid WORKER_HEARTBEAT: must be greater than 0")
 	}
+
+	if cfg.MySQLMaxOpenConns <= 0 {
+		return fmt.Errorf("invalid MYSQL_MAX_OPEN_CONNS: must be greater than 0")
+	}
+
+	if cfg.MySQLMaxIdleConns < 0 {
+		return fmt.Errorf("invalid MYSQL_MAX_IDLE_CONNS: must not be negative")
+	}
+
+	if cfg.MySQLMaxIdleConns > cfg.MySQLMaxOpenConns {
+		return fmt.Errorf("invalid MYSQL_MAX_IDLE_CONNS: must not exceed MYSQL_MAX_OPEN_CONNS")
+	}
+
+	if cfg.RedisDB < 0 {
+		return fmt.Errorf("invalid REDIS_DB: must not be negative")
+	}
+
 	return nil
+}
+
+/*
+功能：读取并解析一个必填整数环境变量。
+参数：key 为环境变量名称。
+返回值：解析后的整数；变量缺失或不是整数时返回错误。
+*/
+func requiredInt(key string) (int, error) {
+	raw, err := requiredEnv(key)
+	if err != nil {
+		return 0, err
+	}
+
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: must be an integer", key)
+	}
+	return value, nil
 }
