@@ -3,10 +3,18 @@ package main
 import (
 	"log/slog"
 	"net/http"
+	"os"
+
+	"github.com/ruomio123/SignalWatch/internal/platform/config"
 )
 
 func main() {
-	address := "127.0.0.1:8080"
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("load config failed", "service", "signalwatch-api", "error", err)
+		os.Exit(1)
+	}
+
 	mux := http.NewServeMux() //创建独立的 ServeMux
 
 	//注册带请求方法的路由
@@ -24,12 +32,17 @@ func main() {
 
 	//创建自己的 HTTP Server
 	server := &http.Server{
-		Addr:    address,
+		Addr:    cfg.HTTPAddr,
 		Handler: mux,
 	}
 	//启动服务；出现错误时记录日志并退出
-	slog.Info("my first API server starting", "address is:", address)
-	err := server.ListenAndServe()
+	slog.Info(
+		"api server starting",
+		"service", "signalwatch-api",
+		"address", cfg.HTTPAddr,
+		"env", cfg.AppEnv,
+	)
+	err = server.ListenAndServe()
 	if err != nil {
 		slog.Error("API server stopped", "error", err)
 		return

@@ -7,22 +7,34 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/ruomio123/SignalWatch/internal/platform/config"
 )
 
 const (
-	serviceName       = "signalwatch-worker"
-	heartbeatInterval = 10 * time.Second
+	serviceName = "signalwatch-worker"
 )
 
 func main() {
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("load config failed", "service", serviceName, "error", err)
+		os.Exit(1)
+	}
+
 	// 创建能够监听 os.Interrupt 和 syscall.SIGTERM 的 Context。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// 准备 logger，并记录 Worker 启动日志。
 	logger := slog.Default()
-	logger.Info("worker starting", "service", serviceName)
+	logger.Info(
+		"worker starting",
+		"service", serviceName,
+		"heartbeat", cfg.WorkerHeartbeat,
+		"env", cfg.AppEnv,
+	)
 	// 调用 run，启动 Worker 的长期运行循环。
-	run(ctx, logger, heartbeatInterval)
+	run(ctx, logger, cfg.WorkerHeartbeat)
 	// run 返回后，记录 Worker 已停止的日志。
 	logger.Info("worker stopped", "service", serviceName)
 }
