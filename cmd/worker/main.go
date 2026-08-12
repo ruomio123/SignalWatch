@@ -5,11 +5,13 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"syscall"
+	"time"
+
 	"signalwatch/internal/platform/config"
 	"signalwatch/internal/platform/db"
 	"signalwatch/internal/platform/logging"
-	"syscall"
-	"time"
+	"signalwatch/internal/platform/redis"
 )
 
 const (
@@ -48,7 +50,27 @@ func main() {
 		os.Exit(1)
 	}
 	defer sqlDB.Close()
-
+	// Worker 开始心跳循环之前，先验证 Redis 是否可用。
+	redisClient, err := redis.Open(cfg)
+	if err != nil {
+		logger.Error(
+			"initialize redis failed",
+			"module", "redis",
+			"error", err,
+		)
+		os.Exit(1)
+	}
+	// Worker 收到退出信号、run 返回、main 正常结束时，
+	// defer 会关闭 Redis Client。
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			logger.Error(
+				"close redis client failed",
+				"module", "redis",
+				"error", err,
+			)
+		}
+	}()
 	// 创建能够监听 os.Interrupt 和 syscall.SIGTERM 的 Context。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

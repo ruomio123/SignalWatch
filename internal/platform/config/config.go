@@ -9,16 +9,18 @@ import (
 )
 
 type Config struct {
-	AppEnv            string
-	HTTPAddr          string
-	LogLevel          string
-	WorkerHeartbeat   time.Duration
-	MySQLDSN          string
-	MySQLMaxOpenConns int
-	MySQLMaxIdleConns int
-	RedisAddr         string
-	RedisPassword     string
-	RedisDB           int
+	AppEnv          string        // 应用运行环境，例如 dev、test、prod
+	HTTPAddr        string        // HTTP 服务监听地址，例如 ":8080"
+	LogLevel        string        // 日志级别，例如 DEBUG、INFO、WARN、ERROR
+	WorkerHeartbeat time.Duration // Worker 心跳间隔，例如 10s、30s
+
+	MySQLDSN          string // MySQL 数据库连接字符串，"user:password@tcp(127.0.0.1:3306)/dbname"
+	MySQLMaxOpenConns int    // MySQL 最大允许打开的数据库连接数
+	MySQLMaxIdleConns int    // MySQL 连接池中最大空闲连接数
+
+	RedisAddr     string // Redis 服务地址，例如 "127.0.0.1:6379"
+	RedisPassword string // Redis 连接密码
+	RedisDB       int    // 使用的 Redis 数据库编号，例如 0、1、2
 }
 
 // 把环境变量的名字集中管理，避免项目中到处直接写字符串

@@ -4,9 +4,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+
 	"signalwatch/internal/platform/config"
 	"signalwatch/internal/platform/db"
 	"signalwatch/internal/platform/logging"
+	"signalwatch/internal/platform/redis"
 )
 
 const serviceName = "signalwatch-api"
@@ -45,7 +47,25 @@ func main() {
 		os.Exit(1)
 	}
 	defer sqlDB.Close()
-
+	// MySQL 初始化成功后再初始化 Redis。
+	redisClient, err := redis.Open(cfg)
+	if err != nil {
+		logger.Error(
+			"initialize redis failed",
+			"module", "redis",
+			"error", err,
+		)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			logger.Error(
+				"close redis client failed",
+				"module", "redis",
+				"error", err,
+			)
+		}
+	}()
 	mux := http.NewServeMux() //创建独立的 ServeMux
 
 	//注册带请求方法的路由
