@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-
 	"signalwatch/internal/platform/config"
+	"signalwatch/internal/platform/db"
 	"signalwatch/internal/platform/logging"
 )
 
@@ -23,6 +23,28 @@ func main() {
 		slog.Error("initialize logger failed", "service", serviceName, "error", err)
 		os.Exit(1)
 	}
+	// 数据库初始化必须发生在 HTTP 服务启动之前。
+	// 否则 API 虽然监听了端口，实际却无法使用数据库。
+	database, err := db.Open(cfg)
+	if err != nil {
+		logger.Error(
+			"initialize mysql failed",
+			"module", "database",
+			"error", err,
+		)
+		os.Exit(1)
+	}
+	// 获取底层连接池，进程正常退出时关闭它。
+	sqlDB, err := database.DB()
+	if err != nil {
+		logger.Error(
+			"get mysql connection pool failed",
+			"module", "database",
+			"error", err,
+		)
+		os.Exit(1)
+	}
+	defer sqlDB.Close()
 
 	mux := http.NewServeMux() //创建独立的 ServeMux
 
