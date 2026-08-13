@@ -1,0 +1,208 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2200" viewBox="0 0 1600 2200">
+  <defs>
+    <style>
+      .title { font-family: "Noto Sans Mono CJK SC"; font-size: 36px; font-weight: 700; fill: #172033; }
+      .subtitle { font-family: "Noto Sans Mono CJK SC"; font-size: 19px; font-weight: 400; fill: #556176; }
+      .lane-title { font-family: "Noto Sans Mono CJK SC"; font-size: 22px; font-weight: 700; fill: #26334d; }
+      .node { fill: #ffffff; stroke: #344563; stroke-width: 3; }
+      .start-end { fill: #eaf4ff; stroke: #1769aa; stroke-width: 3; }
+      .decision { fill: #fff6d8; stroke: #bb7a00; stroke-width: 3; }
+      .response { fill: #ecf9ef; stroke: #238636; stroke-width: 3; }
+      .error { fill: #fff0f0; stroke: #c23b3b; stroke-width: 3; }
+      .context { fill: #f2edff; stroke: #7253b5; stroke-width: 3; }
+      .text { font-family: "Noto Sans Mono CJK SC"; font-size: 21px; font-weight: 500; fill: #172033; text-anchor: middle; }
+      .small { font-family: "Noto Sans Mono CJK SC"; font-size: 17px; font-weight: 400; fill: #42506a; text-anchor: middle; }
+      .arrow { fill: none; stroke: #344563; stroke-width: 3; marker-end: url(#arrow); }
+      .arrow-success { fill: none; stroke: #238636; stroke-width: 3; marker-end: url(#arrow-green); }
+      .arrow-error { fill: none; stroke: #c23b3b; stroke-width: 3; marker-end: url(#arrow-red); }
+      .arrow-context { fill: none; stroke: #7253b5; stroke-width: 3; stroke-dasharray: 9 7; marker-end: url(#arrow-purple); }
+      .label-bg { fill: #f8fafc; stroke: #d9e0ea; stroke-width: 1; rx: 8; }
+      .label { font-family: "Noto Sans Mono CJK SC"; font-size: 17px; font-weight: 600; fill: #33415c; text-anchor: middle; }
+      .yes { fill: #238636; }
+      .no { fill: #c23b3b; }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#344563"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#238636"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#c23b3b"/>
+    </marker>
+    <marker id="arrow-purple" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#7253b5"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="2200" fill="#f8fafc"/>
+  <text x="800" y="58" class="title" text-anchor="middle">GET /readyz 一次 HTTP 请求的完整流程</text>
+  <text x="800" y="92" class="subtitle" text-anchor="middle">SignalWatch API · Server → ServeMux → Handler → MySQL / Redis → HTTP Response</text>
+
+  <!-- Swimlane backgrounds -->
+  <rect x="45" y="125" width="300" height="1985" rx="18" fill="#eef6ff" stroke="#c8ddf3" stroke-width="2"/>
+  <rect x="375" y="125" width="850" height="1985" rx="18" fill="#ffffff" stroke="#d8e0ea" stroke-width="2"/>
+  <rect x="1255" y="125" width="300" height="1985" rx="18" fill="#f5f0ff" stroke="#d9cdf4" stroke-width="2"/>
+  <text x="195" y="165" class="lane-title" text-anchor="middle">客户端 / 网络</text>
+  <text x="800" y="165" class="lane-title" text-anchor="middle">SignalWatch API 进程</text>
+  <text x="1405" y="165" class="lane-title" text-anchor="middle">外部依赖</text>
+  <line x1="45" y1="185" x2="345" y2="185" stroke="#c8ddf3" stroke-width="2"/>
+  <line x1="375" y1="185" x2="1225" y2="185" stroke="#d8e0ea" stroke-width="2"/>
+  <line x1="1255" y1="185" x2="1555" y2="185" stroke="#d9cdf4" stroke-width="2"/>
+
+  <!-- Start and request -->
+  <ellipse cx="195" cy="245" rx="105" ry="42" class="start-end"/>
+  <text x="195" y="252" class="text">开始</text>
+
+  <rect x="80" y="330" width="230" height="92" rx="8" class="node"/>
+  <text x="195" y="366" class="text">客户端发起请求</text>
+  <text x="195" y="395" class="small">GET /readyz</text>
+  <path d="M195 287 L195 330" class="arrow"/>
+
+  <rect x="500" y="320" width="300" height="112" rx="8" class="node"/>
+  <text x="650" y="356" class="text">http.Server 接收连接</text>
+  <text x="650" y="385" class="small">解析请求行、Header、Body</text>
+  <text x="650" y="410" class="small">创建 *http.Request</text>
+  <path d="M310 376 L500 376" class="arrow"/>
+  <rect x="350" y="339" width="126" height="29" class="label-bg"/>
+  <text x="413" y="359" class="label">HTTP 请求字节流</text>
+
+  <!-- Mux -->
+  <rect x="500" y="485" width="300" height="95" rx="8" class="node"/>
+  <text x="650" y="521" class="text">交给 ServeMux 路由</text>
+  <text x="650" y="551" class="small">传入 Request + ResponseWriter</text>
+  <path d="M650 432 L650 485" class="arrow"/>
+  <rect x="672" y="443" width="192" height="29" class="label-bg"/>
+  <text x="768" y="463" class="label">请求对象与响应写入器</text>
+
+  <polygon points="650,630 790,710 650,790 510,710" class="decision"/>
+  <text x="650" y="702" class="text">方法和路径</text>
+  <text x="650" y="731" class="text">是否匹配？</text>
+  <path d="M650 580 L650 630" class="arrow"/>
+
+  <!-- No route branch -->
+  <rect x="895" y="665" width="260" height="90" rx="8" class="error"/>
+  <text x="1025" y="701" class="text">生成路由错误响应</text>
+  <text x="1025" y="730" class="small">404 Not Found / 405</text>
+  <path d="M790 710 L895 710" class="arrow-error"/>
+  <rect x="817" y="674" width="55" height="29" class="label-bg"/>
+  <text x="844" y="694" class="label no">否</text>
+
+  <!-- Matched route -->
+  <rect x="500" y="845" width="300" height="95" rx="8" class="node"/>
+  <text x="650" y="881" class="text">调用 Readiness Handler</text>
+  <text x="650" y="911" class="small">newReadinessHandler 返回的函数</text>
+  <path d="M650 790 L650 845" class="arrow-success"/>
+  <rect x="674" y="800" width="55" height="29" class="label-bg"/>
+  <text x="701" y="820" class="label yes">是</text>
+
+  <!-- Context -->
+  <rect x="485" y="995" width="330" height="112" rx="8" class="context"/>
+  <text x="650" y="1031" class="text">创建 2 秒超时 Context</text>
+  <text x="650" y="1060" class="small">父级：r.Context()</text>
+  <text x="650" y="1085" class="small">登记 defer cancel()</text>
+  <path d="M650 940 L650 995" class="arrow"/>
+
+  <!-- Cancellation inputs -->
+  <rect x="80" y="985" width="230" height="112" rx="8" class="context"/>
+  <text x="195" y="1022" class="text">取消条件</text>
+  <text x="195" y="1052" class="small">客户端断开连接</text>
+  <text x="195" y="1078" class="small">或处理超过 2 秒</text>
+  <path d="M310 1041 L485 1041" class="arrow-context"/>
+  <rect x="347" y="1004" width="104" height="29" class="label-bg"/>
+  <text x="399" y="1024" class="label">取消信号</text>
+
+  <!-- MySQL -->
+  <rect x="500" y="1160" width="300" height="92" rx="8" class="node"/>
+  <text x="650" y="1197" class="text">调用 MySQL 检查函数</text>
+  <text x="650" y="1226" class="small">sqlDB.PingContext(ctx)</text>
+  <path d="M650 1107 L650 1160" class="arrow"/>
+  <rect x="1285" y="1160" width="240" height="92" rx="8" class="node"/>
+  <text x="1405" y="1197" class="text">MySQL 执行 PING</text>
+  <text x="1405" y="1226" class="small">成功或返回 error</text>
+  <path d="M800 1206 L1285 1206" class="arrow"/>
+  <rect x="960" y="1169" width="170" height="29" class="label-bg"/>
+  <text x="1045" y="1189" class="label">Context + PING 请求</text>
+  <path d="M1285 1235 L800 1235" class="arrow"/>
+  <rect x="973" y="1245" width="144" height="29" class="label-bg"/>
+  <text x="1045" y="1265" class="label">nil 或 error</text>
+
+  <polygon points="650,1300 790,1380 650,1460 510,1380" class="decision"/>
+  <text x="650" y="1372" class="text">MySQL 是否</text>
+  <text x="650" y="1401" class="text">检查成功？</text>
+  <path d="M650 1252 L650 1300" class="arrow"/>
+
+  <!-- MySQL failure -->
+  <rect x="895" y="1335" width="260" height="90" rx="8" class="error"/>
+  <text x="1025" y="1371" class="text">记录 MySQL 错误日志</text>
+  <text x="1025" y="1400" class="small">客户端看不到底层错误</text>
+  <path d="M790 1380 L895 1380" class="arrow-error"/>
+  <rect x="817" y="1344" width="55" height="29" class="label-bg"/>
+  <text x="844" y="1364" class="label no">否</text>
+
+  <!-- Redis -->
+  <rect x="500" y="1515" width="300" height="92" rx="8" class="node"/>
+  <text x="650" y="1552" class="text">调用 Redis 检查函数</text>
+  <text x="650" y="1581" class="small">redisClient.Ping(ctx).Err()</text>
+  <path d="M650 1460 L650 1515" class="arrow-success"/>
+  <rect x="674" y="1470" width="55" height="29" class="label-bg"/>
+  <text x="701" y="1490" class="label yes">是</text>
+  <rect x="1285" y="1515" width="240" height="92" rx="8" class="node"/>
+  <text x="1405" y="1552" class="text">Redis 执行 PING</text>
+  <text x="1405" y="1581" class="small">PONG 或返回 error</text>
+  <path d="M800 1561 L1285 1561" class="arrow"/>
+  <rect x="960" y="1524" width="170" height="29" class="label-bg"/>
+  <text x="1045" y="1544" class="label">Context + PING 命令</text>
+  <path d="M1285 1590 L800 1590" class="arrow"/>
+  <rect x="967" y="1600" width="156" height="29" class="label-bg"/>
+  <text x="1045" y="1620" class="label">PONG 或 error</text>
+
+  <polygon points="650,1655 790,1735 650,1815 510,1735" class="decision"/>
+  <text x="650" y="1727" class="text">Redis 是否</text>
+  <text x="650" y="1756" class="text">检查成功？</text>
+  <path d="M650 1607 L650 1655" class="arrow"/>
+
+  <!-- Redis failure -->
+  <rect x="895" y="1690" width="260" height="90" rx="8" class="error"/>
+  <text x="1025" y="1726" class="text">记录 Redis 错误日志</text>
+  <text x="1025" y="1755" class="small">客户端看不到底层错误</text>
+  <path d="M790 1735 L895 1735" class="arrow-error"/>
+  <rect x="817" y="1699" width="55" height="29" class="label-bg"/>
+  <text x="844" y="1719" class="label no">否</text>
+
+  <!-- Responses -->
+  <rect x="860" y="1845" width="330" height="112" rx="8" class="error"/>
+  <text x="1025" y="1881" class="text">构造未就绪响应</text>
+  <text x="1025" y="1910" class="small">HTTP 503 Service Unavailable</text>
+  <text x="1025" y="1936" class="small">JSON：status = not_ready</text>
+  <path d="M1025 1425 L1025 1845" class="arrow-error"/>
+  <path d="M1025 1780 L1025 1845" class="arrow-error"/>
+
+  <rect x="485" y="1845" width="330" height="112" rx="8" class="response"/>
+  <text x="650" y="1881" class="text">构造就绪响应</text>
+  <text x="650" y="1910" class="small">HTTP 200 OK</text>
+  <text x="650" y="1936" class="small">JSON：status = ready</text>
+  <path d="M650 1815 L650 1845" class="arrow-success"/>
+  <rect x="674" y="1818" width="55" height="29" class="label-bg"/>
+  <text x="701" y="1838" class="label yes">是</text>
+
+  <!-- Common response path -->
+  <rect x="500" y="2010" width="300" height="72" rx="8" class="context"/>
+  <text x="650" y="2040" class="text">Handler return</text>
+  <text x="650" y="2067" class="small">执行 defer cancel()</text>
+  <path d="M650 1957 L650 2010" class="arrow-success"/>
+  <path d="M1025 1957 L1025 1980 L800 1980 L800 2046" class="arrow-error"/>
+  <path d="M895 710 L840 710 L840 2046 L800 2046" class="arrow-error"/>
+
+  <rect x="80" y="1995" width="230" height="102" rx="8" class="response"/>
+  <text x="195" y="2030" class="text">客户端接收响应</text>
+  <text x="195" y="2059" class="small">状态码 + Header + JSON</text>
+  <text x="195" y="2084" class="small">HTTP 响应数据流</text>
+  <path d="M500 2046 L310 2046" class="arrow"/>
+  <rect x="347" y="2009" width="116" height="29" class="label-bg"/>
+  <text x="405" y="2029" class="label">HTTP 响应字节流</text>
+
+  <ellipse cx="195" cy="2150" rx="105" ry="36" class="start-end"/>
+  <text x="195" y="2157" class="text">请求结束</text>
+  <path d="M195 2097 L195 2114" class="arrow"/>
+</svg>

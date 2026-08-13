@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
@@ -73,13 +74,30 @@ func main() {
 
 		//构造 JSON 响应
 		w.Header().Set("Content-Type", "application/json")                       //1.设置响应头
-		w.WriteHeader(200)                                                       //2.设置状态码
+		w.WriteHeader(http.StatusOK)                                             //2.设置状态码
 		_, err := w.Write([]byte(`{"status":"ok","service":"signalwatch-api"}`)) //3.写入响应正文
 		if err != nil {
 			logger.Error("write health response failed", "module", "http", "error", err)
 			return
 		}
 	})
+	// 将 Redis 的 PING 包装成统一的依赖检查函数。
+	// Ping 返回一个命令对象，调用 Err 才能取得本次检查的执行结果。
+	redisCheck := func(ctx context.Context) error {
+		return redisClient.Ping(ctx).Err()
+	}
+
+	// sqlDB.PingContext 本身已经符合 dependencyCheck 的函数签名，
+	// 因此可以直接作为 MySQL 检查函数传入。两个检查函数会使用
+	// Handler 创建的同一个超时 Context。
+	mux.HandleFunc(
+		"GET /readyz",
+		newReadinessHandler(
+			logger,
+			sqlDB.PingContext,
+			redisCheck,
+		),
+	)
 
 	//创建自己的 HTTP Server
 	server := &http.Server{
