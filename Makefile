@@ -1,7 +1,12 @@
 # 本地环境变量文件和 Docker Compose 配置文件的位置。
 ENV_FILE := .env
 COMPOSE_FILE := deploy/compose.yaml
+# 数据库迁移文件所在目录。
+MIGRATIONS_DIR := migrations
 
+# 允许调用方覆盖 goose 路径，例如：
+# make GOOSE=/custom/path/goose migrate-up
+GOOSE ?= goose
 # 统一 Docker Compose 命令，确保它明确读取项目根目录下的 .env。
 COMPOSE := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE)
 
@@ -21,8 +26,8 @@ export REDIS_ADDR REDIS_PASSWORD REDIS_DB
 
 # 这些名称代表操作，不代表同名文件。
 # 即使目录中出现名为 test、api 的文件，Make 仍然会执行对应命令。
-.PHONY: deps-up deps-down api worker fmt vet test test-race require-env
-
+.PHONY: deps-up deps-down api worker fmt vet test test-race require-env \
+	migrate-up migrate-down migrate-status
 # 检查本地环境变量文件是否存在。
 # api 和 worker 缺少 .env 时，会在真正启动之前停止并显示处理方法。
 require-env:
@@ -39,7 +44,18 @@ deps-up: require-env
 # 没有使用 --volumes 或 -v，所以不会删除 MySQL、Redis 数据卷。
 deps-down: require-env
 	$(COMPOSE) down
+# 应用所有尚未执行的数据库迁移。
+migrate-up: require-env
+	@$(GOOSE) -dir "$(MIGRATIONS_DIR)" mysql "$$MYSQL_DSN" up
 
+# 只回滚最近应用的一个迁移版本。
+# 不使用 reset 或 down-to 0，避免一次删除全部业务表。
+migrate-down: require-env
+	@$(GOOSE) -dir "$(MIGRATIONS_DIR)" mysql "$$MYSQL_DSN" down
+
+# 查看每个迁移版本是已应用还是待执行。
+migrate-status: require-env
+	@$(GOOSE) -dir "$(MIGRATIONS_DIR)" mysql "$$MYSQL_DSN" status
 # 加载 .env 中导出的变量并启动 API。
 api: require-env
 	@exec go run ./cmd/api
