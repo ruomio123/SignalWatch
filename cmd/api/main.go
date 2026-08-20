@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"os"
 
 	"signalwatch/internal/platform/config"
 	"signalwatch/internal/platform/db"
 	"signalwatch/internal/platform/logging"
 	"signalwatch/internal/platform/redis"
+	"signalwatch/internal/server"
 )
 
 const serviceName = "signalwatch-api"
@@ -67,44 +67,29 @@ func main() {
 			)
 		}
 	}()
-	mux := http.NewServeMux() //创建独立的 ServeMux
-
-	//注册带请求方法的路由
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-
-		//构造 JSON 响应
-		w.Header().Set("Content-Type", "application/json")                       //1.设置响应头
-		w.WriteHeader(http.StatusOK)                                             //2.设置状态码
-		_, err := w.Write([]byte(`{"status":"ok","service":"signalwatch-api"}`)) //3.写入响应正文
-		if err != nil {
-			logger.Error("write health response failed", "module", "http", "error", err)
-			return
-		}
-	})
 	// 将 Redis 的 PING 包装成统一的依赖检查函数。
 	// Ping 返回一个命令对象，调用 Err 才能取得本次检查的执行结果。
 	redisCheck := func(ctx context.Context) error {
 		return redisClient.Ping(ctx).Err()
 	}
 
-	// sqlDB.PingContext 本身已经符合 dependencyCheck 的函数签名，
-	// 因此可以直接作为 MySQL 检查函数传入。两个检查函数会使用
-	// Handler 创建的同一个超时 Context。
-	mux.HandleFunc(
-		"GET /readyz",
-		newReadinessHandler(
-			logger,
-			sqlDB.PingContext,
-			redisCheck,
-		),
-	)
-
-	//创建自己的 HTTP Server
-	server := &http.Server{
-		Addr:    cfg.HTTPAddr,
-		Handler: mux,
+	// 入口层只负责提供真实依赖；路由、中间件和 Handler
+	// 由 internal/server 统一组装。
+	router, err := server.NewRouter(server.Dependencies{
+		AppEnv:      cfg.AppEnv,
+		ServiceName: serviceName,
+		Logger:      logger,
+		MySQLCheck:  sqlDB.PingContext,
+		RedisCheck:  redisCheck,
+	})
+	if err != nil {
+		logger.Error(
+			"initialize http router failed",
+			"module", "http",
+			"error", err,
+		)
+		os.Exit(1)
 	}
-	//启动服务；出现错误时记录日志并退出
 
 	logger.Info(
 		"api server starting",
@@ -112,7 +97,9 @@ func main() {
 		"address", cfg.HTTPAddr,
 		"env", cfg.AppEnv,
 	)
-	err = server.ListenAndServe()
+
+	// 当前只需要基础监听能力，直接由 Gin 启动 HTTP 服务。
+	err = router.Run(cfg.HTTPAddr)
 	if err != nil {
 		logger.Error("api server stopped", "module", "http", "error", err)
 		return
