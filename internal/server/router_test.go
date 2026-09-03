@@ -98,6 +98,41 @@ func TestNewRouterReturnsJSONForUnsupportedMethod(t *testing.T) {
 	)
 }
 
+func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
+	dependencies := validTestDependencies()
+
+	calls := 0
+	dependencies.RegisterHandler = func(c *gin.Context) {
+		calls++
+		c.Status(http.StatusCreated)
+	}
+
+	router, err := NewRouter(dependencies)
+	if err != nil {
+		t.Fatalf("create router: %v", err)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/register",
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf(
+			"expected status %d, got %d",
+			http.StatusCreated,
+			recorder.Code,
+		)
+	}
+	if calls != 1 {
+		t.Fatalf("expected register handler once, got %d", calls)
+	}
+}
+
 func TestNewRouterUsesStrictJSONBinding(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -260,6 +295,12 @@ func TestNewRouterValidatesDependencies(t *testing.T) {
 				dependencies.RedisCheck = nil
 			},
 		},
+		{
+			name: "missing register handler",
+			mutate: func(dependencies *Dependencies) {
+				dependencies.RegisterHandler = nil
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -297,6 +338,9 @@ func validTestDependencies() Dependencies {
 		},
 		RedisCheck: func(context.Context) error {
 			return nil
+		},
+		RegisterHandler: func(c *gin.Context) {
+			c.Status(http.StatusCreated)
 		},
 	}
 }

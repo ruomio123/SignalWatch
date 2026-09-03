@@ -10,6 +10,7 @@ import (
 	"signalwatch/internal/platform/logging"
 	"signalwatch/internal/platform/redis"
 	"signalwatch/internal/server"
+	"signalwatch/internal/user"
 )
 
 const serviceName = "signalwatch-api"
@@ -73,14 +74,19 @@ func main() {
 		return redisClient.Ping(ctx).Err()
 	}
 
-	// 入口层只负责提供真实依赖；路由、中间件和 Handler
-	// 由 internal/server 统一组装。
+	// main 是组合根：在这里使用真实数据库组装业务依赖。
+	// internal/server 只负责中间件和路由注册。
+	userRepository := user.NewRepository(database)
+	userService := user.NewService(userRepository)
+	userHandler := user.NewHandler(userService, logger)
+
 	router, err := server.NewRouter(server.Dependencies{
-		AppEnv:      cfg.AppEnv,
-		ServiceName: serviceName,
-		Logger:      logger,
-		MySQLCheck:  sqlDB.PingContext,
-		RedisCheck:  redisCheck,
+		AppEnv:          cfg.AppEnv,
+		ServiceName:     serviceName,
+		Logger:          logger,
+		MySQLCheck:      sqlDB.PingContext,
+		RedisCheck:      redisCheck,
+		RegisterHandler: userHandler.Register,
 	})
 	if err != nil {
 		logger.Error(

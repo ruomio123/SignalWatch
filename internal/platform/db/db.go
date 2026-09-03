@@ -7,6 +7,7 @@ import (
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 
 	"signalwatch/internal/platform/config"
 )
@@ -23,7 +24,19 @@ const pingTimeout = 5 * time.Second
 func Open(cfg config.Config) (*gorm.DB, error) {
 	// mysql.Open 只负责把 DSN 交给 MySQL Driver
 	// 此时未必已经真正建立 TCP 连接，因此后面还必须 Ping
-	database, err := gorm.Open(mysql.Open(cfg.MySQLDSN), &gorm.Config{})
+	database, err := gorm.Open(
+		mysql.Open(cfg.MySQLDSN),
+		&gorm.Config{
+			// GORM 默认的 SQL 日志可能包含插值后的邮箱和密码哈希。
+			// 数据库错误由业务层以安全的结构化日志记录。
+			Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+			// users.created_at/updated_at 是不带时区的 DATETIME，
+			// 因此应用必须始终使用 UTC 生成时间。
+			NowFunc: func() time.Time {
+				return time.Now().UTC()
+			},
+		},
+	)
 	if err != nil {
 		//不把 cfg.MySQLDSN 拼到错误中，避免密码进入日志
 		return nil, fmt.Errorf("open mysql connection: %w", err)

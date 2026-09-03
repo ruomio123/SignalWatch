@@ -14,11 +14,12 @@ import (
 
 // Dependencies 包含创建 HTTP Router 所需的全部依赖。
 type Dependencies struct {
-	AppEnv      string
-	ServiceName string
-	Logger      *slog.Logger
-	MySQLCheck  DependencyCheck
-	RedisCheck  DependencyCheck
+	AppEnv          string
+	ServiceName     string
+	Logger          *slog.Logger
+	MySQLCheck      DependencyCheck
+	RedisCheck      DependencyCheck
+	RegisterHandler gin.HandlerFunc
 }
 
 // NewRouter 创建并配置 SignalWatch API 的 Gin Router。
@@ -86,7 +87,7 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 	)
 
 	apiV1 := router.Group("/api/v1")
-	registerAPIV1Routes(apiV1)
+	registerAPIV1Routes(apiV1, dependencies.RegisterHandler)
 
 	return router, nil
 }
@@ -128,10 +129,19 @@ func validateDependencies(dependencies Dependencies) error {
 		return errors.New("redis dependency check is required")
 	}
 
+	if dependencies.RegisterHandler == nil {
+		return errors.New("register handler is required")
+	}
+
 	return nil
 }
 
 // registerAPIV1Routes 是后续 M1 业务接口的统一注册位置。
-func registerAPIV1Routes(_ *gin.RouterGroup) {
-	// 用户、认证和订阅路由将在后续需求中注册。
+func registerAPIV1Routes(
+	apiV1 *gin.RouterGroup,
+	registerHandler gin.HandlerFunc,
+) {
+	auth := apiV1.Group("/auth")
+	auth.POST("/register", registerHandler)
+	//实际路径，/api/v1/auth/register
 }

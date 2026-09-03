@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"signalwatch/internal/platform/httpx"
+
+	"github.com/gin-gonic/gin"
 )
 
 const readinessTimeout = 2 * time.Second
