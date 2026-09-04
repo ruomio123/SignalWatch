@@ -5,8 +5,11 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
+
+const developmentJWTSecret = "development-only-change-me-32-bytes"
 
 type Config struct {
 	AppEnv          string        // 应用运行环境，例如 dev、test、prod
@@ -21,6 +24,10 @@ type Config struct {
 	RedisAddr     string // Redis 服务地址，例如 "127.0.0.1:6379"
 	RedisPassword string // Redis 连接密码
 	RedisDB       int    // 使用的 Redis 数据库编号，例如 0、1、2
+
+	JWTSecret string
+	JWTTTL    time.Duration
+	JWTIssuer string
 }
 
 // 把环境变量的名字集中管理，避免项目中到处直接写字符串
@@ -35,6 +42,9 @@ const (
 	envRedisAddr         = "REDIS_ADDR"
 	envRedisPassword     = "REDIS_PASSWORD"
 	envRedisDB           = "REDIS_DB"
+	envJWTSecret         = "JWT_SECRET"
+	envJWTTTL            = "JWT_TTL"
+	envJWTIssuer         = "JWT_ISSUER"
 )
 
 /*
@@ -92,6 +102,22 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	jwtSecret, err := requiredEnv(envJWTSecret)
+	if err != nil {
+		return Config{}, err
+	}
+	rawJWTTTL, err := requiredEnv(envJWTTTL)
+	if err != nil {
+		return Config{}, err
+	}
+	jwtTTL, err := time.ParseDuration(rawJWTTTL)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid %s: must be a duration", envJWTTTL)
+	}
+	jwtIssuer, err := requiredEnv(envJWTIssuer)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		AppEnv:            appEnv,
 		HTTPAddr:          httpAddr,
@@ -103,6 +129,9 @@ func Load() (Config, error) {
 		RedisAddr:         redisAddr,
 		RedisPassword:     redisPassword,
 		RedisDB:           redisDB,
+		JWTSecret:         jwtSecret,
+		JWTTTL:            jwtTTL,
+		JWTIssuer:         jwtIssuer,
 	}
 
 	if err := validate(cfg); err != nil {
@@ -168,6 +197,19 @@ func validate(cfg Config) error {
 
 	if cfg.RedisDB < 0 {
 		return fmt.Errorf("invalid REDIS_DB: must not be negative")
+	}
+
+	if len(cfg.JWTSecret) < 32 {
+		return fmt.Errorf("invalid JWT_SECRET: must be at least 32 bytes")
+	}
+	if cfg.AppEnv == "production" && cfg.JWTSecret == developmentJWTSecret {
+		return fmt.Errorf("invalid JWT_SECRET: development placeholder is not allowed in production")
+	}
+	if cfg.JWTTTL <= 0 || cfg.JWTTTL > 24*time.Hour {
+		return fmt.Errorf("invalid JWT_TTL: must be greater than 0 and at most 24h")
+	}
+	if strings.TrimSpace(cfg.JWTIssuer) == "" {
+		return fmt.Errorf("invalid JWT_ISSUER: must not be blank")
 	}
 
 	return nil

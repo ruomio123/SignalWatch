@@ -20,6 +20,8 @@ type Dependencies struct {
 	MySQLCheck      DependencyCheck
 	RedisCheck      DependencyCheck
 	RegisterHandler gin.HandlerFunc
+	LoginHandler    gin.HandlerFunc
+	AuthMiddleware  gin.HandlerFunc
 }
 
 // NewRouter 创建并配置 SignalWatch API 的 Gin Router。
@@ -87,7 +89,12 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 	)
 
 	apiV1 := router.Group("/api/v1")
-	registerAPIV1Routes(apiV1, dependencies.RegisterHandler)
+	registerAPIV1Routes(
+		apiV1,
+		dependencies.RegisterHandler,
+		dependencies.LoginHandler,
+		dependencies.AuthMiddleware,
+	)
 
 	return router, nil
 }
@@ -132,6 +139,12 @@ func validateDependencies(dependencies Dependencies) error {
 	if dependencies.RegisterHandler == nil {
 		return errors.New("register handler is required")
 	}
+	if dependencies.LoginHandler == nil {
+		return errors.New("login handler is required")
+	}
+	if dependencies.AuthMiddleware == nil {
+		return errors.New("auth middleware is required")
+	}
 
 	return nil
 }
@@ -140,8 +153,17 @@ func validateDependencies(dependencies Dependencies) error {
 func registerAPIV1Routes(
 	apiV1 *gin.RouterGroup,
 	registerHandler gin.HandlerFunc,
+	loginHandler gin.HandlerFunc,
+	authMiddleware gin.HandlerFunc,
 ) {
 	auth := apiV1.Group("/auth")
 	auth.POST("/register", registerHandler)
-	//实际路径，/api/v1/auth/register
+	auth.POST("/login", loginHandler)
+
+	protectedAuth := auth.Group("")
+	protectedAuth.Use(authMiddleware)
+	protectedAuth.GET("/probe", func(c *gin.Context) {
+		userID, _ := httpx.CurrentUserID(c)
+		c.JSON(http.StatusOK, gin.H{"user_id": userID})
+	})
 }

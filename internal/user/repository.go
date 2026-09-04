@@ -19,11 +19,37 @@ const (
 
 var (
 	ErrEmailAlreadyRegistered = errors.New("email already registered")
+	ErrNotFound               = errors.New("user not found")
 )
 
 // 定义 Service 所依赖的最小数据库能力
 type Repository interface {
 	Create(ctx context.Context, user *User) error
+	FindByEmail(ctx context.Context, normalizedEmail string) (User, error)
+}
+
+// FindByEmail loads the credentials and status needed by the authentication
+// use case. Callers must pass an email normalized with NormalizeEmail.
+func (repository *gormRepository) FindByEmail(
+	ctx context.Context,
+	normalizedEmail string,
+) (User, error) {
+	var found User
+	err := repository.db.WithContext(ctx).
+		Where("email = ?", normalizedEmail).
+		Take(&found).
+		Error
+	if err != nil {
+		return User{}, mapFindError(err)
+	}
+	return found, nil
+}
+
+func mapFindError(err error) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrNotFound
+	}
+	return err
 }
 
 type gormRepository struct {

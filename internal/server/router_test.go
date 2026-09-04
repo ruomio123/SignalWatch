@@ -133,6 +133,60 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 	}
 }
 
+func TestNewRouterKeepsPublicRoutesPublicAndProtectsProbe(t *testing.T) {
+	dependencies := validTestDependencies()
+	loginCalls := 0
+	dependencies.LoginHandler = func(c *gin.Context) {
+		loginCalls++
+		c.Status(http.StatusOK)
+	}
+	dependencies.AuthMiddleware = func(c *gin.Context) {
+		if c.GetHeader("Authorization") != "Bearer valid-token" {
+			httpx.WriteError(
+				c,
+				http.StatusUnauthorized,
+				"AUTH_UNAUTHORIZED",
+				"unauthorized",
+			)
+			return
+		}
+		httpx.SetCurrentUserID(c, 42)
+		c.Next()
+	}
+
+	router, err := NewRouter(dependencies)
+	if err != nil {
+		t.Fatalf("create router: %v", err)
+	}
+
+	loginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+	loginRecorder := httptest.NewRecorder()
+	router.ServeHTTP(loginRecorder, loginRequest)
+	if loginRecorder.Code != http.StatusOK || loginCalls != 1 {
+		t.Fatalf("expected public login route, got status %d and %d calls", loginRecorder.Code, loginCalls)
+	}
+
+	unauthorizedRequest := httptest.NewRequest(http.MethodGet, "/api/v1/auth/probe", nil)
+	unauthorizedRecorder := httptest.NewRecorder()
+	router.ServeHTTP(unauthorizedRecorder, unauthorizedRequest)
+	assertErrorResponse(
+		t,
+		unauthorizedRecorder,
+		http.StatusUnauthorized,
+		"AUTH_UNAUTHORIZED",
+		"unauthorized",
+	)
+
+	authorizedRequest := httptest.NewRequest(http.MethodGet, "/api/v1/auth/probe", nil)
+	authorizedRequest.Header.Set("Authorization", "Bearer valid-token")
+	authorizedRecorder := httptest.NewRecorder()
+	router.ServeHTTP(authorizedRecorder, authorizedRequest)
+	if authorizedRecorder.Code != http.StatusOK {
+		t.Fatalf("expected protected probe status 200, got %d", authorizedRecorder.Code)
+	}
+	assertJSONEqual(t, authorizedRecorder.Body.Bytes(), []byte(`{"user_id":42}`))
+}
+
 func TestNewRouterUsesStrictJSONBinding(t *testing.T) {
 	router := newTestRouter(t)
 
@@ -301,6 +355,18 @@ func TestNewRouterValidatesDependencies(t *testing.T) {
 				dependencies.RegisterHandler = nil
 			},
 		},
+		{
+			name: "missing login handler",
+			mutate: func(dependencies *Dependencies) {
+				dependencies.LoginHandler = nil
+			},
+		},
+		{
+			name: "missing auth middleware",
+			mutate: func(dependencies *Dependencies) {
+				dependencies.AuthMiddleware = nil
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -341,6 +407,12 @@ func validTestDependencies() Dependencies {
 		},
 		RegisterHandler: func(c *gin.Context) {
 			c.Status(http.StatusCreated)
+		},
+		LoginHandler: func(c *gin.Context) {
+			c.Status(http.StatusOK)
+		},
+		AuthMiddleware: func(c *gin.Context) {
+			c.Next()
 		},
 	}
 }

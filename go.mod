@@ -5,6 +5,7 @@ go 1.26.5
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-sql-driver/mysql v1.8.1
+	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/redis/go-redis/v9 v9.22.0
 	golang.org/x/crypto v0.48.0
 	gorm.io/driver/mysql v1.6.0

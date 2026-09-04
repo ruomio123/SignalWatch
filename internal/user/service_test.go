@@ -236,3 +236,7 @@ type repositoryStub struct {
 func (stub repositoryStub) Create(ctx context.Context, user *User) error {
 	return stub.create(ctx, user)
 }
+
+func (stub repositoryStub) FindByEmail(context.Context, string) (User, error) {
+	return User{}, ErrNotFound
+}

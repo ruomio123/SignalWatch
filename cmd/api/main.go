@@ -4,7 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"time"
 
+	"signalwatch/internal/auth"
 	"signalwatch/internal/platform/config"
 	"signalwatch/internal/platform/db"
 	"signalwatch/internal/platform/logging"
@@ -79,6 +81,22 @@ func main() {
 	userRepository := user.NewRepository(database)
 	userService := user.NewService(userRepository)
 	userHandler := user.NewHandler(userService, logger)
+	tokenService, err := auth.NewTokenService(
+		[]byte(cfg.JWTSecret),
+		cfg.JWTIssuer,
+		cfg.JWTTTL,
+		time.Now,
+	)
+	if err != nil {
+		logger.Error(
+			"initialize token service failed",
+			"module", "auth",
+			"error", err,
+		)
+		os.Exit(1)
+	}
+	authService := auth.NewService(userRepository, tokenService)
+	authHandler := auth.NewHandler(authService, logger)
 
 	router, err := server.NewRouter(server.Dependencies{
 		AppEnv:          cfg.AppEnv,
@@ -87,6 +105,8 @@ func main() {
 		MySQLCheck:      sqlDB.PingContext,
 		RedisCheck:      redisCheck,
 		RegisterHandler: userHandler.Register,
+		LoginHandler:    authHandler.Login,
+		AuthMiddleware:  auth.Middleware(tokenService),
 	})
 	if err != nil {
 		logger.Error(

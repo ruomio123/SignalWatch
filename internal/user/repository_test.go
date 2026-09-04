@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
+	"gorm.io/gorm"
 )
 
 func TestMapCreateErrorMapsOnlyUsersEmailDuplicateKey(t *testing.T) {
@@ -51,6 +52,35 @@ func TestMapCreateErrorMapsOnlyUsersEmailDuplicateKey(t *testing.T) {
 
 			if got != test.err {
 				t.Fatalf("expected original error %v, got %v", test.err, got)
+			}
+		})
+	}
+}
+
+func TestMapFindErrorMapsOnlyRecordNotFound(t *testing.T) {
+	databaseError := errors.New("database unavailable")
+	tests := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{
+			name: "record not found",
+			err:  fmt.Errorf("query user: %w", gorm.ErrRecordNotFound),
+			want: ErrNotFound,
+		},
+		{
+			name: "other database error",
+			err:  databaseError,
+			want: databaseError,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := mapFindError(test.err)
+			if !errors.Is(got, test.want) {
+				t.Fatalf("expected %v, got %v", test.want, got)
 			}
 		})
 	}
