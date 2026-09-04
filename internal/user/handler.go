@@ -18,22 +18,114 @@ const CodeEmailAlreadyRegistered = "EMAIL_ALREADY_REGISTERED"
 type RegistrationService interface {
 	Register(ctx context.Context, input RegisterInput) (User, error)
 }
+
+type ProfileService interface {
+	GetProfile(ctx context.Context, userID uint64) (User, error)
+	UpdateProfile(ctx context.Context, userID uint64, input UpdateProfileInput) (User, error)
+}
+
+type UserService interface {
+	RegistrationService
+	ProfileService
+}
+
 type registerRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
-type Handler struct {
-	service RegistrationService //执行注册业务
-	logger  *slog.Logger        //只记录无法预期的内部错误
+type updateProfileRequest struct {
+	Timezone          *string `json:"timezone"`
+	DigestTime        *string `json:"digest_time"`
+	MaxItemsPerDigest *uint16 `json:"max_items_per_digest"`
 }
 
-func NewHandler(service RegistrationService, logger *slog.Logger) *Handler {
+type Handler struct {
+	service UserService  //执行用户业务
+	logger  *slog.Logger //只记录无法预期的内部错误
+}
+
+func NewHandler(service UserService, logger *slog.Logger) *Handler {
 	return &Handler{
 		service: service,
 		logger:  logger,
 	}
 }
+
+func (handler *Handler) GetProfile(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		writeProfileUnauthorized(c)
+		return
+	}
+
+	profile, err := handler.service.GetProfile(c.Request.Context(), userID)
+	if err != nil {
+		handler.writeProfileError(c, "get user profile failed", err)
+		return
+	}
+	c.JSON(http.StatusOK, profile.Public())
+}
+
+func (handler *Handler) UpdateProfile(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		writeProfileUnauthorized(c)
+		return
+	}
+
+	var request updateProfileRequest
+	if !httpx.BindJSON(c, &request) {
+		return
+	}
+	profile, err := handler.service.UpdateProfile(
+		c.Request.Context(),
+		userID,
+		UpdateProfileInput{
+			Timezone:          request.Timezone,
+			DigestTime:        request.DigestTime,
+			MaxItemsPerDigest: request.MaxItemsPerDigest,
+		},
+	)
+	if err != nil {
+		handler.writeProfileError(c, "update user profile failed", err)
+		return
+	}
+	c.JSON(http.StatusOK, profile.Public())
+}
+
+func currentUserID(c *gin.Context) (uint64, bool) {
+	userID, ok := httpx.CurrentUserID(c)
+	return uint64(userID), ok && userID != 0
+}
+
+func writeProfileUnauthorized(c *gin.Context) {
+	httpx.WriteError(c, http.StatusUnauthorized, httpx.CodeUnauthorized, "unauthorized")
+}
+
+func (handler *Handler) writeProfileError(c *gin.Context, message string, err error) {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeProfileUnauthorized(c)
+	case errors.Is(err, ErrEmptyProfileUpdate):
+		httpx.WriteError(c, http.StatusBadRequest, httpx.CodeValidationError, "profile update is empty")
+	case errors.Is(err, ErrInvalidTimezone):
+		httpx.WriteError(c, http.StatusBadRequest, httpx.CodeValidationError, "timezone is invalid")
+	case errors.Is(err, ErrInvalidDigestTime):
+		httpx.WriteError(c, http.StatusBadRequest, httpx.CodeValidationError, "digest_time is invalid")
+	case errors.Is(err, ErrInvalidMaxItemsPerDigest):
+		httpx.WriteError(c, http.StatusBadRequest, httpx.CodeValidationError, "max_items_per_digest is invalid")
+	default:
+		handler.logger.Error(
+			message,
+			"module", "user",
+			"request_id", httpx.RequestID(c),
+			"error", err,
+		)
+		httpx.WriteError(c, http.StatusInternalServerError, httpx.CodeInternalError, "internal server error")
+	}
+}
+
 func (handler *Handler) Register(c *gin.Context) {
 	//创建用于接收 JSON 的 HTTP 请求对象。
 	var request registerRequest

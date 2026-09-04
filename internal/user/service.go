@@ -89,3 +89,35 @@ func (service *Service) Register(ctx context.Context, input RegisterInput) (User
 	}
 	return user, nil
 }
+
+// GetProfile returns only an active user selected by the authenticated ID.
+func (service *Service) GetProfile(ctx context.Context, userID uint64) (User, error) {
+	if userID == 0 {
+		return User{}, ErrNotFound
+	}
+	profile, err := service.repository.FindActiveByID(ctx, userID)
+	if err != nil {
+		return User{}, fmt.Errorf("find active user profile: %w", err)
+	}
+	return profile, nil
+}
+
+// UpdateProfile validates and normalizes the patch before persistence.
+func (service *Service) UpdateProfile(
+	ctx context.Context,
+	userID uint64,
+	input UpdateProfileInput,
+) (User, error) {
+	if userID == 0 {
+		return User{}, ErrNotFound
+	}
+	changes, err := validateProfileUpdate(input)
+	if err != nil {
+		return User{}, err
+	}
+	profile, err := service.repository.UpdateProfile(ctx, userID, changes)
+	if err != nil {
+		return User{}, fmt.Errorf("update active user profile: %w", err)
+	}
+	return profile, nil
+}

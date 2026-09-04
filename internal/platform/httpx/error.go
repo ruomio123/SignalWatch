@@ -23,6 +23,7 @@ const (
 	CodeNotFound         = "NOT_FOUND"
 	CodeMethodNotAllowed = "METHOD_NOT_ALLOWED"
 	CodeInternalError    = "INTERNAL_ERROR"
+	CodeUnauthorized     = "AUTH_UNAUTHORIZED"
 )
 
 /*

@@ -85,3 +85,47 @@ func TestMapFindErrorMapsOnlyRecordNotFound(t *testing.T) {
 		})
 	}
 }
+
+func TestProfileUpdateColumnsContainsOnlySuppliedWhitelistFields(t *testing.T) {
+	timezone := "Asia/Shanghai"
+	maxItems := uint16(30)
+	updates := profileUpdateColumns(ProfileChanges{
+		Timezone:          &timezone,
+		MaxItemsPerDigest: &maxItems,
+	})
+
+	if len(updates) != 2 {
+		t.Fatalf("expected two update columns, got %+v", updates)
+	}
+	if updates["timezone"] != timezone {
+		t.Fatalf("expected timezone %q, got %+v", timezone, updates["timezone"])
+	}
+	if updates["max_items_per_digest"] != maxItems {
+		t.Fatalf("expected max items %d, got %+v", maxItems, updates["max_items_per_digest"])
+	}
+	for _, forbidden := range []string{"id", "email", "password_hash", "status"} {
+		if _, exists := updates[forbidden]; exists {
+			t.Fatalf("forbidden column %q was included", forbidden)
+		}
+	}
+}
+
+func TestProfileNeedsUpdateRecognizesIdempotentRetry(t *testing.T) {
+	current := profileTestUser()
+	timezone := current.Timezone
+	digestTime := current.DigestTime
+	maxItems := current.MaxItemsPerDigest
+
+	if profileNeedsUpdate(current, ProfileChanges{
+		Timezone:          &timezone,
+		DigestTime:        &digestTime,
+		MaxItemsPerDigest: &maxItems,
+	}) {
+		t.Fatal("expected identical profile patch not to require an update")
+	}
+
+	changedTimezone := "Asia/Shanghai"
+	if !profileNeedsUpdate(current, ProfileChanges{Timezone: &changedTimezone}) {
+		t.Fatal("expected changed timezone to require an update")
+	}
+}

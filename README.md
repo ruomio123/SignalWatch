@@ -1,6 +1,17 @@
 # SignalWatch
 
-SignalWatch 提供 API、Worker，以及本地开发所需的 MySQL、Redis 和 Mailpit 服务。
+SignalWatch 提供内嵌 Web 前端、API、Worker，以及本地开发所需的 MySQL、Redis 和 Mailpit 服务。
+
+## 当前功能
+
+- Web 欢迎页、注册、登录、工作台与偏好设置页面
+- 邮箱注册和密码登录
+- JWT Bearer 鉴权
+- 读取与修改用户时区、摘要时间和单次条目上限
+- API、MySQL 和 Redis 健康状态展示
+- 订阅、订阅规则和内容来源的数据表结构
+
+订阅管理、内容采集、规则匹配和摘要投递目前尚未实现业务 API；前端工作台会明确标注这些能力的当前状态。
 
 ## 环境要求
 
@@ -41,6 +52,18 @@ make migrate-down
 make api
 make worker
 ```
+
+API 启动后访问 [http://127.0.0.1:8080](http://127.0.0.1:8080) 即可使用 Web 前端。前端资源通过 Go `embed` 打包在 API 二进制中，无需安装 Node.js 或启动额外的开发服务器。
+
+### Web 页面
+
+| 路径 | 功能 |
+| --- | --- |
+| `/` | 产品欢迎页与能力说明 |
+| `/login` | 登录 |
+| `/register` | 注册并自动登录 |
+| `/app` | 账户摘要、服务状态与后端能力进度 |
+| `/settings` | 修改时区、摘要时间和条目上限 |
 
 ## 常用检查
 

@@ -9,7 +9,7 @@ import (
 	"signalwatch/internal/platform/httpx"
 )
 
-const CodeUnauthorized = "AUTH_UNAUTHORIZED"
+const CodeUnauthorized = httpx.CodeUnauthorized
 
 type TokenVerifier interface {
 	Verify(rawToken string) (uint64, error)

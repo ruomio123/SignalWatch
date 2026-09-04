@@ -9,7 +9,6 @@ dist/
 tmp/
 coverage/
 coverage.out
-*_test.go
 
 # Runtime output
 *.log

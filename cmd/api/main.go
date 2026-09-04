@@ -12,6 +12,8 @@ import (
 	"signalwatch/internal/platform/logging"
 	"signalwatch/internal/platform/redis"
 	"signalwatch/internal/server"
+	"signalwatch/internal/source"
+	"signalwatch/internal/subscription"
 	"signalwatch/internal/user"
 )
 
@@ -97,16 +99,27 @@ func main() {
 	}
 	authService := auth.NewService(userRepository, tokenService)
 	authHandler := auth.NewHandler(authService, logger)
+	sourceRepository := source.NewRepository(database)
+	sourceService := source.NewService(sourceRepository)
+	sourceHandler := source.NewHandler(sourceService, logger)
+	subscriptionRepository := subscription.NewRepository(database)
+	subscriptionService := subscription.NewService(subscriptionRepository, sourceService)
+	subscriptionHandler := subscription.NewHandler(subscriptionService, logger)
 
 	router, err := server.NewRouter(server.Dependencies{
-		AppEnv:          cfg.AppEnv,
-		ServiceName:     serviceName,
-		Logger:          logger,
-		MySQLCheck:      sqlDB.PingContext,
-		RedisCheck:      redisCheck,
-		RegisterHandler: userHandler.Register,
-		LoginHandler:    authHandler.Login,
-		AuthMiddleware:  auth.Middleware(tokenService),
+		AppEnv:                    cfg.AppEnv,
+		ServiceName:               serviceName,
+		Logger:                    logger,
+		MySQLCheck:                sqlDB.PingContext,
+		RedisCheck:                redisCheck,
+		RegisterHandler:           userHandler.Register,
+		LoginHandler:              authHandler.Login,
+		AuthMiddleware:            auth.Middleware(tokenService),
+		GetProfileHandler:         userHandler.GetProfile,
+		UpdateProfileHandler:      userHandler.UpdateProfile,
+		ListSourcesHandler:        sourceHandler.List,
+		GetSourceHandler:          sourceHandler.Get,
+		CreateSubscriptionHandler: subscriptionHandler.Create,
 	})
 	if err != nil {
 		logger.Error(

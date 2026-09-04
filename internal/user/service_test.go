@@ -230,7 +230,9 @@ func TestServiceRegisterPreservesRepositoryErrors(t *testing.T) {
 }
 
 type repositoryStub struct {
-	create func(context.Context, *User) error
+	create         func(context.Context, *User) error
+	findActiveByID func(context.Context, uint64) (User, error)
+	updateProfile  func(context.Context, uint64, ProfileChanges) (User, error)
 }
 
 func (stub repositoryStub) Create(ctx context.Context, user *User) error {
@@ -239,4 +241,22 @@ func (stub repositoryStub) Create(ctx context.Context, user *User) error {
 
 func (stub repositoryStub) FindByEmail(context.Context, string) (User, error) {
 	return User{}, ErrNotFound
+}
+
+func (stub repositoryStub) FindActiveByID(ctx context.Context, userID uint64) (User, error) {
+	if stub.findActiveByID == nil {
+		return User{}, ErrNotFound
+	}
+	return stub.findActiveByID(ctx, userID)
+}
+
+func (stub repositoryStub) UpdateProfile(
+	ctx context.Context,
+	userID uint64,
+	changes ProfileChanges,
+) (User, error) {
+	if stub.updateProfile == nil {
+		return User{}, ErrNotFound
+	}
+	return stub.updateProfile(ctx, userID, changes)
 }

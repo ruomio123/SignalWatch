@@ -232,7 +232,27 @@ func TestHandlerRegisterMapsServiceErrors(t *testing.T) {
 }
 
 type registrationServiceStub struct {
-	register func(context.Context, RegisterInput) (User, error)
+	register      func(context.Context, RegisterInput) (User, error)
+	getProfile    func(context.Context, uint64) (User, error)
+	updateProfile func(context.Context, uint64, UpdateProfileInput) (User, error)
+}
+
+func (stub registrationServiceStub) GetProfile(ctx context.Context, userID uint64) (User, error) {
+	if stub.getProfile == nil {
+		return User{}, ErrNotFound
+	}
+	return stub.getProfile(ctx, userID)
+}
+
+func (stub registrationServiceStub) UpdateProfile(
+	ctx context.Context,
+	userID uint64,
+	input UpdateProfileInput,
+) (User, error) {
+	if stub.updateProfile == nil {
+		return User{}, ErrNotFound
+	}
+	return stub.updateProfile(ctx, userID, input)
 }
 
 func (stub registrationServiceStub) Register(
@@ -243,7 +263,7 @@ func (stub registrationServiceStub) Register(
 }
 
 func newHandlerTestRouter(
-	service RegistrationService,
+	service UserService,
 	logger *slog.Logger,
 ) *gin.Engine {
 	gin.SetMode(gin.TestMode)

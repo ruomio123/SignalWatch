@@ -10,18 +10,24 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"signalwatch/internal/platform/httpx"
+	"signalwatch/web"
 )
 
 // Dependencies 包含创建 HTTP Router 所需的全部依赖。
 type Dependencies struct {
-	AppEnv          string
-	ServiceName     string
-	Logger          *slog.Logger
-	MySQLCheck      DependencyCheck
-	RedisCheck      DependencyCheck
-	RegisterHandler gin.HandlerFunc
-	LoginHandler    gin.HandlerFunc
-	AuthMiddleware  gin.HandlerFunc
+	AppEnv                    string
+	ServiceName               string
+	Logger                    *slog.Logger
+	MySQLCheck                DependencyCheck
+	RedisCheck                DependencyCheck
+	RegisterHandler           gin.HandlerFunc
+	LoginHandler              gin.HandlerFunc
+	AuthMiddleware            gin.HandlerFunc
+	GetProfileHandler         gin.HandlerFunc
+	UpdateProfileHandler      gin.HandlerFunc
+	ListSourcesHandler        gin.HandlerFunc
+	GetSourceHandler          gin.HandlerFunc
+	CreateSubscriptionHandler gin.HandlerFunc
 }
 
 // NewRouter 创建并配置 SignalWatch API 的 Gin Router。
@@ -94,7 +100,14 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 		dependencies.RegisterHandler,
 		dependencies.LoginHandler,
 		dependencies.AuthMiddleware,
+		dependencies.GetProfileHandler,
+		dependencies.UpdateProfileHandler,
+		dependencies.ListSourcesHandler,
+		dependencies.GetSourceHandler,
+		dependencies.CreateSubscriptionHandler,
 	)
+
+	web.RegisterRoutes(router)
 
 	return router, nil
 }
@@ -145,6 +158,21 @@ func validateDependencies(dependencies Dependencies) error {
 	if dependencies.AuthMiddleware == nil {
 		return errors.New("auth middleware is required")
 	}
+	if dependencies.GetProfileHandler == nil {
+		return errors.New("get profile handler is required")
+	}
+	if dependencies.UpdateProfileHandler == nil {
+		return errors.New("update profile handler is required")
+	}
+	if dependencies.ListSourcesHandler == nil {
+		return errors.New("list sources handler is required")
+	}
+	if dependencies.GetSourceHandler == nil {
+		return errors.New("get source handler is required")
+	}
+	if dependencies.CreateSubscriptionHandler == nil {
+		return errors.New("create subscription handler is required")
+	}
 
 	return nil
 }
@@ -155,6 +183,11 @@ func registerAPIV1Routes(
 	registerHandler gin.HandlerFunc,
 	loginHandler gin.HandlerFunc,
 	authMiddleware gin.HandlerFunc,
+	getProfileHandler gin.HandlerFunc,
+	updateProfileHandler gin.HandlerFunc,
+	listSourcesHandler gin.HandlerFunc,
+	getSourceHandler gin.HandlerFunc,
+	createSubscriptionHandler gin.HandlerFunc,
 ) {
 	auth := apiV1.Group("/auth")
 	auth.POST("/register", registerHandler)
@@ -166,4 +199,12 @@ func registerAPIV1Routes(
 		userID, _ := httpx.CurrentUserID(c)
 		c.JSON(http.StatusOK, gin.H{"user_id": userID})
 	})
+
+	protected := apiV1.Group("")
+	protected.Use(authMiddleware)
+	protected.GET("/me", getProfileHandler)
+	protected.PATCH("/me", updateProfileHandler)
+	protected.GET("/sources", listSourcesHandler)
+	protected.GET("/sources/:id", getSourceHandler)
+	protected.POST("/subscriptions", createSubscriptionHandler)
 }
