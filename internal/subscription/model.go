@@ -49,6 +49,40 @@ type CreateInput struct {
 	Rules     RulesInput
 }
 
+// UpdateInput keeps field presence separate from field values. In particular,
+// ObjectiveSet distinguishes an omitted objective from an explicit clear.
+type UpdateInput struct {
+	Name         *string
+	ObjectiveSet bool
+	Objective    *string
+	Enabled      *bool
+	Rules        *RulesInput
+}
+
+type SubscriptionPatch struct {
+	Name         *string
+	ObjectiveSet bool
+	Objective    *string
+	Enabled      *bool
+}
+
+type ListFilter struct {
+	Enabled  *bool
+	SourceID *uint64
+}
+
+type ListInput struct {
+	Page     int
+	PageSize int
+	Filter   ListFilter
+}
+
+type QueryResult struct {
+	Subscription Subscription
+	Source       source.Source
+	Rules        []Rule
+}
+
 type PublicRules struct {
 	Categories      []string `json:"categories"`
 	Authors         []string `json:"authors"`
@@ -66,4 +100,11 @@ type PublicSubscription struct {
 	Rules     PublicRules         `json:"rules"`
 	CreatedAt time.Time           `json:"created_at"`
 	UpdatedAt time.Time           `json:"updated_at"`
+}
+
+type ListResult struct {
+	Items    []PublicSubscription `json:"items"`
+	Page     int                  `json:"page"`
+	PageSize int                  `json:"page_size"`
+	Total    int64                `json:"total"`
 }

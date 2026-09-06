@@ -58,7 +58,7 @@ func TestNewRouterRegistersHealthRoutes(t *testing.T) {
 func TestNewRouterServesEmbeddedFrontend(t *testing.T) {
 	router := newTestRouter(t)
 
-	for _, path := range []string{"/", "/login", "/register", "/app", "/settings"} {
+	for _, path := range []string{"/", "/login", "/register", "/app", "/subscriptions", "/settings"} {
 		t.Run(path, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, path, nil)
 			recorder := httptest.NewRecorder()
@@ -91,6 +91,9 @@ func TestNewRouterServesEmbeddedFrontend(t *testing.T) {
 			"expected CSS content type, got %q",
 			assetRecorder.Header().Get("Content-Type"),
 		)
+	}
+	if cacheControl := assetRecorder.Header().Get("Cache-Control"); cacheControl != "no-cache" {
+		t.Fatalf("expected frontend assets to be revalidated, got Cache-Control %q", cacheControl)
 	}
 }
 
@@ -289,6 +292,8 @@ func TestNewRouterProtectsAndDispatchesSourceAndSubscriptionRoutes(t *testing.T)
 	}
 
 	listCalls, getCalls, createCalls := 0, 0, 0
+	listSubscriptionCalls, getSubscriptionCalls := 0, 0
+	updateSubscriptionCalls, deleteSubscriptionCalls := 0, 0
 	dependencies.ListSourcesHandler = func(c *gin.Context) {
 		listCalls++
 		c.Status(http.StatusOK)
@@ -303,6 +308,25 @@ func TestNewRouterProtectsAndDispatchesSourceAndSubscriptionRoutes(t *testing.T)
 	dependencies.CreateSubscriptionHandler = func(c *gin.Context) {
 		createCalls++
 		c.Status(http.StatusCreated)
+	}
+	dependencies.ListSubscriptionsHandler = func(c *gin.Context) {
+		listSubscriptionCalls++
+		c.Status(http.StatusOK)
+	}
+	dependencies.GetSubscriptionHandler = func(c *gin.Context) {
+		getSubscriptionCalls++
+		if c.Param("id") != "9" {
+			t.Fatalf("expected subscription ID path parameter 9, got %q", c.Param("id"))
+		}
+		c.Status(http.StatusOK)
+	}
+	dependencies.UpdateSubscriptionHandler = func(c *gin.Context) {
+		updateSubscriptionCalls++
+		c.Status(http.StatusOK)
+	}
+	dependencies.DeleteSubscriptionHandler = func(c *gin.Context) {
+		deleteSubscriptionCalls++
+		c.Status(http.StatusNoContent)
 	}
 
 	router, err := NewRouter(dependencies)
@@ -322,6 +346,10 @@ func TestNewRouterProtectsAndDispatchesSourceAndSubscriptionRoutes(t *testing.T)
 		{http.MethodGet, "/api/v1/sources", http.StatusOK},
 		{http.MethodGet, "/api/v1/sources/7", http.StatusOK},
 		{http.MethodPost, "/api/v1/subscriptions", http.StatusCreated},
+		{http.MethodGet, "/api/v1/subscriptions", http.StatusOK},
+		{http.MethodGet, "/api/v1/subscriptions/9", http.StatusOK},
+		{http.MethodPatch, "/api/v1/subscriptions/9", http.StatusOK},
+		{http.MethodDelete, "/api/v1/subscriptions/9", http.StatusNoContent},
 	}
 	for _, requestCase := range requests {
 		request := httptest.NewRequest(requestCase.method, requestCase.path, nil)
@@ -332,8 +360,14 @@ func TestNewRouterProtectsAndDispatchesSourceAndSubscriptionRoutes(t *testing.T)
 			t.Fatalf("%s %s: expected %d, got %d", requestCase.method, requestCase.path, requestCase.want, recorder.Code)
 		}
 	}
-	if listCalls != 1 || getCalls != 1 || createCalls != 1 {
-		t.Fatalf("unexpected handler calls list=%d get=%d create=%d", listCalls, getCalls, createCalls)
+	if listCalls != 1 || getCalls != 1 || createCalls != 1 ||
+		listSubscriptionCalls != 1 || getSubscriptionCalls != 1 ||
+		updateSubscriptionCalls != 1 || deleteSubscriptionCalls != 1 {
+		t.Fatalf(
+			"unexpected handler calls sources_list=%d source_get=%d create=%d subscriptions_list=%d subscription_get=%d update=%d delete=%d",
+			listCalls, getCalls, createCalls, listSubscriptionCalls, getSubscriptionCalls,
+			updateSubscriptionCalls, deleteSubscriptionCalls,
+		)
 	}
 }
 
@@ -547,6 +581,30 @@ func TestNewRouterValidatesDependencies(t *testing.T) {
 				dependencies.CreateSubscriptionHandler = nil
 			},
 		},
+		{
+			name: "missing list subscriptions handler",
+			mutate: func(dependencies *Dependencies) {
+				dependencies.ListSubscriptionsHandler = nil
+			},
+		},
+		{
+			name: "missing get subscription handler",
+			mutate: func(dependencies *Dependencies) {
+				dependencies.GetSubscriptionHandler = nil
+			},
+		},
+		{
+			name: "missing update subscription handler",
+			mutate: func(dependencies *Dependencies) {
+				dependencies.UpdateSubscriptionHandler = nil
+			},
+		},
+		{
+			name: "missing delete subscription handler",
+			mutate: func(dependencies *Dependencies) {
+				dependencies.DeleteSubscriptionHandler = nil
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -608,6 +666,18 @@ func validTestDependencies() Dependencies {
 		},
 		CreateSubscriptionHandler: func(c *gin.Context) {
 			c.Status(http.StatusCreated)
+		},
+		ListSubscriptionsHandler: func(c *gin.Context) {
+			c.Status(http.StatusOK)
+		},
+		GetSubscriptionHandler: func(c *gin.Context) {
+			c.Status(http.StatusOK)
+		},
+		UpdateSubscriptionHandler: func(c *gin.Context) {
+			c.Status(http.StatusOK)
+		},
+		DeleteSubscriptionHandler: func(c *gin.Context) {
+			c.Status(http.StatusNoContent)
 		},
 	}
 }

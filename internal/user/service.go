@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/mail"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
@@ -61,9 +62,19 @@ func isValidEmail(email string) bool {
 func isValidPassword(password string) bool {
 	// RuneCountInString 计算 Unicode 字符数；
 	// len 计算 UTF-8 字节数，对应 bcrypt 的 72 字节限制。
-	return utf8.ValidString(password) &&
-		utf8.RuneCountInString(password) >= minPasswordRunes &&
-		len(password) <= maxPasswordBytes
+	if !utf8.ValidString(password) ||
+		utf8.RuneCountInString(password) < minPasswordRunes ||
+		len(password) > maxPasswordBytes {
+		return false
+	}
+
+	hasLetter := false
+	hasNumber := false
+	for _, character := range password {
+		hasLetter = hasLetter || unicode.IsLetter(character)
+		hasNumber = hasNumber || unicode.IsNumber(character)
+	}
+	return hasLetter && hasNumber
 }
 
 // Register 按顺序完成：邮箱归一化、参数校验、bcrypt 哈希和用户持久化。

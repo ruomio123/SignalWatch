@@ -28,13 +28,15 @@ func RegisterRoutes(router *gin.Engine) {
 		c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML)
 	}
 
-	for _, route := range []string{"/", "/login", "/register", "/app", "/settings"} {
+	for _, route := range []string{"/", "/login", "/register", "/app", "/subscriptions", "/settings"} {
 		router.GET(route, index)
 	}
 
 	assets := http.FileServer(http.FS(appFiles))
 	router.GET("/assets/*filepath", func(c *gin.Context) {
-		c.Header("Cache-Control", "public, max-age=3600")
+		// Assets do not have content-hashed file names. Revalidate them so a
+		// restarted embedded binary cannot leave browsers on stale UI code.
+		c.Header("Cache-Control", "no-cache")
 		assets.ServeHTTP(c.Writer, c.Request)
 	})
 }

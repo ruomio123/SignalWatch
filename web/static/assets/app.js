@@ -5,8 +5,15 @@ const app = document.querySelector("#app");
 const state = {
   token: readToken(),
   profile: null,
-  health: null,
-  readiness: null,
+  activeSubscriptionTotal: null,
+  sources: null,
+  subscriptionPage: null,
+  subscriptionFilters: {
+    page: 1,
+    enabled: "",
+    sourceId: "",
+  },
+  subscriptionEditor: null,
 };
 
 class ApiError extends Error {
@@ -38,6 +45,10 @@ function storeToken(token) {
 function clearSession() {
   state.token = "";
   state.profile = null;
+  state.activeSubscriptionTotal = null;
+  state.sources = null;
+  state.subscriptionPage = null;
+  state.subscriptionEditor = null;
   try {
     window.localStorage.removeItem(TOKEN_KEY);
   } catch {
@@ -61,7 +72,7 @@ async function apiRequest(path, options = {}) {
       headers,
     });
   } catch {
-    throw new ApiError(0, { message: "无法连接 SignalWatch 服务，请确认 API 已启动。" });
+    throw new ApiError(0, { message: "暂时无法连接 SignalWatch，请稍后重试。" });
   }
 
   const text = await response.text();
@@ -108,6 +119,13 @@ function icon(name) {
     save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/>',
     quote: '<path d="M9 11H4a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-7a6 6 0 0 0-6-6M21 11h-5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-7a6 6 0 0 0-6-6"/>',
     chevronLeft: '<path d="m15 18-6-6 6-6"/>',
+    chevronRight: '<path d="m9 18 6-6-6-6"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/>',
+    trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v5M14 11v5"/>',
+    pause: '<path d="M8 5v14M16 5v14"/>',
+    play: '<path d="m8 5 11 7-11 7Z"/>',
+    refresh: '<path d="M20 7h-6V1M4 17h6v6"/><path d="M20 7a9 9 0 0 0-15-2L2 8M4 17a9 9 0 0 0 15 2l3-3"/>',
     x: '<path d="M18 6 6 18M6 6l12 12"/>',
   };
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.activity}</svg>`;
@@ -212,7 +230,7 @@ function landingPage() {
 
       <section class="cta-wrap" id="roadmap">
         <div class="cta-panel">
-          <div class="cta-copy"><p class="eyebrow">你的注意力值得被保护</p><h2>从今天开始，<br>只追踪重要的信号。</h2><p>账户与个性化偏好已可用，订阅匹配能力正在接入。</p></div>
+          <div class="cta-copy"><p class="eyebrow">你的注意力值得被保护</p><h2>从今天开始，<br>只追踪重要的信号。</h2><p>先整理你的关注范围，再用清晰的订阅规则保护每天有限的注意力。</p></div>
           <a class="button button-lime" href="${primaryTarget}" data-route>${primaryLabel} ${icon("arrowRight")}</a>
         </div>
       </section>
@@ -231,7 +249,7 @@ function authPage(mode) {
         <div class="auth-card">
           <p class="eyebrow">${isLogin ? "欢迎回来" : "建立你的研究雷达"}</p>
           <h1>${isLogin ? "继续捕捉信号" : "创建 SignalWatch"}</h1>
-          <p class="auth-intro">${expired ? "登录状态已失效，请重新登录。" : isLogin ? "登录后查看服务状态并管理你的摘要偏好。" : "只需一个账户，即可保存你的追踪和送达偏好。"}</p>
+          <p class="auth-intro">${expired ? "登录状态已失效，请重新登录。" : isLogin ? "登录后继续管理你的订阅和阅读偏好。" : "只需一个账户，即可保存你的订阅和阅读偏好。"}</p>
           <form id="auth-form" novalidate data-mode="${mode}">
             <div class="form-field">
               <label for="email">邮箱地址</label>
@@ -240,10 +258,10 @@ function authPage(mode) {
             </div>
             <div class="form-field">
               <div class="label-row"><label for="password">密码</label>${isLogin ? "" : "<span>至少 8 个字符</span>"}</div>
-              <div class="input-wrap">${icon("shield")}<input class="form-input" id="password" name="password" type="password" autocomplete="${isLogin ? "current-password" : "new-password"}" placeholder="输入你的密码" required><button class="password-toggle" type="button" aria-label="显示密码" data-password-toggle>${icon("eye")}</button></div>
+              <div class="input-wrap">${icon("shield")}<input class="form-input" id="password" name="password" type="password" autocomplete="${isLogin ? "current-password" : "new-password"}" placeholder="输入你的密码" required><button class="password-toggle" type="button" aria-label="显示密码" data-password-toggle data-password-target="password">${icon("eye")}</button></div>
               <p class="field-error" id="password-error" aria-live="polite"></p>
             </div>
-            ${isLogin ? "" : `<p class="form-note">${icon("info")}密码按原样保存为安全哈希，不会自动移除首尾空格；UTF-8 编码后最多 72 字节。</p>`}
+            ${isLogin ? "" : `<div class="form-field"><label for="confirm-password">再次输入密码</label><div class="input-wrap">${icon("shield")}<input class="form-input" id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" placeholder="再次输入相同密码" required><button class="password-toggle" type="button" aria-label="显示确认密码" data-password-toggle data-password-target="confirm-password">${icon("eye")}</button></div><p class="field-error" id="confirm-password-error" aria-live="polite"></p></div><p class="form-note">${icon("info")}密码必须同时包含字母和数字，最多 72 个 UTF-8 字节。</p>`}
             <button class="button button-primary button-full" type="submit" data-submit>${isLogin ? "登录工作台" : "创建账户"} ${icon("arrowRight")}</button>
           </form>
           <p class="auth-switch">${isLogin ? "还没有账户？" : "已经有账户？"} <a class="text-link" href="${isLogin ? "/register" : "/login"}" data-route>${isLogin ? "立即注册" : "直接登录"}</a></p>
@@ -260,23 +278,22 @@ function appLayout(content, active = "dashboard") {
   const profile = state.profile || {};
   const email = escapeHTML(profile.email || "正在读取账户…");
   const initial = escapeHTML((profile.email || "S").slice(0, 1).toUpperCase());
-  const isReady = state.readiness && state.readiness.status === "ready";
   return `<div class="app-shell">
     <aside class="sidebar">
       ${brand(true)}
       <p class="sidebar-label">工作区</p>
       <nav class="sidebar-nav" aria-label="工作区导航">
         <a class="sidebar-link ${active === "dashboard" ? "active" : ""}" href="/app" data-route>${icon("layout")}<span>概览</span></a>
-        <span class="sidebar-link sidebar-link-muted">${icon("layers")}<span>订阅</span><span class="soon-tag">即将开放</span></span>
+        <a class="sidebar-link ${active === "subscriptions" ? "active" : ""}" href="/subscriptions" data-route>${icon("layers")}<span>订阅</span></a>
         <a class="sidebar-link ${active === "settings" ? "active" : ""}" href="/settings" data-route>${icon("settings")}<span>偏好设置</span></a>
       </nav>
       <div class="sidebar-bottom">
-        <div class="service-mini"><div class="service-mini-row"><span>服务状态</span><span class="status-dot ${state.readiness ? (isReady ? "online" : "offline") : ""}"></span></div></div>
         <div class="account-chip"><span class="avatar">${initial}</span><span class="account-copy"><strong>${email}</strong><span>研究者账户</span></span><button class="logout-button" type="button" data-logout aria-label="退出登录" title="退出登录">${icon("logOut")}</button></div>
       </div>
     </aside>
     <nav class="mobile-bar" aria-label="移动端导航">
       <a class="mobile-link ${active === "dashboard" ? "active" : ""}" href="/app" data-route>${icon("layout")}<span>概览</span></a>
+      <a class="mobile-link ${active === "subscriptions" ? "active" : ""}" href="/subscriptions" data-route>${icon("layers")}<span>订阅</span></a>
       <a class="mobile-link ${active === "settings" ? "active" : ""}" href="/settings" data-route>${icon("settings")}<span>设置</span></a>
       <button class="mobile-link" type="button" data-logout>${icon("logOut")}<span>退出</span></button>
     </nav>
@@ -289,32 +306,155 @@ function dashboardPage() {
   const today = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long" }).format(new Date());
   const hour = new Date().getHours();
   const greeting = hour < 6 ? "夜深了" : hour < 12 ? "早上好" : hour < 18 ? "下午好" : "晚上好";
-  const ready = state.readiness && state.readiness.status === "ready";
-  const checked = Boolean(state.readiness);
   const deliveryTime = (profile && profile.digest_time) || "--:--";
   const timezone = escapeHTML((profile && profile.timezone) || "读取中");
   const maxItems = profile && profile.max_items_per_digest != null ? profile.max_items_per_digest : "--";
-  const systemBanner = checked
-    ? `<div class="system-banner ${ready ? "" : "error"}">${icon(ready ? "check" : "info")}<span>${ready ? "API、MySQL 与 Redis 均已就绪，当前服务运行正常。" : "依赖服务尚未全部就绪，请检查 MySQL 与 Redis 连接。"}</span></div>`
-    : `<div class="system-banner">${icon("activity")}<span>正在检查 SignalWatch 服务状态…</span></div>`;
+  const activeSubscriptions = state.activeSubscriptionTotal == null ? "--" : state.activeSubscriptionTotal;
 
-  const content = `<header class="workspace-header"><div><p class="eyebrow">SIGNAL DESK</p><h1>${greeting}</h1><p>这是你的 SignalWatch 控制台，账户能力已连接到真实后端。</p></div><span class="date-chip">${icon("calendar")} ${today}</span></header>
-    ${systemBanner}
+  const content = `<header class="workspace-header"><div><p class="eyebrow">SIGNAL DESK</p><h1>${greeting}</h1><p>查看你的阅读偏好，管理持续关注的研究主题。</p></div><span class="date-chip">${icon("calendar")} ${today}</span></header>
     <section class="metric-grid" aria-label="账户摘要">
-      <article class="metric-card"><div class="metric-top"><span>摘要送达</span><span class="metric-icon">${icon("clock")}</span></div><div class="metric-value"><strong>${escapeHTML(deliveryTime)}</strong><span>每日 · ${timezone}</span></div></article>
-      <article class="metric-card"><div class="metric-top"><span>单次上限</span><span class="metric-icon">${icon("inbox")}</span></div><div class="metric-value"><strong>${escapeHTML(maxItems)}</strong><span>条信号 / 摘要</span></div></article>
-      <article class="metric-card"><div class="metric-top"><span>活跃订阅</span><span class="metric-icon">${icon("layers")}</span></div><div class="metric-value"><strong>0</strong><span>订阅 API 待接入</span></div></article>
+      <article class="metric-card"><div class="metric-top"><span>阅读时间偏好</span><span class="metric-icon">${icon("clock")}</span></div><div class="metric-value"><strong>${escapeHTML(deliveryTime)}</strong><span>每日 · ${timezone}</span></div></article>
+      <article class="metric-card"><div class="metric-top"><span>每次阅读上限</span><span class="metric-icon">${icon("inbox")}</span></div><div class="metric-value"><strong>${escapeHTML(maxItems)}</strong><span>条内容</span></div></article>
+      <article class="metric-card"><div class="metric-top"><span>活跃订阅</span><span class="metric-icon">${icon("layers")}</span></div><div class="metric-value"><strong>${escapeHTML(activeSubscriptions)}</strong><span>最多可启用 20 条</span></div></article>
     </section>
     <section class="dashboard-grid">
-      <article class="content-card"><header class="card-header"><h2>今日信号</h2><span>订阅能力预览</span></header><div class="empty-signals"><div><div class="radar"><span class="radar-dot"></span></div><h3>雷达正在等待订阅</h3><p>数据库已经具备订阅、规则与来源结构；等对应 API 接入后，这里会成为你的每日论文信号流。</p></div></div></article>
-      <article class="content-card"><header class="card-header"><h2>能力进度</h2><span>当前版本</span></header><div class="roadmap-list">
-        <div class="roadmap-item"><span class="roadmap-check">${icon("check")}</span><span class="roadmap-copy"><strong>账户与安全认证</strong><span>注册、登录与 JWT 鉴权已完成</span></span></div>
-        <div class="roadmap-item"><span class="roadmap-check">${icon("check")}</span><span class="roadmap-copy"><strong>摘要偏好</strong><span>时区、时间和数量上限可保存</span></span></div>
-        <div class="roadmap-item"><span class="roadmap-check pending">${icon("activity")}</span><span class="roadmap-copy"><strong>订阅管理</strong><span>数据表已准备，业务 API 待实现</span></span></div>
-        <div class="roadmap-item"><span class="roadmap-check pending">${icon("activity")}</span><span class="roadmap-copy"><strong>内容采集与匹配</strong><span>Worker 当前仅提供运行心跳</span></span></div>
+      <article class="content-card"><header class="card-header"><h2>订阅概览</h2><a class="text-link" href="/subscriptions" data-route>管理订阅</a></header><div class="empty-signals"><div><div class="radar"><span class="radar-dot"></span></div><h3>${activeSubscriptions > 0 ? `正在管理 ${activeSubscriptions} 条活跃订阅` : "创建你的第一条订阅"}</h3><p>${activeSubscriptions > 0 ? "你可以随时调整分类、作者和关键词，也可以暂时停用不再需要的关注主题。" : "选择信息来源和分类，再用作者与关键词准确描述你关心的研究范围。"}</p><a class="button button-primary button-small empty-action" href="/subscriptions" data-route>${activeSubscriptions > 0 ? "查看订阅" : "创建订阅"} ${icon("arrowRight")}</a></div></div></article>
+      <article class="content-card"><header class="card-header"><h2>使用建议</h2><span>保持关注范围清晰</span></header><div class="roadmap-list">
+        <div class="roadmap-item"><span class="roadmap-check">${icon("check")}</span><span class="roadmap-copy"><strong>设置阅读偏好</strong><span>选择适合自己的时区、时间和数量上限</span></span></div>
+        <div class="roadmap-item"><span class="roadmap-check">${icon("layers")}</span><span class="roadmap-copy"><strong>定义关注范围</strong><span>使用分类、作者和包含关键词描述主题</span></span></div>
+        <div class="roadmap-item"><span class="roadmap-check">${icon("filter")}</span><span class="roadmap-copy"><strong>减少无关内容</strong><span>通过排除关键词持续优化每条订阅</span></span></div>
       </div></article>
     </section>`;
   return appLayout(content, "dashboard");
+}
+
+function formatDateTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function ruleValues(value) {
+  const seen = new Set();
+  return String(value || "")
+    .split(/[\n,，]+/u)
+    .map((item) => item.trim().replace(/\s+/gu, " "))
+    .filter((item) => {
+      const key = item.toLocaleLowerCase();
+      if (!item || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function sourceOptions(selectedId = "", includeAll = false, extraSource = null) {
+  const sources = [...(state.sources || [])];
+  if (extraSource && !sources.some((source) => source.id === extraSource.id)) sources.push(extraSource);
+  const options = sources.map((source) => {
+    const selected = String(source.id) === String(selectedId) ? "selected" : "";
+    return `<option value="${source.id}" ${selected}>${escapeHTML(source.name)} · ${escapeHTML(source.kind)}</option>`;
+  });
+  if (includeAll) options.unshift(`<option value="" ${selectedId === "" ? "selected" : ""}>全部来源</option>`);
+  else options.unshift('<option value="">请选择来源</option>');
+  return options.join("");
+}
+
+function rulePills(values, emptyText) {
+  if (!values || values.length === 0) return `<span class="rule-empty">${emptyText}</span>`;
+  return values.map((value) => `<span class="rule-pill">${escapeHTML(value)}</span>`).join("");
+}
+
+function subscriptionCard(item) {
+  const objective = item.objective || "未填写研究目标";
+  return `<article class="subscription-card" data-subscription-card="${item.id}">
+    <div class="subscription-main">
+      <header class="subscription-card-header">
+        <div><div class="subscription-meta"><span class="source-badge">${escapeHTML(item.source.name)}</span><span>v${item.version}</span><span>更新于 ${escapeHTML(formatDateTime(item.updated_at))}</span></div><h2>${escapeHTML(item.name)}</h2></div>
+        <span class="subscription-status ${item.enabled ? "enabled" : "paused"}">${item.enabled ? "监听中" : "已暂停"}</span>
+      </header>
+      <p class="subscription-objective">${escapeHTML(objective)}</p>
+      <div class="rule-groups">
+        <div class="rule-group"><strong>分类</strong><div>${rulePills(item.rules.categories, "未配置")}</div></div>
+        <div class="rule-group"><strong>作者</strong><div>${rulePills(item.rules.authors, "不限作者")}</div></div>
+        <div class="rule-group"><strong>包含关键词</strong><div>${rulePills(item.rules.include_keywords, "不限关键词")}</div></div>
+        <div class="rule-group exclude"><strong>排除关键词</strong><div>${rulePills(item.rules.exclude_keywords, "不排除")}</div></div>
+      </div>
+    </div>
+    <footer class="subscription-actions">
+      <button class="button button-ghost button-small" type="button" data-edit-subscription="${item.id}">${icon("edit")} 编辑</button>
+      <button class="button button-ghost button-small" type="button" data-toggle-subscription="${item.id}" data-version="${item.version}" data-enabled="${item.enabled}">${icon(item.enabled ? "pause" : "play")} ${item.enabled ? "暂停" : "启用"}</button>
+      <button class="icon-button danger" type="button" data-delete-subscription="${item.id}" data-version="${item.version}" data-name="${escapeHTML(item.name)}" aria-label="删除 ${escapeHTML(item.name)}" title="删除">${icon("trash")}</button>
+    </footer>
+  </article>`;
+}
+
+function categoryChoices(source, selected = []) {
+  if (!source) return '<p class="category-hint">请先选择来源。</p>';
+  if (!(source.rule_types || []).includes("category")) return '<p class="category-hint error">这个来源不支持分类规则，暂时无法创建订阅。</p>';
+  const allowed = source.allowed_categories || [];
+  if (allowed.length === 0) return '<p class="category-hint error">这个来源没有可用分类，暂时无法创建订阅。</p>';
+  const selectedSet = new Set(selected);
+  return allowed.map((category) => `<label class="category-choice"><input type="checkbox" name="categories" value="${escapeHTML(category)}" ${selectedSet.has(category) ? "checked" : ""}><span>${escapeHTML(category)}</span></label>`).join("");
+}
+
+function subscriptionEditorModal() {
+  const editor = state.subscriptionEditor;
+  if (!editor) return "";
+  const item = editor.item;
+  const editing = editor.mode === "edit";
+  const selectedSourceId = editing ? item.source.id : editor.sourceId;
+  const source = (state.sources || []).find((candidate) => String(candidate.id) === String(selectedSourceId)) || (editing ? item.source : null);
+  const rules = editing ? item.rules : { categories: [], authors: [], include_keywords: [], exclude_keywords: [] };
+  const ruleTypes = new Set(source ? source.rule_types || [] : []);
+  const authorDisabled = source && !ruleTypes.has("author") ? "disabled" : "";
+  const includeDisabled = source && !ruleTypes.has("include_keyword") ? "disabled" : "";
+  const excludeDisabled = source && !ruleTypes.has("exclude_keyword") ? "disabled" : "";
+  return `<div class="modal-backdrop" data-close-editor>
+    <section class="subscription-modal" role="dialog" aria-modal="true" aria-labelledby="subscription-editor-title" data-modal-panel>
+      <header class="modal-header"><div><p class="eyebrow">${editing ? "EDIT SIGNAL" : "NEW SIGNAL"}</p><h2 id="subscription-editor-title">${editing ? "编辑订阅" : "创建订阅"}</h2></div><button class="icon-button" type="button" data-close-editor aria-label="关闭">${icon("x")}</button></header>
+      <form id="subscription-form" class="subscription-form" data-mode="${editor.mode}" data-version="${editing ? item.version : ""}" data-id="${editing ? item.id : ""}" novalidate>
+        <div class="form-row">
+          <div class="form-field"><label for="subscription-source">信息来源</label><select class="form-select" id="subscription-source" name="source_id" ${editing ? "disabled" : ""} required>${sourceOptions(selectedSourceId, false, editing ? item.source : null)}</select><p class="input-help">创建后不可更换来源。</p></div>
+          <div class="form-field"><label for="subscription-name">订阅名称</label><input class="form-input plain-input" id="subscription-name" name="name" maxlength="100" value="${editing ? escapeHTML(item.name) : ""}" placeholder="例如：测试时自适应" required><p class="field-error" data-error="name"></p></div>
+        </div>
+        <div class="form-field"><div class="label-row"><label for="subscription-objective">研究目标</label><span>可选 · 最多 500 字</span></div><textarea class="form-textarea" id="subscription-objective" name="objective" maxlength="500" rows="3" placeholder="这条订阅希望帮你持续关注什么？">${editing ? escapeHTML(item.objective || "") : ""}</textarea></div>
+        <fieldset class="rule-fieldset"><legend>分类 <span>至少选择 1 个，最多 10 个</span></legend><div class="category-grid" data-category-choices>${categoryChoices(source, rules.categories)}</div><p class="field-error" data-error="categories"></p></fieldset>
+        <div class="form-row rule-text-row">
+          <div class="form-field"><div class="label-row"><label for="subscription-authors">作者</label><span>最多 20 个</span></div><textarea class="form-textarea" id="subscription-authors" name="authors" rows="3" placeholder="${authorDisabled ? "当前来源不支持作者规则" : "每行或逗号分隔"}" ${authorDisabled}>${escapeHTML(rules.authors.join("\n"))}</textarea></div>
+          <div class="form-field"><div class="label-row"><label for="subscription-includes">包含关键词</label><span>最多 30 个</span></div><textarea class="form-textarea" id="subscription-includes" name="include_keywords" rows="3" placeholder="${includeDisabled ? "当前来源不支持包含关键词" : "例如：calibration, uncertainty"}" ${includeDisabled}>${escapeHTML(rules.include_keywords.join("\n"))}</textarea></div>
+        </div>
+        <div class="form-field"><div class="label-row"><label for="subscription-excludes">排除关键词</label><span>最多 30 个</span></div><textarea class="form-textarea" id="subscription-excludes" name="exclude_keywords" rows="2" placeholder="${excludeDisabled ? "当前来源不支持排除关键词" : "不希望命中的主题"}" ${excludeDisabled}>${escapeHTML(rules.exclude_keywords.join("\n"))}</textarea><p class="field-error" data-error="rules"></p></div>
+        <label class="enabled-control"><input type="checkbox" name="enabled" ${!editing || item.enabled ? "checked" : ""}><span><strong>立即启用</strong><small>启用的订阅会计入每人最多 20 条的上限。</small></span></label>
+        <footer class="modal-actions"><button class="button button-ghost" type="button" data-close-editor>取消</button><button class="button button-primary" type="submit" data-submit>${editing ? `${icon("save")} 保存修改` : `${icon("plus")} 创建订阅`}</button></footer>
+      </form>
+    </section>
+  </div>`;
+}
+
+function subscriptionsPage() {
+  const result = state.subscriptionPage || { items: [], page: 1, page_size: 20, total: 0 };
+  const filters = state.subscriptionFilters;
+  const totalPages = Math.max(1, Math.ceil(result.total / result.page_size));
+  const list = result.items.length
+    ? `<div class="subscription-list">${result.items.map(subscriptionCard).join("")}</div>`
+    : `<div class="subscriptions-empty"><span>${icon("layers")}</span><h2>${filters.enabled || filters.sourceId ? "没有符合筛选条件的订阅" : "建立第一条研究信号"}</h2><p>${filters.enabled || filters.sourceId ? "调整筛选条件，或创建一条新的订阅。" : "选择来源和分类，再用作者、包含及排除关键词收窄范围。"}</p><button class="button button-primary" type="button" data-new-subscription>${icon("plus")} 创建订阅</button></div>`;
+  const content = `<header class="workspace-header subscriptions-heading"><div><p class="eyebrow">SUBSCRIPTIONS</p><h1>订阅管理</h1><p>集中管理你关注的信息来源、分类、作者和关键词。</p></div><button class="button button-primary" type="button" data-new-subscription>${icon("plus")} 新建订阅</button></header>
+    <section class="subscription-toolbar" aria-label="订阅筛选">
+      <div><strong>${result.total}</strong><span>条订阅</span></div>
+      <label><span>状态</span><select class="form-select compact-select" data-filter-enabled><option value="" ${filters.enabled === "" ? "selected" : ""}>全部状态</option><option value="true" ${filters.enabled === "true" ? "selected" : ""}>监听中</option><option value="false" ${filters.enabled === "false" ? "selected" : ""}>已暂停</option></select></label>
+      <label><span>来源</span><select class="form-select compact-select" data-filter-source>${sourceOptions(filters.sourceId, true)}</select></label>
+      <button class="icon-button" type="button" data-refresh-subscriptions aria-label="刷新订阅" title="刷新">${icon("refresh")}</button>
+    </section>
+    ${list}
+    ${result.total > result.page_size ? `<nav class="pagination" aria-label="订阅分页"><button class="button button-ghost button-small" type="button" data-subscription-page="${result.page - 1}" ${result.page <= 1 ? "disabled" : ""}>${icon("chevronLeft")} 上一页</button><span>第 ${result.page} / ${totalPages} 页</span><button class="button button-ghost button-small" type="button" data-subscription-page="${result.page + 1}" ${result.page >= totalPages ? "disabled" : ""}>下一页 ${icon("chevronRight")}</button></nav>` : ""}
+    ${subscriptionEditorModal()}`;
+  return appLayout(content, "subscriptions");
 }
 
 const commonTimezones = [
@@ -352,14 +492,14 @@ function settingsPage() {
       </article>
       <aside class="content-card profile-panel">
         <div class="profile-hero"><span class="profile-avatar">${initial}</span><h3>${escapeHTML(profile.email || "正在读取…")}</h3><p>SignalWatch ID · ${escapeHTML(profile.id || "—")}</p></div>
-        <div class="profile-details"><div class="detail-row"><span>账户状态</span><strong class="status-pill">${profile.status === "active" ? "正常" : escapeHTML(profile.status || "—")}</strong></div><div class="detail-row"><span>注册时间</span><strong>${escapeHTML(createdAt)}</strong></div><div class="detail-row"><span>认证方式</span><strong>Bearer JWT</strong></div></div>
+        <div class="profile-details"><div class="detail-row"><span>账户状态</span><strong class="status-pill">${profile.status === "active" ? "正常" : escapeHTML(profile.status || "—")}</strong></div><div class="detail-row"><span>注册时间</span><strong>${escapeHTML(createdAt)}</strong></div><div class="detail-row"><span>当前时区</span><strong>${escapeHTML(currentTimezone)}</strong></div></div>
       </aside>
     </section>`;
   return appLayout(content, "settings");
 }
 
 function loadingPage(active) {
-  const content = `<header class="workspace-header"><div><p class="eyebrow">SIGNALWATCH</p><h1>正在同步账户</h1><p>正在从 API 安全读取你的个性化设置…</p></div></header><section class="metric-grid"><div class="metric-card"><div class="skeleton">正在加载账户信息</div></div><div class="metric-card"><div class="skeleton">正在加载账户信息</div></div><div class="metric-card"><div class="skeleton">正在加载账户信息</div></div></section>`;
+  const content = `<header class="workspace-header"><div><p class="eyebrow">SIGNALWATCH</p><h1>正在准备你的工作区</h1><p>正在读取你的账户、偏好和订阅信息…</p></div></header><section class="metric-grid"><div class="metric-card"><div class="skeleton">正在加载账户信息</div></div><div class="metric-card"><div class="skeleton">正在加载账户信息</div></div><div class="metric-card"><div class="skeleton">正在加载账户信息</div></div></section>`;
   return appLayout(content, active);
 }
 
@@ -372,6 +512,10 @@ function translateError(error) {
     AUTH_INVALID_CREDENTIALS: "邮箱或密码不正确。",
     AUTH_UNAUTHORIZED: "登录状态已失效，请重新登录。",
     EMAIL_ALREADY_REGISTERED: "这个邮箱已经注册，可以直接登录。",
+    SOURCE_NOT_FOUND: "信息来源不存在或已经停用。",
+    SUBSCRIPTION_LIMIT_REACHED: "最多只能同时启用 20 条订阅，请先暂停其他订阅。",
+    SUBSCRIPTION_NOT_FOUND: "订阅不存在、已删除，或你没有访问权限。",
+    SUBSCRIPTION_VERSION_CONFLICT: "订阅已被其他请求修改，请刷新后重试。",
     VALIDATION_ERROR: "提交的信息不符合要求，请检查后重试。",
     INTERNAL_ERROR: "服务暂时遇到问题，请稍后再试。",
   };
@@ -406,12 +550,14 @@ function setupAuthForm() {
   const form = document.querySelector("#auth-form");
   if (!form) return;
   const password = form.elements.password;
-  const toggle = form.querySelector("[data-password-toggle]");
-  toggle.addEventListener("click", () => {
-    const visible = password.type === "text";
-    password.type = visible ? "password" : "text";
-    toggle.setAttribute("aria-label", visible ? "显示密码" : "隐藏密码");
-    toggle.innerHTML = icon(visible ? "eye" : "eyeOff");
+  form.querySelectorAll("[data-password-toggle]").forEach((toggle) => {
+    toggle.addEventListener("click", () => {
+      const input = form.querySelector(`#${toggle.dataset.passwordTarget}`);
+      const visible = input.type === "text";
+      input.type = visible ? "password" : "text";
+      toggle.setAttribute("aria-label", visible ? "显示密码" : "隐藏密码");
+      toggle.innerHTML = icon(visible ? "eye" : "eyeOff");
+    });
   });
 
   form.addEventListener("submit", async (event) => {
@@ -419,12 +565,16 @@ function setupAuthForm() {
     const mode = form.dataset.mode;
     const email = form.elements.email.value.trim();
     const passwordValue = password.value;
+    const confirmPassword = form.elements.confirm_password;
     const emailError = form.querySelector("#email-error");
     const passwordError = form.querySelector("#password-error");
+    const confirmPasswordError = form.querySelector("#confirm-password-error");
     emailError.textContent = "";
     passwordError.textContent = "";
+    if (confirmPasswordError) confirmPasswordError.textContent = "";
     form.elements.email.removeAttribute("aria-invalid");
     password.removeAttribute("aria-invalid");
+    if (confirmPassword) confirmPassword.removeAttribute("aria-invalid");
 
     let valid = true;
     if (!email || !form.elements.email.validity.valid) {
@@ -433,9 +583,26 @@ function setupAuthForm() {
       valid = false;
     }
     const passwordBytes = new TextEncoder().encode(passwordValue).length;
-    if (!passwordValue || (mode === "register" && ([...passwordValue].length < 8 || passwordBytes > 72))) {
-      passwordError.textContent = mode === "register" ? "密码需至少 8 个字符，且不能超过 72 字节。" : "请输入密码。";
+    if (!passwordValue) {
+      passwordError.textContent = "请输入密码。";
       password.setAttribute("aria-invalid", "true");
+      valid = false;
+    } else if (mode === "register" && ([...passwordValue].length < 8 || passwordBytes > 72)) {
+      passwordError.textContent = "密码需至少 8 个字符，且不能超过 72 个 UTF-8 字节。";
+      password.setAttribute("aria-invalid", "true");
+      valid = false;
+    } else if (mode === "register" && (!/\p{L}/u.test(passwordValue) || !/\p{N}/u.test(passwordValue))) {
+      passwordError.textContent = "密码必须同时包含字母和数字。";
+      password.setAttribute("aria-invalid", "true");
+      valid = false;
+    }
+    if (mode === "register" && !confirmPassword.value) {
+      confirmPasswordError.textContent = "请再次输入密码。";
+      confirmPassword.setAttribute("aria-invalid", "true");
+      valid = false;
+    } else if (mode === "register" && confirmPassword.value !== passwordValue) {
+      confirmPasswordError.textContent = "两次输入的密码不一致。";
+      confirmPassword.setAttribute("aria-invalid", "true");
       valid = false;
     }
     if (!valid) return;
@@ -461,6 +628,277 @@ function setupAuthForm() {
       setButtonBusy(button, false, idleText, "");
     }
   });
+}
+
+function renderSubscriptions() {
+  app.innerHTML = subscriptionsPage();
+  setupPage();
+}
+
+async function loadSubscriptions() {
+  const filters = state.subscriptionFilters;
+  const query = new URLSearchParams({
+    page: String(filters.page),
+    page_size: "20",
+  });
+  if (filters.enabled !== "") query.set("enabled", filters.enabled);
+  if (filters.sourceId !== "") query.set("source_id", filters.sourceId);
+  state.subscriptionPage = await apiRequest(`/subscriptions?${query}`, { method: "GET", auth: true });
+}
+
+async function loadSubscriptionWorkspace() {
+  const [sources] = await Promise.all([
+    apiRequest("/sources", { method: "GET", auth: true }),
+    loadSubscriptions(),
+  ]);
+  state.sources = sources;
+}
+
+function closeSubscriptionEditor() {
+  state.subscriptionEditor = null;
+  renderSubscriptions();
+}
+
+async function refreshSubscriptions(message = "") {
+  await loadSubscriptions();
+  renderSubscriptions();
+  if (message) showToast("订阅已刷新", message, "success");
+}
+
+function validateSubscriptionForm(form) {
+  const name = form.elements.name.value.trim();
+  const categories = [...form.querySelectorAll('input[name="categories"]:checked')].map((input) => input.value);
+  const rules = {
+    categories,
+    authors: ruleValues(form.elements.authors.value),
+    include_keywords: ruleValues(form.elements.include_keywords.value),
+    exclude_keywords: ruleValues(form.elements.exclude_keywords.value),
+  };
+  form.querySelectorAll("[data-error]").forEach((element) => { element.textContent = ""; });
+  form.elements.name.removeAttribute("aria-invalid");
+
+  if (!name || [...name].length > 100) {
+    form.querySelector('[data-error="name"]').textContent = "请输入 1–100 个字符的订阅名称。";
+    form.elements.name.setAttribute("aria-invalid", "true");
+    return null;
+  }
+  if (categories.length < 1 || categories.length > 10) {
+    form.querySelector('[data-error="categories"]').textContent = "请选择 1–10 个分类。";
+    return null;
+  }
+  const limits = { authors: 20, include_keywords: 30, exclude_keywords: 30 };
+  const invalidGroup = Object.entries(limits).find(([key, limit]) => rules[key].length > limit || rules[key].some((value) => [...value].length > 100));
+  if (invalidGroup) {
+    form.querySelector('[data-error="rules"]').textContent = "作者或关键词数量超限，且每一项不能超过 100 个字符。";
+    return null;
+  }
+
+  const objective = form.elements.objective.value.trim();
+  return {
+    source_id: Number(form.elements.source_id.value),
+    name,
+    objective: objective || null,
+    enabled: form.elements.enabled.checked,
+    rules,
+  };
+}
+
+async function handleSubscriptionConflict(error) {
+  if (!(error instanceof ApiError)) return false;
+  if (error.status === 401) return true;
+  if (error.code !== "SUBSCRIPTION_VERSION_CONFLICT") return false;
+  state.subscriptionEditor = null;
+  await loadSubscriptions();
+  renderSubscriptions();
+  showToast("订阅已发生变化", "服务器上的版本更新，列表已刷新，请重新操作。", "error");
+  return true;
+}
+
+function setupSubscriptionForm() {
+  const form = document.querySelector("#subscription-form");
+  if (!form) return;
+  const sourceSelect = form.elements.source_id;
+  if (!sourceSelect.disabled) {
+    sourceSelect.addEventListener("change", () => {
+      state.subscriptionEditor.sourceId = sourceSelect.value;
+      const source = (state.sources || []).find((candidate) => String(candidate.id) === sourceSelect.value);
+      form.querySelector("[data-category-choices]").innerHTML = categoryChoices(source, []);
+      const supported = new Set(source ? source.rule_types || [] : []);
+      const controls = [
+        [form.elements.authors, "author", "每行或逗号分隔", "当前来源不支持作者规则"],
+        [form.elements.include_keywords, "include_keyword", "例如：calibration, uncertainty", "当前来源不支持包含关键词"],
+        [form.elements.exclude_keywords, "exclude_keyword", "不希望命中的主题", "当前来源不支持排除关键词"],
+      ];
+      controls.forEach(([control, ruleType, availablePlaceholder, unavailablePlaceholder]) => {
+        control.disabled = Boolean(source) && !supported.has(ruleType);
+        control.placeholder = control.disabled ? unavailablePlaceholder : availablePlaceholder;
+        if (control.disabled) control.value = "";
+      });
+    });
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const payload = validateSubscriptionForm(form);
+    if (!payload) return;
+    if (!payload.source_id) {
+      showToast("请选择来源", "创建订阅前需要选择一个可用信息来源。", "error");
+      return;
+    }
+
+    const button = form.querySelector("[data-submit]");
+    const idleText = button.innerHTML;
+    setButtonBusy(button, true, idleText, "正在保存");
+    try {
+      if (form.dataset.mode === "edit") {
+        delete payload.source_id;
+        await apiRequest(`/subscriptions/${form.dataset.id}`, {
+          method: "PATCH",
+          auth: true,
+          headers: { "If-Match": `"${form.dataset.version}"` },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await apiRequest("/subscriptions", {
+          method: "POST",
+          auth: true,
+          body: JSON.stringify(payload),
+        });
+        state.subscriptionFilters.page = 1;
+      }
+      state.subscriptionEditor = null;
+      await loadSubscriptions();
+      renderSubscriptions();
+      showToast(form.dataset.mode === "edit" ? "订阅已更新" : "订阅已创建", "规则已安全保存。", "success");
+    } catch (error) {
+      if (await handleSubscriptionConflict(error)) return;
+      showToast("保存失败", error instanceof ApiError ? translateError(error) : "请稍后重试。", "error");
+      if (document.body.contains(button)) setButtonBusy(button, false, idleText, "");
+    }
+  });
+}
+
+function setupSubscriptionsPage() {
+  document.querySelectorAll("[data-new-subscription]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.subscriptionEditor = {
+        mode: "create",
+        sourceId: state.sources && state.sources.length ? String(state.sources[0].id) : "",
+      };
+      renderSubscriptions();
+      const nameInput = document.querySelector("#subscription-name");
+      if (nameInput) nameInput.focus();
+    });
+  });
+
+  document.querySelectorAll("[data-close-editor]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (element.hasAttribute("data-modal-panel")) return;
+      if (event.target.closest("[data-modal-panel]") && event.currentTarget.classList.contains("modal-backdrop")) return;
+      closeSubscriptionEditor();
+    });
+  });
+  const modalPanel = document.querySelector("[data-modal-panel]");
+  if (modalPanel) modalPanel.addEventListener("click", (event) => event.stopPropagation());
+
+  document.querySelectorAll("[data-edit-subscription]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const idleText = button.innerHTML;
+      setButtonBusy(button, true, idleText, "读取中");
+      try {
+        const item = await apiRequest(`/subscriptions/${button.dataset.editSubscription}`, { method: "GET", auth: true });
+        state.subscriptionEditor = { mode: "edit", item };
+        renderSubscriptions();
+        const nameInput = document.querySelector("#subscription-name");
+        if (nameInput) nameInput.focus();
+      } catch (error) {
+        showToast("无法打开订阅", error instanceof ApiError ? translateError(error) : "请稍后重试。", "error");
+        if (document.body.contains(button)) setButtonBusy(button, false, idleText, "");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-toggle-subscription]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const enabled = button.dataset.enabled === "true";
+      const idleText = button.innerHTML;
+      setButtonBusy(button, true, idleText, enabled ? "暂停中" : "启用中");
+      try {
+        await apiRequest(`/subscriptions/${button.dataset.toggleSubscription}`, {
+          method: "PATCH",
+          auth: true,
+          headers: { "If-Match": `"${button.dataset.version}"` },
+          body: JSON.stringify({ enabled: !enabled }),
+        });
+        await refreshSubscriptions(enabled ? "该订阅已暂停。" : "该订阅已开始监听。 ");
+      } catch (error) {
+        if (await handleSubscriptionConflict(error)) return;
+        showToast("状态修改失败", error instanceof ApiError ? translateError(error) : "请稍后重试。", "error");
+        if (document.body.contains(button)) setButtonBusy(button, false, idleText, "");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-delete-subscription]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!window.confirm(`确认删除“${button.dataset.name}”？删除后不会出现在列表中。`)) return;
+      button.disabled = true;
+      try {
+        await apiRequest(`/subscriptions/${button.dataset.deleteSubscription}`, {
+          method: "DELETE",
+          auth: true,
+          headers: { "If-Match": `"${button.dataset.version}"` },
+        });
+        if (state.subscriptionPage.items.length === 1 && state.subscriptionFilters.page > 1) state.subscriptionFilters.page--;
+        await refreshSubscriptions("订阅已删除。 ");
+      } catch (error) {
+        if (await handleSubscriptionConflict(error)) return;
+        showToast("删除失败", error instanceof ApiError ? translateError(error) : "请稍后重试。", "error");
+        if (document.body.contains(button)) button.disabled = false;
+      }
+    });
+  });
+
+  const enabledFilter = document.querySelector("[data-filter-enabled]");
+  if (enabledFilter) enabledFilter.addEventListener("change", async (event) => {
+    state.subscriptionFilters.enabled = event.target.value;
+    state.subscriptionFilters.page = 1;
+    try {
+      await refreshSubscriptions();
+    } catch (error) {
+      showToast("筛选失败", error instanceof ApiError ? translateError(error) : "请稍后重试。", "error");
+    }
+  });
+  const sourceFilter = document.querySelector("[data-filter-source]");
+  if (sourceFilter) sourceFilter.addEventListener("change", async (event) => {
+    state.subscriptionFilters.sourceId = event.target.value;
+    state.subscriptionFilters.page = 1;
+    try {
+      await refreshSubscriptions();
+    } catch (error) {
+      showToast("筛选失败", error instanceof ApiError ? translateError(error) : "请稍后重试。", "error");
+    }
+  });
+  const refreshButton = document.querySelector("[data-refresh-subscriptions]");
+  if (refreshButton) refreshButton.addEventListener("click", async () => {
+    try {
+      await refreshSubscriptions("已同步服务器上的最新状态。");
+    } catch (error) {
+      showToast("刷新失败", error instanceof ApiError ? translateError(error) : "请稍后重试。", "error");
+    }
+  });
+  document.querySelectorAll("[data-subscription-page]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.subscriptionFilters.page = Number(button.dataset.subscriptionPage);
+      try {
+        await refreshSubscriptions();
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } catch (error) {
+        showToast("翻页失败", error instanceof ApiError ? translateError(error) : "请稍后重试。", "error");
+      }
+    });
+  });
+  setupSubscriptionForm();
 }
 
 function setupSettingsForm() {
@@ -500,13 +938,14 @@ async function loadAccount() {
   state.profile = await apiRequest("/me", { method: "GET", auth: true });
 }
 
-async function loadSystemStatus() {
-  const [health, readiness] = await Promise.allSettled([
-    apiRequest("/healthz"),
-    apiRequest("/readyz"),
-  ]);
-  state.health = health.status === "fulfilled" ? health.value : { status: "offline" };
-  state.readiness = readiness.status === "fulfilled" ? readiness.value : { status: "not_ready" };
+async function loadDashboardData() {
+  try {
+    const result = await apiRequest("/subscriptions?page=1&page_size=1&enabled=true", { method: "GET", auth: true });
+    state.activeSubscriptionTotal = result.total;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) throw error;
+    state.activeSubscriptionTotal = null;
+  }
 }
 
 async function renderProtected(pathname) {
@@ -515,7 +954,7 @@ async function renderProtected(pathname) {
     return;
   }
 
-  const active = pathname === "/settings" ? "settings" : "dashboard";
+  const active = pathname === "/settings" ? "settings" : pathname === "/subscriptions" ? "subscriptions" : "dashboard";
   if (!state.profile) {
     app.innerHTML = loadingPage(active);
     setupPage();
@@ -523,7 +962,7 @@ async function renderProtected(pathname) {
       await loadAccount();
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) return;
-      app.innerHTML = appLayout(`<header class="workspace-header"><div><p class="eyebrow">CONNECTION ERROR</p><h1>账户暂时无法读取</h1><p>${escapeHTML(translateError(error))}</p></div></header><button class="button button-primary" type="button" data-retry>重新尝试</button>`, active);
+      app.innerHTML = appLayout(`<header class="workspace-header"><div><p class="eyebrow">请稍后重试</p><h1>账户暂时无法读取</h1><p>${escapeHTML(translateError(error))}</p></div></header><button class="button button-primary" type="button" data-retry>重新尝试</button>`, active);
       setupPage();
       const retry = document.querySelector("[data-retry]");
       if (retry) retry.addEventListener("click", route);
@@ -531,8 +970,22 @@ async function renderProtected(pathname) {
     }
   }
 
-  if (active === "dashboard") await loadSystemStatus();
-  app.innerHTML = active === "settings" ? settingsPage() : dashboardPage();
+  if (active === "dashboard") await loadDashboardData();
+  if (active === "subscriptions") {
+    app.innerHTML = loadingPage(active);
+    setupPage();
+    try {
+      await loadSubscriptionWorkspace();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) return;
+      app.innerHTML = appLayout(`<header class="workspace-header"><div><p class="eyebrow">请稍后重试</p><h1>订阅暂时无法读取</h1><p>${escapeHTML(translateError(error))}</p></div></header><button class="button button-primary" type="button" data-retry>重新尝试</button>`, active);
+      setupPage();
+      const retry = document.querySelector("[data-retry]");
+      if (retry) retry.addEventListener("click", route);
+      return;
+    }
+  }
+  app.innerHTML = active === "settings" ? settingsPage() : active === "subscriptions" ? subscriptionsPage() : dashboardPage();
   setupPage();
 }
 
@@ -548,11 +1001,12 @@ function setupPage() {
     button.addEventListener("click", () => {
       clearSession();
       navigate("/", true);
-      showToast("已安全退出", "本机保存的访问令牌已经清除。", "success");
+      showToast("已安全退出", "你已退出当前账户。", "success");
     });
   });
   setupAuthForm();
   setupSettingsForm();
+  setupSubscriptionsPage();
 }
 
 function route() {
@@ -571,7 +1025,7 @@ function route() {
     setupPage();
     return;
   }
-  if (pathname === "/app" || pathname === "/settings") {
+  if (pathname === "/app" || pathname === "/subscriptions" || pathname === "/settings") {
     renderProtected(pathname);
     return;
   }

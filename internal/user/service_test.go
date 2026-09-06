@@ -128,6 +128,22 @@ func TestServiceRegisterRejectsInvalidInputBeforePersistence(t *testing.T) {
 			},
 			want: ErrInvalidPassword,
 		},
+		{
+			name: "password has no number",
+			input: RegisterInput{
+				Email:    "alice@example.com",
+				Password: "onlyletters",
+			},
+			want: ErrInvalidPassword,
+		},
+		{
+			name: "password has no letter",
+			input: RegisterInput{
+				Email:    "alice@example.com",
+				Password: "12345678",
+			},
+			want: ErrInvalidPassword,
+		},
 	}
 
 	for _, test := range tests {
@@ -165,19 +181,17 @@ func TestIsValidPasswordUsesUnicodeCharactersAndBcryptByteLimit(t *testing.T) {
 			password: "seven77",
 			want:     false,
 		},
-		{
-			name:     "eight unicode characters",
-			password: strings.Repeat("界", 8),
-			want:     true,
-		},
+		{name: "unicode letters and number", password: "研究信号abc1", want: true},
+		{name: "letters without number", password: "abcdefgh", want: false},
+		{name: "numbers without letter", password: "12345678", want: false},
 		{
 			name:     "exactly seventy two UTF-8 bytes",
-			password: strings.Repeat("界", 24),
+			password: "A1" + strings.Repeat("界", 23) + "x",
 			want:     true,
 		},
 		{
 			name:     "more than seventy two UTF-8 bytes",
-			password: strings.Repeat("界", 25),
+			password: "A1" + strings.Repeat("界", 24),
 			want:     false,
 		},
 	}

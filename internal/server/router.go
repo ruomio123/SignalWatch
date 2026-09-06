@@ -28,6 +28,10 @@ type Dependencies struct {
 	ListSourcesHandler        gin.HandlerFunc
 	GetSourceHandler          gin.HandlerFunc
 	CreateSubscriptionHandler gin.HandlerFunc
+	ListSubscriptionsHandler  gin.HandlerFunc
+	GetSubscriptionHandler    gin.HandlerFunc
+	UpdateSubscriptionHandler gin.HandlerFunc
+	DeleteSubscriptionHandler gin.HandlerFunc
 }
 
 // NewRouter 创建并配置 SignalWatch API 的 Gin Router。
@@ -105,6 +109,10 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 		dependencies.ListSourcesHandler,
 		dependencies.GetSourceHandler,
 		dependencies.CreateSubscriptionHandler,
+		dependencies.ListSubscriptionsHandler,
+		dependencies.GetSubscriptionHandler,
+		dependencies.UpdateSubscriptionHandler,
+		dependencies.DeleteSubscriptionHandler,
 	)
 
 	web.RegisterRoutes(router)
@@ -173,6 +181,18 @@ func validateDependencies(dependencies Dependencies) error {
 	if dependencies.CreateSubscriptionHandler == nil {
 		return errors.New("create subscription handler is required")
 	}
+	if dependencies.ListSubscriptionsHandler == nil {
+		return errors.New("list subscriptions handler is required")
+	}
+	if dependencies.GetSubscriptionHandler == nil {
+		return errors.New("get subscription handler is required")
+	}
+	if dependencies.UpdateSubscriptionHandler == nil {
+		return errors.New("update subscription handler is required")
+	}
+	if dependencies.DeleteSubscriptionHandler == nil {
+		return errors.New("delete subscription handler is required")
+	}
 
 	return nil
 }
@@ -188,6 +208,10 @@ func registerAPIV1Routes(
 	listSourcesHandler gin.HandlerFunc,
 	getSourceHandler gin.HandlerFunc,
 	createSubscriptionHandler gin.HandlerFunc,
+	listSubscriptionsHandler gin.HandlerFunc,
+	getSubscriptionHandler gin.HandlerFunc,
+	updateSubscriptionHandler gin.HandlerFunc,
+	deleteSubscriptionHandler gin.HandlerFunc,
 ) {
 	auth := apiV1.Group("/auth")
 	auth.POST("/register", registerHandler)
@@ -207,4 +231,8 @@ func registerAPIV1Routes(
 	protected.GET("/sources", listSourcesHandler)
 	protected.GET("/sources/:id", getSourceHandler)
 	protected.POST("/subscriptions", createSubscriptionHandler)
+	protected.GET("/subscriptions", listSubscriptionsHandler)
+	protected.GET("/subscriptions/:id", getSubscriptionHandler)
+	protected.PATCH("/subscriptions/:id", updateSubscriptionHandler)
+	protected.DELETE("/subscriptions/:id", deleteSubscriptionHandler)
 }

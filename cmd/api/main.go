@@ -120,6 +120,10 @@ func main() {
 		ListSourcesHandler:        sourceHandler.List,
 		GetSourceHandler:          sourceHandler.Get,
 		CreateSubscriptionHandler: subscriptionHandler.Create,
+		ListSubscriptionsHandler:  subscriptionHandler.List,
+		GetSubscriptionHandler:    subscriptionHandler.Get,
+		UpdateSubscriptionHandler: subscriptionHandler.Update,
+		DeleteSubscriptionHandler: subscriptionHandler.Delete,
 	})
 	if err != nil {
 		logger.Error(
