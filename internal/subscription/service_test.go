@@ -35,8 +35,7 @@ func TestServiceCreatePersistsNormalizedSubscriptionAndDefaultsEnabled(t *testin
 		Name:      "  Agent papers  ",
 		Objective: &objective,
 		Rules: RulesInput{
-			Categories: []string{"cs.ai"}, Authors: []string{" Jane\tDoe "},
-			IncludeKeywords: []string{"Tool Use"}, ExcludeKeywords: []string{"SURVEY"},
+			Categories: []string{"cs.ai"}, IncludeKeywords: []string{"Tool Use"},
 		},
 	})
 	if err != nil {
@@ -47,13 +46,11 @@ func TestServiceCreatePersistsNormalizedSubscriptionAndDefaultsEnabled(t *testin
 		captured.Version != InitialVersion {
 		t.Fatalf("unexpected persisted subscription %+v", captured)
 	}
-	if len(capturedRules) != 4 {
-		t.Fatalf("expected four rules, got %+v", capturedRules)
+	if len(capturedRules) != 2 {
+		t.Fatalf("expected category and keyword rules, got %+v", capturedRules)
 	}
 	if capturedRules[0].RuleValue != "cs.AI" || capturedRules[0].NormalizedValue != "cs.AI" ||
-		capturedRules[1].NormalizedValue != "jane doe" ||
-		capturedRules[2].NormalizedValue != "tool use" ||
-		capturedRules[3].NormalizedValue != "survey" {
+		capturedRules[1].NormalizedValue != "tool use" {
 		t.Fatalf("unexpected normalized persistence rules %+v", capturedRules)
 	}
 	if created.ID != 88 || created.Source.ID != 1 || !created.Enabled || created.Version != 1 ||
@@ -258,8 +255,7 @@ func TestServiceUpdateNormalizesFieldsAndRulesBeforeAtomicWrite(t *testing.T) {
 	objective := "  better agents  "
 	disabled := false
 	inputRules := RulesInput{
-		Categories: []string{"cs.ai"}, Authors: []string{" Jane\tDoe "},
-		IncludeKeywords: []string{"Tool Use"}, ExcludeKeywords: []string{"Survey"},
+		Categories: []string{"cs.ai"}, IncludeKeywords: []string{"Tool Use"},
 	}
 	existing := updateQueryResult()
 	var gotPatch SubscriptionPatch
@@ -304,8 +300,8 @@ func TestServiceUpdateNormalizesFieldsAndRulesBeforeAtomicWrite(t *testing.T) {
 		*gotPatch.Objective != "better agents" || gotPatch.Enabled == nil || *gotPatch.Enabled {
 		t.Fatalf("unexpected normalized patch %+v", gotPatch)
 	}
-	if len(gotRules) != 4 || gotRules[0].RuleValue != "cs.AI" ||
-		gotRules[1].NormalizedValue != "jane doe" || gotRules[2].NormalizedValue != "tool use" {
+	if len(gotRules) != 2 || gotRules[0].RuleValue != "cs.AI" ||
+		gotRules[1].NormalizedValue != "tool use" {
 		t.Fatalf("unexpected normalized replacement %+v", gotRules)
 	}
 	if updated.Version != 4 || updated.Name != "updated papers" || updated.Rules.Categories[0] != "cs.AI" {

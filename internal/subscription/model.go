@@ -1,6 +1,7 @@
 package subscription
 
 import (
+	"encoding/json"
 	"time"
 
 	"signalwatch/internal/source"
@@ -9,20 +10,25 @@ import (
 const InitialVersion uint32 = 1
 
 type Subscription struct {
-	ID        uint64     `gorm:"column:id;primaryKey;autoIncrement"`
-	UserID    uint64     `gorm:"column:user_id"`
-	SourceID  uint64     `gorm:"column:source_id"`
-	Name      string     `gorm:"column:name"`
-	Objective *string    `gorm:"column:objective"`
-	Enabled   bool       `gorm:"column:enabled"`
-	Version   uint32     `gorm:"column:version"`
-	CreatedAt time.Time  `gorm:"column:created_at"`
-	UpdatedAt time.Time  `gorm:"column:updated_at"`
-	DeletedAt *time.Time `gorm:"column:deleted_at"`
+	ID           uint64          `gorm:"column:id;primaryKey;autoIncrement"`
+	UserID       uint64          `gorm:"column:user_id"`
+	SourceID     uint64          `gorm:"column:source_id"`
+	Name         string          `gorm:"column:name"`
+	Objective    *string         `gorm:"column:objective"`
+	Category     string          `gorm:"column:category"`
+	KeywordsJSON json.RawMessage `gorm:"column:keywords_json"`
+	Enabled      bool            `gorm:"column:enabled"`
+	Version      uint32          `gorm:"column:version"`
+	CreatedAt    time.Time       `gorm:"column:created_at"`
+	UpdatedAt    time.Time       `gorm:"column:updated_at"`
+	DeletedAt    *time.Time      `gorm:"column:deleted_at"`
 }
 
 func (Subscription) TableName() string { return "subscriptions" }
 
+// Rule is the compatibility DTO used by the existing M1 service contract.
+// It is reconstructed from Subscription.Category and KeywordsJSON and is not
+// backed by a database table in the five-table schema.
 type Rule struct {
 	ID              uint64    `gorm:"column:id;primaryKey;autoIncrement"`
 	SubscriptionID  uint64    `gorm:"column:subscription_id"`
@@ -31,8 +37,6 @@ type Rule struct {
 	NormalizedValue string    `gorm:"column:normalized_value"`
 	CreatedAt       time.Time `gorm:"column:created_at"`
 }
-
-func (Rule) TableName() string { return "subscription_rules" }
 
 type RulesInput struct {
 	Categories      []string
@@ -64,6 +68,8 @@ type SubscriptionPatch struct {
 	ObjectiveSet bool
 	Objective    *string
 	Enabled      *bool
+	Category     *string
+	KeywordsJSON *json.RawMessage
 }
 
 type ListFilter struct {

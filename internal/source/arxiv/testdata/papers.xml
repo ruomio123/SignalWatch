@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"
+      xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/"
+      xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <opensearch:totalResults>2</opensearch:totalResults>
+  <entry>
+    <id>http://arxiv.org/abs/2608.00001v1</id>
+    <updated>2026-08-02T03:04:05Z</updated>
+    <published>2026-08-02T03:04:05Z</published>
+    <title>A useful VLM paper</title>
+    <summary>We study test-time adaptation.</summary>
+    <author><name>Jane Doe</name></author>
+    <author><name>John Roe</name></author>
+    <arxiv:primary_category term="cs.CV"/>
+    <category term="cs.CV"/>
+    <category term="cs.LG"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2608.00002v2</id>
+    <updated>2026-08-05T06:07:08Z</updated>
+    <published>2026-08-01T01:02:03Z</published>
+    <title>An updated agent paper</title>
+    <summary>We revise the tool-use experiments.</summary>
+    <author><name>Alice Example</name></author>
+    <arxiv:primary_category term="cs.AI"/>
+    <category term="cs.AI"/>
+  </entry>
+</feed>

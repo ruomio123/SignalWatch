@@ -34,12 +34,9 @@ type transactionStore interface {
 	LockActiveUser(ctx context.Context, userID uint64) error
 	CountEnabled(ctx context.Context, userID uint64) (int64, error)
 	CreateSubscription(ctx context.Context, subscription *Subscription) error
-	CreateRules(ctx context.Context, rules []Rule) error
 	LockOwnedSubscription(ctx context.Context, userID, id uint64, expectedVersion uint32) (Subscription, error)
 	OwnedActiveSubscriptionExists(ctx context.Context, userID, id uint64) (bool, error)
-	ListRules(ctx context.Context, subscriptionID uint64) ([]Rule, error)
 	UpdateSubscription(ctx context.Context, subscription *Subscription, patch SubscriptionPatch) error
-	DeleteRules(ctx context.Context, subscriptionID uint64) error
 }
 
 type transactionManager interface {
@@ -62,6 +59,12 @@ func (repository *repository) CreateAtomic(
 	subscription *Subscription,
 	rules []Rule,
 ) error {
+	category, keywordsJSON, err := flattenRules(rules)
+	if err != nil {
+		return err
+	}
+	subscription.Category = category
+	subscription.KeywordsJSON = keywordsJSON
 	return repository.transactions.WithinTransaction(ctx, func(tx transactionStore) error {
 		if err := tx.LockActiveUser(ctx, subscription.UserID); err != nil {
 			return err
@@ -77,14 +80,6 @@ func (repository *repository) CreateAtomic(
 		}
 		if err := tx.CreateSubscription(ctx, subscription); err != nil {
 			return err
-		}
-		for index := range rules {
-			rules[index].SubscriptionID = subscription.ID
-		}
-		if len(rules) > 0 {
-			if err := tx.CreateRules(ctx, rules); err != nil {
-				return err
-			}
 		}
 		return nil
 	})
@@ -116,7 +111,7 @@ func (repository *repository) UpdateAtomic(
 			return err
 		}
 
-		currentRules, err := tx.ListRules(ctx, current.ID)
+		currentRules, err := rulesFromSubscription(current)
 		if err != nil {
 			return err
 		}
@@ -143,24 +138,22 @@ func (repository *repository) UpdateAtomic(
 			}
 		}
 
-		if err := tx.UpdateSubscription(ctx, &current, patch); err != nil {
-			return err
-		}
 		if replacementRules != nil && !sameRules(currentRules, *replacementRules) {
-			if err := tx.DeleteRules(ctx, current.ID); err != nil {
+			category, keywordsJSON, err := flattenRules(*replacementRules)
+			if err != nil {
 				return err
 			}
-			for index := range *replacementRules {
-				(*replacementRules)[index].SubscriptionID = current.ID
-			}
-			if len(*replacementRules) > 0 {
-				if err := tx.CreateRules(ctx, *replacementRules); err != nil {
-					return err
-				}
-			}
+			patch.Category = &category
+			patch.KeywordsJSON = &keywordsJSON
 			resultRules = append([]Rule(nil), (*replacementRules)...)
+			for index := range resultRules {
+				resultRules[index].SubscriptionID = current.ID
+			}
 		} else {
 			resultRules = currentRules
+		}
+		if err := tx.UpdateSubscription(ctx, &current, patch); err != nil {
+			return err
 		}
 		updated = current
 		return nil
@@ -200,6 +193,60 @@ func sameRules(current, replacement []Rule) bool {
 		}
 	}
 	return true
+}
+
+func flattenRules(rules []Rule) (string, json.RawMessage, error) {
+	category := ""
+	keywords := make([]string, 0)
+	for _, rule := range rules {
+		switch rule.RuleType {
+		case source.RuleTypeCategory:
+			if category != "" {
+				return "", nil, ErrInvalidStoredRule
+			}
+			category = rule.RuleValue
+		case source.RuleTypeIncludeKeyword:
+			keywords = append(keywords, rule.RuleValue)
+		default:
+			return "", nil, ErrInvalidStoredRule
+		}
+	}
+	if category == "" {
+		return "", nil, ErrInvalidStoredRule
+	}
+	encoded, err := json.Marshal(keywords)
+	if err != nil {
+		return "", nil, err
+	}
+	return category, encoded, nil
+}
+
+func rulesFromSubscription(item Subscription) ([]Rule, error) {
+	if item.Category == "" {
+		return nil, ErrInvalidStoredRule
+	}
+	var keywords []string
+	if err := json.Unmarshal(item.KeywordsJSON, &keywords); err != nil {
+		return nil, ErrInvalidStoredRule
+	}
+	rules := make([]Rule, 0, 1+len(keywords))
+	rules = append(rules, Rule{
+		SubscriptionID: item.ID,
+		RuleType:       source.RuleTypeCategory, RuleValue: item.Category,
+		NormalizedValue: item.Category,
+	})
+	for _, keyword := range keywords {
+		normalized, err := NormalizeTextRule(keyword)
+		if err != nil {
+			return nil, ErrInvalidStoredRule
+		}
+		rules = append(rules, Rule{
+			SubscriptionID: item.ID,
+			RuleType:       source.RuleTypeIncludeKeyword,
+			RuleValue:      normalized.RuleValue, NormalizedValue: normalized.NormalizedValue,
+		})
+	}
+	return rules, nil
 }
 
 type deletionStore interface {
@@ -312,6 +359,8 @@ func selectSubscriptionsWithSource(query *gorm.DB) *gorm.DB {
 			subscriptions.source_id AS subscription_source_id,
 			subscriptions.name AS subscription_name,
 			subscriptions.objective AS subscription_objective,
+			subscriptions.category AS subscription_category,
+			subscriptions.keywords_json AS subscription_keywords_json,
 			subscriptions.enabled AS subscription_enabled,
 			subscriptions.version AS subscription_version,
 			subscriptions.created_at AS subscription_created_at,
@@ -327,34 +376,16 @@ func selectSubscriptionsWithSource(query *gorm.DB) *gorm.DB {
 }
 
 func (repository *repository) attachRules(
-	ctx context.Context,
+	_ context.Context,
 	rows []subscriptionQueryRow,
 ) ([]QueryResult, error) {
 	results := make([]QueryResult, 0, len(rows))
-	if len(rows) == 0 {
-		return results, nil
-	}
-
-	ids := make([]uint64, 0, len(rows))
-	positions := make(map[uint64]int, len(rows))
 	for _, row := range rows {
-		positions[row.SubscriptionID] = len(results)
-		ids = append(ids, row.SubscriptionID)
-		results = append(results, row.result())
-	}
-
-	var rules []Rule
-	if err := repository.db.WithContext(ctx).
-		Where("subscription_id IN ?", ids).
-		Order("subscription_id ASC, id ASC").
-		Find(&rules).Error; err != nil {
-		return nil, err
-	}
-	for _, rule := range rules {
-		position, exists := positions[rule.SubscriptionID]
-		if exists {
-			results[position].Rules = append(results[position].Rules, rule)
+		result, err := row.result()
+		if err != nil {
+			return nil, err
 		}
+		results = append(results, result)
 	}
 	return results, nil
 }
@@ -365,6 +396,8 @@ type subscriptionQueryRow struct {
 	SubscriptionSourceID  uint64          `gorm:"column:subscription_source_id"`
 	SubscriptionName      string          `gorm:"column:subscription_name"`
 	SubscriptionObjective *string         `gorm:"column:subscription_objective"`
+	SubscriptionCategory  string          `gorm:"column:subscription_category"`
+	SubscriptionKeywords  json.RawMessage `gorm:"column:subscription_keywords_json"`
 	SubscriptionEnabled   bool            `gorm:"column:subscription_enabled"`
 	SubscriptionVersion   uint32          `gorm:"column:subscription_version"`
 	SubscriptionCreatedAt time.Time       `gorm:"column:subscription_created_at"`
@@ -377,13 +410,15 @@ type subscriptionQueryRow struct {
 	PublicSourceConfig    json.RawMessage `gorm:"column:public_source_config_json"`
 }
 
-func (row subscriptionQueryRow) result() QueryResult {
-	return QueryResult{
+func (row subscriptionQueryRow) result() (QueryResult, error) {
+	result := QueryResult{
 		Subscription: Subscription{
 			ID: row.SubscriptionID, UserID: row.SubscriptionUserID,
 			SourceID: row.SubscriptionSourceID, Name: row.SubscriptionName,
-			Objective: row.SubscriptionObjective, Enabled: row.SubscriptionEnabled,
-			Version: row.SubscriptionVersion, CreatedAt: row.SubscriptionCreatedAt,
+			Objective: row.SubscriptionObjective, Category: row.SubscriptionCategory,
+			KeywordsJSON: append(json.RawMessage(nil), row.SubscriptionKeywords...),
+			Enabled:      row.SubscriptionEnabled,
+			Version:      row.SubscriptionVersion, CreatedAt: row.SubscriptionCreatedAt,
 			UpdatedAt: row.SubscriptionUpdatedAt, DeletedAt: row.SubscriptionDeletedAt,
 		},
 		Source: source.Source{
@@ -393,6 +428,12 @@ func (row subscriptionQueryRow) result() QueryResult {
 		},
 		Rules: make([]Rule, 0),
 	}
+	rules, err := rulesFromSubscription(result.Subscription)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	result.Rules = rules
+	return result, nil
 }
 
 type gormTransactionManager struct {
@@ -442,10 +483,6 @@ func (store gormTransactionStore) CreateSubscription(
 	return store.db.WithContext(ctx).Create(subscription).Error
 }
 
-func (store gormTransactionStore) CreateRules(ctx context.Context, rules []Rule) error {
-	return store.db.WithContext(ctx).Create(&rules).Error
-}
-
 func (store gormTransactionStore) LockOwnedSubscription(
 	ctx context.Context,
 	userID uint64,
@@ -488,18 +525,6 @@ func (store gormTransactionStore) OwnedActiveSubscriptionExists(
 	return ownedActiveSubscriptionExists(store.db.WithContext(ctx), userID, id)
 }
 
-func (store gormTransactionStore) ListRules(
-	ctx context.Context,
-	subscriptionID uint64,
-) ([]Rule, error) {
-	var rules []Rule
-	err := store.db.WithContext(ctx).
-		Where("subscription_id = ?", subscriptionID).
-		Order("id ASC").
-		Find(&rules).Error
-	return rules, err
-}
-
 func (store gormTransactionStore) UpdateSubscription(
 	ctx context.Context,
 	item *Subscription,
@@ -522,6 +547,12 @@ func (store gormTransactionStore) UpdateSubscription(
 	if patch.Enabled != nil {
 		values["enabled"] = *patch.Enabled
 	}
+	if patch.Category != nil {
+		values["category"] = *patch.Category
+	}
+	if patch.KeywordsJSON != nil {
+		values["keywords_json"] = *patch.KeywordsJSON
+	}
 
 	result := store.db.WithContext(ctx).
 		Model(&Subscription{}).
@@ -541,12 +572,6 @@ func (store gormTransactionStore) UpdateSubscription(
 	return store.db.WithContext(ctx).
 		Where("id = ? AND user_id = ? AND deleted_at IS NULL", item.ID, item.UserID).
 		Take(item).Error
-}
-
-func (store gormTransactionStore) DeleteRules(ctx context.Context, subscriptionID uint64) error {
-	return store.db.WithContext(ctx).
-		Where("subscription_id = ?", subscriptionID).
-		Delete(&Rule{}).Error
 }
 
 type gormDeletionStore struct {

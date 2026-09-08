@@ -19,13 +19,25 @@ func TestEmbeddedFrontendIncludesSubscriptionWorkspaceContract(t *testing.T) {
 		`apiRequest("/subscriptions"`,
 		"apiRequest(`/subscriptions/${",
 		`headers: { "If-Match":`,
-		`include_keywords`,
-		`exclude_keywords`,
+		`const rules = {
+    categories,
+    include_keywords: includeKeywords,
+  }`,
+		`type="radio" name="categories"`,
+		`请选择 1 个分类`,
 		`SUBSCRIPTION_VERSION_CONFLICT`,
 	}
 	for _, fragment := range required {
 		if !strings.Contains(contents, fragment) {
 			t.Errorf("embedded subscription workspace is missing %q", fragment)
+		}
+	}
+	for _, forbiddenPayload := range []string{
+		`authors: ruleValues(form.elements.authors.value)`,
+		`exclude_keywords: ruleValues(form.elements.exclude_keywords.value)`,
+	} {
+		if strings.Contains(contents, forbiddenPayload) {
+			t.Errorf("embedded subscription request still sends unsupported field %q", forbiddenPayload)
 		}
 	}
 }
@@ -63,8 +75,8 @@ func TestEmbeddedFrontendRequiresPasswordConfirmationAndComposition(t *testing.T
 func TestEmbeddedShellUsesVersionedFrontendAssets(t *testing.T) {
 	contents := string(indexHTML)
 	for _, asset := range []string{
-		`/assets/app.css?v=m1-ui-2`,
-		`/assets/app.js?v=m1-ui-2`,
+		`/assets/app.css?v=m3-ui-2`,
+		`/assets/app.js?v=m3-ui-2`,
 	} {
 		if !strings.Contains(contents, asset) {
 			t.Errorf("embedded application shell is missing versioned asset %q", asset)
@@ -87,6 +99,37 @@ func TestEmbeddedFrontendIncludesResponsiveSubscriptionStyles(t *testing.T) {
 	} {
 		if !strings.Contains(contents, selector) {
 			t.Errorf("embedded subscription stylesheet is missing %q", selector)
+		}
+	}
+}
+
+func TestEmbeddedFrontendIncludesMatchedPaperWorkspace(t *testing.T) {
+	script, err := fs.ReadFile(appFiles, "assets/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app script: %v", err)
+	}
+	for _, fragment := range []string{
+		`href="/papers"`,
+		"apiRequest(`/papers?",
+		"apiRequest(`/papers/${",
+		`data-filter-paper-subscription`,
+		`matched_keywords`,
+		`rel="noopener noreferrer"`,
+	} {
+		if !strings.Contains(string(script), fragment) {
+			t.Errorf("embedded matched-paper workspace is missing %q", fragment)
+		}
+	}
+
+	stylesheet, err := fs.ReadFile(appFiles, "assets/app.css")
+	if err != nil {
+		t.Fatalf("read embedded app stylesheet: %v", err)
+	}
+	for _, selector := range []string{
+		".matched-paper-card", ".paper-detail-modal", ".paper-match-summary", ".dashboard-paper",
+	} {
+		if !strings.Contains(string(stylesheet), selector) {
+			t.Errorf("embedded matched-paper stylesheet is missing %q", selector)
 		}
 	}
 }

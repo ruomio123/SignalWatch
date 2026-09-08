@@ -29,7 +29,7 @@ func TestServiceListBuildsOnlyPublicSourceData(t *testing.T) {
 	if got.ID != 1 || got.SourceKey != "arxiv" || got.Kind != KindArXiv || got.Name != "arXiv" {
 		t.Fatalf("unexpected public source %+v", got)
 	}
-	if len(got.RuleTypes) != 4 || len(got.AllowedCategories) != 2 {
+	if len(got.RuleTypes) != 2 || len(got.AllowedCategories) != 2 {
 		t.Fatalf("expected public capabilities, got %+v", got)
 	}
 }

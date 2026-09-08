@@ -14,6 +14,14 @@ const state = {
     sourceId: "",
   },
   subscriptionEditor: null,
+  paperPage: null,
+  paperSubscriptions: [],
+  paperFilters: {
+    page: 1,
+    subscriptionId: "",
+  },
+  paperDetail: null,
+  dashboardPapers: null,
 };
 
 class ApiError extends Error {
@@ -49,6 +57,11 @@ function clearSession() {
   state.sources = null;
   state.subscriptionPage = null;
   state.subscriptionEditor = null;
+  state.paperPage = null;
+  state.paperSubscriptions = [];
+  state.paperFilters = { page: 1, subscriptionId: "" };
+  state.paperDetail = null;
+  state.dashboardPapers = null;
   try {
     window.localStorage.removeItem(TOKEN_KEY);
   } catch {
@@ -127,6 +140,8 @@ function icon(name) {
     play: '<path d="m8 5 11 7-11 7Z"/>',
     refresh: '<path d="M20 7h-6V1M4 17h6v6"/><path d="M20 7a9 9 0 0 0-15-2L2 8M4 17a9 9 0 0 0 15 2l3-3"/>',
     x: '<path d="M18 6 6 18M6 6l12 12"/>',
+    external: '<path d="M14 3h7v7M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>',
+    book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/>',
   };
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.activity}</svg>`;
 }
@@ -284,6 +299,7 @@ function appLayout(content, active = "dashboard") {
       <p class="sidebar-label">工作区</p>
       <nav class="sidebar-nav" aria-label="工作区导航">
         <a class="sidebar-link ${active === "dashboard" ? "active" : ""}" href="/app" data-route>${icon("layout")}<span>概览</span></a>
+        <a class="sidebar-link ${active === "papers" ? "active" : ""}" href="/papers" data-route>${icon("book")}<span>匹配论文</span></a>
         <a class="sidebar-link ${active === "subscriptions" ? "active" : ""}" href="/subscriptions" data-route>${icon("layers")}<span>订阅</span></a>
         <a class="sidebar-link ${active === "settings" ? "active" : ""}" href="/settings" data-route>${icon("settings")}<span>偏好设置</span></a>
       </nav>
@@ -293,6 +309,7 @@ function appLayout(content, active = "dashboard") {
     </aside>
     <nav class="mobile-bar" aria-label="移动端导航">
       <a class="mobile-link ${active === "dashboard" ? "active" : ""}" href="/app" data-route>${icon("layout")}<span>概览</span></a>
+      <a class="mobile-link ${active === "papers" ? "active" : ""}" href="/papers" data-route>${icon("book")}<span>论文</span></a>
       <a class="mobile-link ${active === "subscriptions" ? "active" : ""}" href="/subscriptions" data-route>${icon("layers")}<span>订阅</span></a>
       <a class="mobile-link ${active === "settings" ? "active" : ""}" href="/settings" data-route>${icon("settings")}<span>设置</span></a>
       <button class="mobile-link" type="button" data-logout>${icon("logOut")}<span>退出</span></button>
@@ -310,15 +327,20 @@ function dashboardPage() {
   const timezone = escapeHTML((profile && profile.timezone) || "读取中");
   const maxItems = profile && profile.max_items_per_digest != null ? profile.max_items_per_digest : "--";
   const activeSubscriptions = state.activeSubscriptionTotal == null ? "--" : state.activeSubscriptionTotal;
+  const matchedPapers = state.dashboardPapers == null ? "--" : state.dashboardPapers.total;
+  const recentPapers = state.dashboardPapers && state.dashboardPapers.items.length
+    ? `<div class="dashboard-paper-list">${state.dashboardPapers.items.map((paper) => `<button class="dashboard-paper" type="button" data-open-paper="${paper.id}"><span><strong>${escapeHTML(paper.title)}</strong><small>${escapeHTML(paper.categories.join(" · "))} · ${escapeHTML(formatDateTime(paper.first_seen_at))}</small></span>${icon("chevronRight")}</button>`).join("")}</div>`
+    : `<div class="empty-signals"><div><div class="radar"><span class="radar-dot"></span></div><h3>${activeSubscriptions > 0 ? "正在等待新的研究信号" : "创建你的第一条订阅"}</h3><p>${activeSubscriptions > 0 ? "Matcher 会在论文进入最近 48 小时抓取窗口后，按分类和标题摘要关键词建立匹配。" : "先创建订阅，系统才会抓取对应分类并生成匹配论文。"}</p><a class="button button-primary button-small empty-action" href="${activeSubscriptions > 0 ? "/papers" : "/subscriptions"}" data-route>${activeSubscriptions > 0 ? "查看匹配论文" : "创建订阅"} ${icon("arrowRight")}</a></div></div>`;
 
   const content = `<header class="workspace-header"><div><p class="eyebrow">SIGNAL DESK</p><h1>${greeting}</h1><p>查看你的阅读偏好，管理持续关注的研究主题。</p></div><span class="date-chip">${icon("calendar")} ${today}</span></header>
     <section class="metric-grid" aria-label="账户摘要">
       <article class="metric-card"><div class="metric-top"><span>阅读时间偏好</span><span class="metric-icon">${icon("clock")}</span></div><div class="metric-value"><strong>${escapeHTML(deliveryTime)}</strong><span>每日 · ${timezone}</span></div></article>
       <article class="metric-card"><div class="metric-top"><span>每次阅读上限</span><span class="metric-icon">${icon("inbox")}</span></div><div class="metric-value"><strong>${escapeHTML(maxItems)}</strong><span>条内容</span></div></article>
       <article class="metric-card"><div class="metric-top"><span>活跃订阅</span><span class="metric-icon">${icon("layers")}</span></div><div class="metric-value"><strong>${escapeHTML(activeSubscriptions)}</strong><span>最多可启用 20 条</span></div></article>
+      <article class="metric-card"><div class="metric-top"><span>匹配论文</span><span class="metric-icon">${icon("book")}</span></div><div class="metric-value"><strong>${escapeHTML(matchedPapers)}</strong><span>按论文去重</span></div></article>
     </section>
     <section class="dashboard-grid">
-      <article class="content-card"><header class="card-header"><h2>订阅概览</h2><a class="text-link" href="/subscriptions" data-route>管理订阅</a></header><div class="empty-signals"><div><div class="radar"><span class="radar-dot"></span></div><h3>${activeSubscriptions > 0 ? `正在管理 ${activeSubscriptions} 条活跃订阅` : "创建你的第一条订阅"}</h3><p>${activeSubscriptions > 0 ? "你可以随时调整分类、作者和关键词，也可以暂时停用不再需要的关注主题。" : "选择信息来源和分类，再用作者与关键词准确描述你关心的研究范围。"}</p><a class="button button-primary button-small empty-action" href="/subscriptions" data-route>${activeSubscriptions > 0 ? "查看订阅" : "创建订阅"} ${icon("arrowRight")}</a></div></div></article>
+      <article class="content-card"><header class="card-header"><h2>最近匹配</h2><a class="text-link" href="/papers" data-route>查看全部</a></header>${recentPapers}</article>
       <article class="content-card"><header class="card-header"><h2>使用建议</h2><span>保持关注范围清晰</span></header><div class="roadmap-list">
         <div class="roadmap-item"><span class="roadmap-check">${icon("check")}</span><span class="roadmap-copy"><strong>设置阅读偏好</strong><span>选择适合自己的时区、时间和数量上限</span></span></div>
         <div class="roadmap-item"><span class="roadmap-check">${icon("layers")}</span><span class="roadmap-copy"><strong>定义关注范围</strong><span>使用分类、作者和包含关键词描述主题</span></span></div>
@@ -338,6 +360,111 @@ function formatDateTime(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function formatFullDateTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function safeExternalURL(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? escapeHTML(parsed.href) : "#";
+  } catch {
+    return "#";
+  }
+}
+
+function truncateText(value, limit = 260) {
+  const normalized = String(value || "").trim().replace(/\s+/gu, " ");
+  return [...normalized].length > limit ? `${[...normalized].slice(0, limit).join("")}…` : normalized;
+}
+
+function paperSubscriptionOptions(selectedId = "") {
+  const options = (state.paperSubscriptions || []).map((subscription) => {
+    const selected = String(subscription.id) === String(selectedId) ? "selected" : "";
+    return `<option value="${subscription.id}" ${selected}>${escapeHTML(subscription.name)} · ${escapeHTML(subscription.rules.categories[0] || "")}</option>`;
+  });
+  options.unshift(`<option value="" ${selectedId === "" ? "selected" : ""}>全部订阅</option>`);
+  return options.join("");
+}
+
+function matchReason(match, detailed = false) {
+  const keywords = match.matched_keywords || [];
+  return `<div class="match-reason">
+    <div class="match-reason-title"><strong>${escapeHTML(match.subscription_name)}</strong><span class="match-state ${match.subscription_active ? "active" : "inactive"}">${match.subscription_active ? "监听中" : "历史订阅"}</span></div>
+    <div class="match-tags"><span class="paper-category">${escapeHTML(match.category)}</span>${keywords.length ? keywords.map((keyword) => `<span class="match-keyword">${escapeHTML(keyword)}</span>`).join("") : '<span class="match-keyword category-only">仅分类命中</span>'}</div>
+    ${detailed ? `<small>首次匹配于 ${escapeHTML(formatFullDateTime(match.matched_at))}</small>` : ""}
+  </div>`;
+}
+
+function paperCard(item) {
+  const authors = (item.authors || []).slice(0, 4).join(" · ");
+  const extraAuthors = (item.authors || []).length > 4 ? ` 等 ${item.authors.length} 位作者` : "";
+  return `<article class="matched-paper-card">
+    <header class="paper-card-header">
+      <div class="paper-card-meta"><span>${escapeHTML(item.arxiv_id)}</span><span>发现于 ${escapeHTML(formatDateTime(item.first_seen_at))}</span></div>
+      <div class="paper-categories">${(item.categories || []).map((category) => `<span class="paper-category">${escapeHTML(category)}</span>`).join("")}</div>
+    </header>
+    <button class="paper-title-button" type="button" data-open-paper="${item.id}"><h2>${escapeHTML(item.title)}</h2></button>
+    <p class="paper-authors">${escapeHTML(authors)}${escapeHTML(extraAuthors)}</p>
+    <p class="paper-abstract">${escapeHTML(truncateText(item.abstract))}</p>
+    <div class="paper-match-summary">${(item.matches || []).map((match) => matchReason(match)).join("")}</div>
+    <footer class="paper-card-actions">
+      <button class="button button-ghost button-small" type="button" data-open-paper="${item.id}">${icon("book")} 查看详情</button>
+      <a class="button button-ghost button-small" href="${safeExternalURL(item.arxiv_url)}" target="_blank" rel="noopener noreferrer">arXiv ${icon("external")}</a>
+      <a class="button button-primary button-small" href="${safeExternalURL(item.pdf_url)}" target="_blank" rel="noopener noreferrer">PDF ${icon("external")}</a>
+    </footer>
+  </article>`;
+}
+
+function paperDetailModal() {
+  const item = state.paperDetail;
+  if (!item) return "";
+  return `<div class="modal-backdrop" data-close-paper>
+    <article class="paper-detail-modal" role="dialog" aria-modal="true" aria-labelledby="paper-detail-title" data-paper-modal-panel>
+      <header class="paper-detail-header">
+        <div><p class="eyebrow">MATCHED PAPER · ${escapeHTML(item.arxiv_id)}</p><h2 id="paper-detail-title">${escapeHTML(item.title)}</h2></div>
+        <button class="icon-button" type="button" data-close-paper aria-label="关闭论文详情">${icon("x")}</button>
+      </header>
+      <div class="paper-detail-body">
+        <div class="paper-detail-meta"><span><strong>发布时间</strong>${escapeHTML(formatFullDateTime(item.published_at))}</span><span><strong>arXiv 更新</strong>${escapeHTML(formatFullDateTime(item.arxiv_updated_at))}</span><span><strong>本地发现</strong>${escapeHTML(formatFullDateTime(item.first_seen_at))}</span></div>
+        <div class="paper-categories">${(item.categories || []).map((category) => `<span class="paper-category">${escapeHTML(category)}</span>`).join("")}</div>
+        <section class="paper-detail-section"><h3>作者</h3><p>${escapeHTML((item.authors || []).join(" · "))}</p></section>
+        <section class="paper-detail-section"><h3>摘要</h3><p>${escapeHTML(item.abstract)}</p></section>
+        <section class="paper-detail-section"><h3>匹配原因</h3><div class="paper-detail-matches">${(item.matches || []).map((match) => matchReason(match, true)).join("")}</div></section>
+      </div>
+      <footer class="paper-detail-actions"><a class="button button-ghost" href="${safeExternalURL(item.arxiv_url)}" target="_blank" rel="noopener noreferrer">打开 arXiv ${icon("external")}</a><a class="button button-primary" href="${safeExternalURL(item.pdf_url)}" target="_blank" rel="noopener noreferrer">查看 PDF ${icon("external")}</a></footer>
+    </article>
+  </div>`;
+}
+
+function papersPage() {
+  const result = state.paperPage || { items: [], page: 1, page_size: 20, total: 0 };
+  const filters = state.paperFilters;
+  const totalPages = Math.max(1, Math.ceil(result.total / result.page_size));
+  const list = result.items.length
+    ? `<div class="matched-paper-list">${result.items.map(paperCard).join("")}</div>`
+    : `<div class="subscriptions-empty papers-empty"><span>${icon("book")}</span><h2>${filters.subscriptionId ? "这条订阅还没有匹配论文" : "还没有捕捉到论文信号"}</h2><p>${filters.subscriptionId ? "可以切换到全部订阅，或等待下一轮 Collector 完成抓取和匹配。" : "创建并启用订阅后，系统会在后台抓取最近 48 小时的 arXiv 更新并显示匹配结果。"}</p><a class="button button-primary" href="/subscriptions" data-route>${icon("plus")} 管理订阅</a></div>`;
+  const content = `<header class="workspace-header subscriptions-heading"><div><p class="eyebrow">MATCHED PAPERS</p><h1>匹配论文</h1><p>每篇论文只展示一次，并保留所有命中订阅与首次匹配原因。</p></div><span class="date-chip">${icon("activity")} 本地确定性匹配</span></header>
+    <section class="subscription-toolbar paper-toolbar" aria-label="匹配论文筛选">
+      <div><strong>${result.total}</strong><span>篇论文</span></div>
+      <label><span>命中订阅</span><select class="form-select compact-select" data-filter-paper-subscription>${paperSubscriptionOptions(filters.subscriptionId)}</select></label>
+      <button class="icon-button" type="button" data-refresh-papers aria-label="刷新匹配论文" title="刷新">${icon("refresh")}</button>
+    </section>
+    ${list}
+    ${result.total > result.page_size ? `<nav class="pagination" aria-label="匹配论文分页"><button class="button button-ghost button-small" type="button" data-paper-page="${result.page - 1}" ${result.page <= 1 ? "disabled" : ""}>${icon("chevronLeft")} 上一页</button><span>第 ${result.page} / ${totalPages} 页</span><button class="button button-ghost button-small" type="button" data-paper-page="${result.page + 1}" ${result.page >= totalPages ? "disabled" : ""}>下一页 ${icon("chevronRight")}</button></nav>` : ""}
+    ${paperDetailModal()}`;
+  return appLayout(content, "papers");
 }
 
 function ruleValues(value) {
@@ -399,8 +526,8 @@ function categoryChoices(source, selected = []) {
   if (!(source.rule_types || []).includes("category")) return '<p class="category-hint error">这个来源不支持分类规则，暂时无法创建订阅。</p>';
   const allowed = source.allowed_categories || [];
   if (allowed.length === 0) return '<p class="category-hint error">这个来源没有可用分类，暂时无法创建订阅。</p>';
-  const selectedSet = new Set(selected);
-  return allowed.map((category) => `<label class="category-choice"><input type="checkbox" name="categories" value="${escapeHTML(category)}" ${selectedSet.has(category) ? "checked" : ""}><span>${escapeHTML(category)}</span></label>`).join("");
+  const selectedCategory = selected[0] || "";
+  return allowed.map((category) => `<label class="category-choice"><input type="radio" name="categories" value="${escapeHTML(category)}" ${selectedCategory === category ? "checked" : ""}><span>${escapeHTML(category)}</span></label>`).join("");
 }
 
 function subscriptionEditorModal() {
@@ -424,7 +551,7 @@ function subscriptionEditorModal() {
           <div class="form-field"><label for="subscription-name">订阅名称</label><input class="form-input plain-input" id="subscription-name" name="name" maxlength="100" value="${editing ? escapeHTML(item.name) : ""}" placeholder="例如：测试时自适应" required><p class="field-error" data-error="name"></p></div>
         </div>
         <div class="form-field"><div class="label-row"><label for="subscription-objective">研究目标</label><span>可选 · 最多 500 字</span></div><textarea class="form-textarea" id="subscription-objective" name="objective" maxlength="500" rows="3" placeholder="这条订阅希望帮你持续关注什么？">${editing ? escapeHTML(item.objective || "") : ""}</textarea></div>
-        <fieldset class="rule-fieldset"><legend>分类 <span>至少选择 1 个，最多 10 个</span></legend><div class="category-grid" data-category-choices>${categoryChoices(source, rules.categories)}</div><p class="field-error" data-error="categories"></p></fieldset>
+        <fieldset class="rule-fieldset"><legend>分类 <span>请选择 1 个</span></legend><div class="category-grid" data-category-choices>${categoryChoices(source, rules.categories)}</div><p class="field-error" data-error="categories"></p></fieldset>
         <div class="form-row rule-text-row">
           <div class="form-field"><div class="label-row"><label for="subscription-authors">作者</label><span>最多 20 个</span></div><textarea class="form-textarea" id="subscription-authors" name="authors" rows="3" placeholder="${authorDisabled ? "当前来源不支持作者规则" : "每行或逗号分隔"}" ${authorDisabled}>${escapeHTML(rules.authors.join("\n"))}</textarea></div>
           <div class="form-field"><div class="label-row"><label for="subscription-includes">包含关键词</label><span>最多 30 个</span></div><textarea class="form-textarea" id="subscription-includes" name="include_keywords" rows="3" placeholder="${includeDisabled ? "当前来源不支持包含关键词" : "例如：calibration, uncertainty"}" ${includeDisabled}>${escapeHTML(rules.include_keywords.join("\n"))}</textarea></div>
@@ -516,6 +643,7 @@ function translateError(error) {
     SUBSCRIPTION_LIMIT_REACHED: "最多只能同时启用 20 条订阅，请先暂停其他订阅。",
     SUBSCRIPTION_NOT_FOUND: "订阅不存在、已删除，或你没有访问权限。",
     SUBSCRIPTION_VERSION_CONFLICT: "订阅已被其他请求修改，请刷新后重试。",
+    PAPER_NOT_FOUND: "论文不存在，或它不属于你的匹配结果。",
     VALIDATION_ERROR: "提交的信息不符合要求，请检查后重试。",
     INTERNAL_ERROR: "服务暂时遇到问题，请稍后再试。",
   };
@@ -635,6 +763,40 @@ function renderSubscriptions() {
   setupPage();
 }
 
+function renderPapers() {
+  app.innerHTML = papersPage();
+  setupPage();
+}
+
+async function loadPapers() {
+  const filters = state.paperFilters;
+  const query = new URLSearchParams({
+    page: String(filters.page),
+    page_size: "20",
+  });
+  if (filters.subscriptionId !== "") query.set("subscription_id", filters.subscriptionId);
+  state.paperPage = await apiRequest(`/papers?${query}`, { method: "GET", auth: true });
+}
+
+async function loadPaperWorkspace() {
+  const [subscriptions] = await Promise.all([
+    apiRequest("/subscriptions?page=1&page_size=100", { method: "GET", auth: true }),
+    loadPapers(),
+  ]);
+  state.paperSubscriptions = subscriptions.items;
+  state.paperDetail = null;
+  const requestedPaper = new URLSearchParams(window.location.search).get("paper");
+  if (requestedPaper && /^\d+$/u.test(requestedPaper)) {
+    state.paperDetail = await apiRequest(`/papers/${requestedPaper}`, { method: "GET", auth: true });
+  }
+}
+
+async function refreshPapers(message = "") {
+  await loadPapers();
+  renderPapers();
+  if (message) showToast("匹配论文已刷新", message, "success");
+}
+
 async function loadSubscriptions() {
   const filters = state.subscriptionFilters;
   const query = new URLSearchParams({
@@ -668,11 +830,10 @@ async function refreshSubscriptions(message = "") {
 function validateSubscriptionForm(form) {
   const name = form.elements.name.value.trim();
   const categories = [...form.querySelectorAll('input[name="categories"]:checked')].map((input) => input.value);
+  const includeKeywords = ruleValues(form.elements.include_keywords.value);
   const rules = {
     categories,
-    authors: ruleValues(form.elements.authors.value),
-    include_keywords: ruleValues(form.elements.include_keywords.value),
-    exclude_keywords: ruleValues(form.elements.exclude_keywords.value),
+    include_keywords: includeKeywords,
   };
   form.querySelectorAll("[data-error]").forEach((element) => { element.textContent = ""; });
   form.elements.name.removeAttribute("aria-invalid");
@@ -682,14 +843,12 @@ function validateSubscriptionForm(form) {
     form.elements.name.setAttribute("aria-invalid", "true");
     return null;
   }
-  if (categories.length < 1 || categories.length > 10) {
-    form.querySelector('[data-error="categories"]').textContent = "请选择 1–10 个分类。";
+  if (categories.length !== 1) {
+    form.querySelector('[data-error="categories"]').textContent = "请选择 1 个分类。";
     return null;
   }
-  const limits = { authors: 20, include_keywords: 30, exclude_keywords: 30 };
-  const invalidGroup = Object.entries(limits).find(([key, limit]) => rules[key].length > limit || rules[key].some((value) => [...value].length > 100));
-  if (invalidGroup) {
-    form.querySelector('[data-error="rules"]').textContent = "作者或关键词数量超限，且每一项不能超过 100 个字符。";
+  if (includeKeywords.length > 30 || includeKeywords.some((value) => [...value].length > 100)) {
+    form.querySelector('[data-error="rules"]').textContent = "关键词最多 30 个，且每一项不能超过 100 个字符。";
     return null;
   }
 
@@ -901,6 +1060,72 @@ function setupSubscriptionsPage() {
   setupSubscriptionForm();
 }
 
+function setupPapersPage() {
+  document.querySelectorAll("[data-open-paper]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const paperID = button.dataset.openPaper;
+      if (window.location.pathname !== "/papers") {
+        navigate(`/papers?paper=${paperID}`);
+        return;
+      }
+      const idleText = button.innerHTML;
+      setButtonBusy(button, true, idleText, "读取中");
+      try {
+        state.paperDetail = await apiRequest(`/papers/${paperID}`, { method: "GET", auth: true });
+        window.history.replaceState({}, "", `/papers?paper=${paperID}`);
+        renderPapers();
+      } catch (error) {
+        showToast("无法打开论文", error instanceof ApiError ? translateError(error) : "请稍后重试。", "error");
+        if (document.body.contains(button)) setButtonBusy(button, false, idleText, "");
+      }
+    });
+  });
+  document.querySelectorAll("[data-close-paper]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (event.target.closest("[data-paper-modal-panel]") && element.classList.contains("modal-backdrop")) return;
+      state.paperDetail = null;
+      window.history.replaceState({}, "", "/papers");
+      renderPapers();
+    });
+  });
+  const modalPanel = document.querySelector("[data-paper-modal-panel]");
+  if (modalPanel) modalPanel.addEventListener("click", (event) => event.stopPropagation());
+
+  const subscriptionFilter = document.querySelector("[data-filter-paper-subscription]");
+  if (subscriptionFilter) subscriptionFilter.addEventListener("change", async (event) => {
+    state.paperFilters.subscriptionId = event.target.value;
+    state.paperFilters.page = 1;
+    state.paperDetail = null;
+    window.history.replaceState({}, "", "/papers");
+    try {
+      await refreshPapers();
+    } catch (error) {
+      showToast("筛选失败", error instanceof ApiError ? translateError(error) : "请稍后重试。", "error");
+    }
+  });
+  const refreshButton = document.querySelector("[data-refresh-papers]");
+  if (refreshButton) refreshButton.addEventListener("click", async () => {
+    try {
+      await refreshPapers("已同步服务器上的最新匹配结果。");
+    } catch (error) {
+      showToast("刷新失败", error instanceof ApiError ? translateError(error) : "请稍后重试。", "error");
+    }
+  });
+  document.querySelectorAll("[data-paper-page]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.paperFilters.page = Number(button.dataset.paperPage);
+      state.paperDetail = null;
+      window.history.replaceState({}, "", "/papers");
+      try {
+        await refreshPapers();
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } catch (error) {
+        showToast("翻页失败", error instanceof ApiError ? translateError(error) : "请稍后重试。", "error");
+      }
+    });
+  });
+}
+
 function setupSettingsForm() {
   const form = document.querySelector("#settings-form");
   if (!form) return;
@@ -940,11 +1165,16 @@ async function loadAccount() {
 
 async function loadDashboardData() {
   try {
-    const result = await apiRequest("/subscriptions?page=1&page_size=1&enabled=true", { method: "GET", auth: true });
-    state.activeSubscriptionTotal = result.total;
+    const [subscriptions, papers] = await Promise.all([
+      apiRequest("/subscriptions?page=1&page_size=1&enabled=true", { method: "GET", auth: true }),
+      apiRequest("/papers?page=1&page_size=3", { method: "GET", auth: true }),
+    ]);
+    state.activeSubscriptionTotal = subscriptions.total;
+    state.dashboardPapers = papers;
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) throw error;
     state.activeSubscriptionTotal = null;
+    state.dashboardPapers = null;
   }
 }
 
@@ -954,7 +1184,7 @@ async function renderProtected(pathname) {
     return;
   }
 
-  const active = pathname === "/settings" ? "settings" : pathname === "/subscriptions" ? "subscriptions" : "dashboard";
+  const active = pathname === "/settings" ? "settings" : pathname === "/subscriptions" ? "subscriptions" : pathname === "/papers" ? "papers" : "dashboard";
   if (!state.profile) {
     app.innerHTML = loadingPage(active);
     setupPage();
@@ -985,7 +1215,21 @@ async function renderProtected(pathname) {
       return;
     }
   }
-  app.innerHTML = active === "settings" ? settingsPage() : active === "subscriptions" ? subscriptionsPage() : dashboardPage();
+  if (active === "papers") {
+    app.innerHTML = loadingPage(active);
+    setupPage();
+    try {
+      await loadPaperWorkspace();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) return;
+      app.innerHTML = appLayout(`<header class="workspace-header"><div><p class="eyebrow">请稍后重试</p><h1>匹配论文暂时无法读取</h1><p>${escapeHTML(translateError(error))}</p></div></header><button class="button button-primary" type="button" data-retry>重新尝试</button>`, active);
+      setupPage();
+      const retry = document.querySelector("[data-retry]");
+      if (retry) retry.addEventListener("click", route);
+      return;
+    }
+  }
+  app.innerHTML = active === "settings" ? settingsPage() : active === "subscriptions" ? subscriptionsPage() : active === "papers" ? papersPage() : dashboardPage();
   setupPage();
 }
 
@@ -1007,6 +1251,7 @@ function setupPage() {
   setupAuthForm();
   setupSettingsForm();
   setupSubscriptionsPage();
+  setupPapersPage();
 }
 
 function route() {
@@ -1025,7 +1270,7 @@ function route() {
     setupPage();
     return;
   }
-  if (pathname === "/app" || pathname === "/subscriptions" || pathname === "/settings") {
+  if (pathname === "/app" || pathname === "/papers" || pathname === "/subscriptions" || pathname === "/settings") {
     renderProtected(pathname);
     return;
   }

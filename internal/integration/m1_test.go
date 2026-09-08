@@ -20,6 +20,7 @@ import (
 	"gorm.io/gorm"
 
 	"signalwatch/internal/auth"
+	"signalwatch/internal/paper"
 	"signalwatch/internal/platform/config"
 	platformdb "signalwatch/internal/platform/db"
 	"signalwatch/internal/platform/httpx"
@@ -232,7 +233,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 			break
 		}
 	}
-	if arXiv.ID == 0 || len(arXiv.AllowedCategories) == 0 || len(arXiv.RuleTypes) != 4 {
+	if arXiv.ID == 0 || len(arXiv.AllowedCategories) == 0 || len(arXiv.RuleTypes) != 2 {
 		t.Fatalf("source catalog: arXiv public capabilities are incomplete")
 	}
 
@@ -270,7 +271,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 		duplicateRulesBody,
 		http.StatusBadRequest,
 	)
-	assertAPIError(t, duplicateRules, httpx.CodeValidationError, "subscription is invalid")
+	assertAPIError(t, duplicateRules, httpx.CodeValidationError, "request is invalid")
 
 	createdA := decodeResponse[subscriptionResponse](t, api.do(
 		t,
@@ -285,16 +286,14 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 			"enabled":   true,
 			"rules": map[string]any{
 				"categories":       []string{"cs.ai"},
-				"authors":          []string{" Jane  Doe "},
 				"include_keywords": []string{"Tool Use"},
-				"exclude_keywords": []string{"Survey"},
 			},
 		},
 		http.StatusCreated,
 	))
 	if createdA.ID == 0 || createdA.Version != 1 || createdA.Source.ID != arXiv.ID ||
 		createdA.Objective == nil || createdA.Rules.Categories[0] != "cs.AI" ||
-		createdA.Rules.Authors[0] != "Jane Doe" {
+		createdA.Rules.IncludeKeywords[0] != "Tool Use" || len(createdA.Rules.Authors) != 0 {
 		t.Fatalf("create subscription A: normalization or persistence response is incorrect")
 	}
 
@@ -341,9 +340,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 
 	replacementRules := map[string]any{
 		"categories":       []string{"cs.CL"},
-		"authors":          []string{},
 		"include_keywords": []string{"Agents"},
-		"exclude_keywords": []string{},
 	}
 	updatedAResponse := api.do(
 		t,
@@ -386,15 +383,12 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 		t.Fatal("idempotent subscription update unexpectedly incremented the version")
 	}
 
-	var duplicateRuleError *mysqldriver.MySQLError
-	ruleInsertError := database.Create(&subscription.Rule{
-		SubscriptionID:  createdA.ID,
-		RuleType:        source.RuleTypeCategory,
-		RuleValue:       "cs.CL",
-		NormalizedValue: "cs.CL",
-	}).Error
-	if !errors.As(ruleInsertError, &duplicateRuleError) || duplicateRuleError.Number != 1062 {
-		t.Fatalf("database rule uniqueness: expected MySQL duplicate-key error")
+	var invalidKeywordsError *mysqldriver.MySQLError
+	keywordsUpdateError := database.Model(&subscription.Subscription{}).
+		Where("id = ?", createdA.ID).
+		Update("keywords_json", gorm.Expr("JSON_OBJECT('invalid', TRUE)")).Error
+	if !errors.As(keywordsUpdateError, &invalidKeywordsError) || invalidKeywordsError.Number != 3819 {
+		t.Fatalf("database keyword shape: expected MySQL check-constraint error")
 	}
 
 	pausedAResponse := api.do(
@@ -472,14 +466,13 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	if err := database.Where("id = ?", createdA.ID).Take(&stored).Error; err != nil {
 		t.Fatalf("soft delete database verification: load subscription: %v", err)
 	}
-	var storedRuleCount int64
-	if err := database.Model(&subscription.Rule{}).
-		Where("subscription_id = ?", createdA.ID).
-		Count(&storedRuleCount).Error; err != nil {
-		t.Fatalf("soft delete database verification: count rules: %v", err)
+	var storedKeywords []string
+	if err := json.Unmarshal(stored.KeywordsJSON, &storedKeywords); err != nil {
+		t.Fatalf("soft delete database verification: decode keywords: %v", err)
 	}
-	if stored.DeletedAt == nil || stored.Version != 4 || storedRuleCount == 0 {
-		t.Fatal("soft delete must preserve the subscription and replacement rules while incrementing version")
+	if stored.DeletedAt == nil || stored.Version != 4 || stored.Category != "cs.CL" ||
+		len(storedKeywords) != 1 || storedKeywords[0] != "Agents" {
+		t.Fatal("soft delete must preserve the flattened subscription while incrementing version")
 	}
 
 	logText := logs.String()
@@ -526,12 +519,19 @@ func openM1TestDatabase(t *testing.T) (*gorm.DB, *sql.DB, *mysqldriver.Config) {
 
 func assertM1Schema(t *testing.T, database *gorm.DB) {
 	t.Helper()
-	for _, table := range []any{user.User{}, source.Source{}, subscription.Subscription{}, subscription.Rule{}} {
+	for _, table := range []any{
+		user.User{}, source.Source{}, subscription.Subscription{}, paper.Paper{}, paper.SubscriptionPaper{},
+	} {
 		if !database.Migrator().HasTable(table) {
 			t.Fatalf("M1 test database is not migrated: required table for %T is missing", table)
 		}
 	}
-	for _, column := range []string{"source_id", "objective", "version", "deleted_at"} {
+	if database.Migrator().HasTable("subscription_rules") {
+		t.Fatal("five-table schema must not retain subscription_rules")
+	}
+	for _, column := range []string{
+		"source_id", "objective", "category", "keywords_json", "version", "deleted_at",
+	} {
 		if !database.Migrator().HasColumn(&subscription.Subscription{}, column) {
 			t.Fatalf("M1 test database is not migrated: subscriptions.%s is missing", column)
 		}
@@ -566,6 +566,9 @@ func newM1TestAPI(
 	sourceHandler := source.NewHandler(sourceService, logger)
 	subscriptionService := subscription.NewService(subscription.NewRepository(database), sourceService)
 	subscriptionHandler := subscription.NewHandler(subscriptionService, logger)
+	paperQueryHandler := paper.NewQueryHandler(
+		paper.NewQueryService(paper.NewQueryRepository(database)), logger,
+	)
 	router, err := server.NewRouter(server.Dependencies{
 		AppEnv:                    "test",
 		ServiceName:               "signalwatch-api",
@@ -584,6 +587,8 @@ func newM1TestAPI(
 		GetSubscriptionHandler:    subscriptionHandler.Get,
 		UpdateSubscriptionHandler: subscriptionHandler.Update,
 		DeleteSubscriptionHandler: subscriptionHandler.Delete,
+		ListPapersHandler:         paperQueryHandler.List,
+		GetPaperHandler:           paperQueryHandler.Get,
 	})
 	if err != nil {
 		t.Fatalf("create in-process M1 API: %v", err)
@@ -676,9 +681,7 @@ func createSubscriptionBody(
 		"enabled":   enabled,
 		"rules": map[string]any{
 			"categories":       categories,
-			"authors":          []string{},
 			"include_keywords": []string{},
-			"exclude_keywords": []string{},
 		},
 	}
 }
@@ -696,13 +699,6 @@ func cleanupM1TestData(
 		return
 	}
 	if len(userIDs) > 0 {
-		if err := database.Exec(
-			"DELETE FROM subscription_rules WHERE subscription_id IN (SELECT id FROM subscriptions WHERE user_id IN ?)",
-			userIDs,
-		).Error; err != nil {
-			t.Errorf("cleanup isolated M1 subscription rules: %v", err)
-			return
-		}
 		if err := database.Where("user_id IN ?", userIDs).Delete(&subscription.Subscription{}).Error; err != nil {
 			t.Errorf("cleanup isolated M1 subscriptions: %v", err)
 			return

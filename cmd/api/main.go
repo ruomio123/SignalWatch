@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"signalwatch/internal/auth"
+	"signalwatch/internal/paper"
 	"signalwatch/internal/platform/config"
 	"signalwatch/internal/platform/db"
 	"signalwatch/internal/platform/logging"
@@ -105,6 +106,8 @@ func main() {
 	subscriptionRepository := subscription.NewRepository(database)
 	subscriptionService := subscription.NewService(subscriptionRepository, sourceService)
 	subscriptionHandler := subscription.NewHandler(subscriptionService, logger)
+	paperQueryService := paper.NewQueryService(paper.NewQueryRepository(database))
+	paperQueryHandler := paper.NewQueryHandler(paperQueryService, logger)
 
 	router, err := server.NewRouter(server.Dependencies{
 		AppEnv:                    cfg.AppEnv,
@@ -124,6 +127,8 @@ func main() {
 		GetSubscriptionHandler:    subscriptionHandler.Get,
 		UpdateSubscriptionHandler: subscriptionHandler.Update,
 		DeleteSubscriptionHandler: subscriptionHandler.Delete,
+		ListPapersHandler:         paperQueryHandler.List,
+		GetPaperHandler:           paperQueryHandler.Get,
 	})
 	if err != nil {
 		logger.Error(

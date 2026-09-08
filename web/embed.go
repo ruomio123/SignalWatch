@@ -28,7 +28,7 @@ func RegisterRoutes(router *gin.Engine) {
 		c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML)
 	}
 
-	for _, route := range []string{"/", "/login", "/register", "/app", "/subscriptions", "/settings"} {
+	for _, route := range []string{"/", "/login", "/register", "/app", "/papers", "/subscriptions", "/settings"} {
 		router.GET(route, index)
 	}
 

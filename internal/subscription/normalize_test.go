@@ -8,12 +8,10 @@ import (
 	"signalwatch/internal/source"
 )
 
-func TestNormalizeRulesNormalizesAllFourGroups(t *testing.T) {
+func TestNormalizeRulesNormalizesFlatCategoryAndKeywords(t *testing.T) {
 	rules, err := NormalizeRules(RulesInput{
-		Categories:      []string{" cs.ai ", "CS.cl"},
-		Authors:         []string{"  Jane\t\nDoe  "},
-		IncludeKeywords: []string{" Tool\u2003Use "},
-		ExcludeKeywords: []string{" SURVEY "},
+		Categories:      []string{" cs.ai "},
+		IncludeKeywords: []string{" Tool\u2003Use ", "Agent"},
 	}, arXivCatalog())
 	if err != nil {
 		t.Fatalf("normalize rules: %v", err)
@@ -21,17 +19,14 @@ func TestNormalizeRulesNormalizesAllFourGroups(t *testing.T) {
 
 	assertNormalizedGroup(t, rules.Categories, []NormalizedRule{
 		{RuleValue: "cs.AI", NormalizedValue: "cs.AI"},
-		{RuleValue: "cs.CL", NormalizedValue: "cs.CL"},
 	})
-	assertNormalizedGroup(t, rules.Authors, []NormalizedRule{{
-		RuleValue: "Jane Doe", NormalizedValue: "jane doe",
-	}})
-	assertNormalizedGroup(t, rules.IncludeKeywords, []NormalizedRule{{
-		RuleValue: "Tool Use", NormalizedValue: "tool use",
-	}})
-	assertNormalizedGroup(t, rules.ExcludeKeywords, []NormalizedRule{{
-		RuleValue: "SURVEY", NormalizedValue: "survey",
-	}})
+	assertNormalizedGroup(t, rules.IncludeKeywords, []NormalizedRule{
+		{RuleValue: "Tool Use", NormalizedValue: "tool use"},
+		{RuleValue: "Agent", NormalizedValue: "agent"},
+	})
+	if len(rules.Authors) != 0 || len(rules.ExcludeKeywords) != 0 {
+		t.Fatalf("unsupported groups must remain empty: %+v", rules)
+	}
 }
 
 func TestNormalizeRulesRejectsDuplicatesAfterNormalization(t *testing.T) {
@@ -39,10 +34,7 @@ func TestNormalizeRulesRejectsDuplicatesAfterNormalization(t *testing.T) {
 		name  string
 		rules RulesInput
 	}{
-		{"category", RulesInput{Categories: []string{"cs.AI", " cs.ai "}}},
-		{"author", RulesInput{Categories: []string{"cs.AI"}, Authors: []string{"Jane Doe", " jane\tDOE "}}},
 		{"include keyword", RulesInput{Categories: []string{"cs.AI"}, IncludeKeywords: []string{"Agent", " agent "}}},
-		{"exclude keyword", RulesInput{Categories: []string{"cs.AI"}, ExcludeKeywords: []string{"Survey", "survey"}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := NormalizeRules(test.rules, arXivCatalog())
@@ -83,21 +75,18 @@ func TestNormalizeRulesValidatesEveryGroupLimit(t *testing.T) {
 	}
 }
 
-func TestNormalizeRulesAcceptsEveryGroupAtItsCountBoundary(t *testing.T) {
+func TestNormalizeRulesAcceptsFlatFieldsAtTheirCountBoundary(t *testing.T) {
 	catalog := arXivCatalog()
 	catalog.AllowedCategories = distinctValues("category", maxCategories)
 	rules, err := NormalizeRules(RulesInput{
 		Categories:      append([]string(nil), catalog.AllowedCategories...),
-		Authors:         distinctValues("author", maxAuthors),
 		IncludeKeywords: distinctValues("include", maxIncludeKeywords),
-		ExcludeKeywords: distinctValues("exclude", maxExcludeKeywords),
 	}, catalog)
 	if err != nil {
 		t.Fatalf("expected exact group limits to be accepted: %v", err)
 	}
-	if len(rules.Categories) != maxCategories || len(rules.Authors) != maxAuthors ||
-		len(rules.IncludeKeywords) != maxIncludeKeywords ||
-		len(rules.ExcludeKeywords) != maxExcludeKeywords {
+	if len(rules.Categories) != maxCategories ||
+		len(rules.IncludeKeywords) != maxIncludeKeywords {
 		t.Fatalf("unexpected normalized group sizes %+v", rules)
 	}
 }
@@ -133,9 +122,7 @@ func arXivCatalog() source.PublicSource {
 		ID: 1, SourceKey: "arxiv", Kind: source.KindArXiv, Name: "arXiv",
 		RuleTypes: []string{
 			source.RuleTypeCategory,
-			source.RuleTypeAuthor,
 			source.RuleTypeIncludeKeyword,
-			source.RuleTypeExcludeKeyword,
 		},
 		AllowedCategories: []string{"cs.AI", "cs.CL"},
 	}

@@ -2,16 +2,22 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"signalwatch/internal/collector"
+	"signalwatch/internal/matcher"
+	"signalwatch/internal/paper"
 	"signalwatch/internal/platform/config"
 	"signalwatch/internal/platform/db"
 	"signalwatch/internal/platform/logging"
 	"signalwatch/internal/platform/redis"
+	"signalwatch/internal/source/arxiv"
 )
 
 const (
@@ -74,23 +80,96 @@ func main() {
 	// 创建能够监听 os.Interrupt 和 syscall.SIGTERM 的 Context。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	limiter, err := arxiv.NewRedisLimiter(
+		redisClient,
+		"signalwatch:arxiv:next_allowed_at",
+		cfg.ArXivRequestInterval,
+	)
+	if err != nil {
+		logger.Error("initialize arxiv limiter failed", "module", "collector", "error", err)
+		os.Exit(1)
+	}
+	lockManager, err := collector.NewRedisLockManager(redisClient, "signalwatch:collector")
+	if err != nil {
+		logger.Error("initialize collector lock failed", "module", "collector", "error", err)
+		os.Exit(1)
+	}
+	matcherService, err := matcher.NewService(
+		matcher.NewRepository(database),
+		func() time.Time { return time.Now().UTC() },
+	)
+	if err != nil {
+		logger.Error("initialize matcher service failed", "module", "matcher", "error", err)
+		os.Exit(1)
+	}
+	matcherPool, err := matcher.NewPool(matcherService, logger, matcher.PoolConfig{
+		Workers: cfg.MatcherWorkers, QueueCapacity: cfg.MatcherQueueCapacity,
+	})
+	if err != nil {
+		logger.Error("initialize matcher pool failed", "module", "matcher", "error", err)
+		os.Exit(1)
+	}
+	collectorService, err := collector.NewService(
+		collector.NewRepository(database),
+		paper.NewRepository(database),
+		matcherPool,
+		lockManager,
+		collector.ArXivClientFactory{
+			HTTPClient: &http.Client{Timeout: cfg.ArXivHTTPTimeout},
+			Limiter:    limiter,
+			Config: arxiv.Config{
+				PageSize:         cfg.ArXivPageSize,
+				MaxResponseBytes: cfg.ArXivMaxResponseBytes,
+				RequestAttempts:  cfg.ArXivRequestAttempts,
+				RetryBackoff:     cfg.ArXivRequestBackoff,
+			},
+		},
+		logger,
+		func() time.Time { return time.Now().UTC() },
+		collector.Config{
+			Lookback: cfg.ArXivLookback,
+			LockTTL:  cfg.CollectorLockTTL,
+			MaxPages: cfg.ArXivMaxPages,
+		},
+	)
+	if err != nil {
+		logger.Error("initialize collector service failed", "module", "collector", "error", err)
+		os.Exit(1)
+	}
 	// 记录 Worker 启动日志。
 	logger.Info(
 		"worker starting",
 		"module", "worker",
 		"heartbeat", cfg.WorkerHeartbeat,
+		"matcher_workers", cfg.MatcherWorkers,
+		"matcher_queue_capacity", cfg.MatcherQueueCapacity,
 		"env", cfg.AppEnv,
 	)
+	matcherDone := make(chan struct{})
+	go func() {
+		defer close(matcherDone)
+		matcherPool.Run(ctx)
+	}()
 	// 调用 run，启动 Worker 的长期运行循环。
-	run(ctx, logger, cfg.WorkerHeartbeat)
+	run(ctx, logger, cfg.WorkerHeartbeat, cfg.CollectorInterval, collectorService.Run)
+	<-matcherDone
 	// run 返回后，记录 Worker 已停止的日志。
 	logger.Info("worker stopped", "module", "worker")
 }
 
-func run(ctx context.Context, logger *slog.Logger, interval time.Duration) {
+func run(
+	ctx context.Context,
+	logger *slog.Logger,
+	heartbeatInterval time.Duration,
+	collectorInterval time.Duration,
+	collect func(context.Context) error,
+) {
 	// 按照 interval 创建 Ticker(定时器)，并确保函数退出时停止它。
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	heartbeat := time.NewTicker(heartbeatInterval)
+	defer heartbeat.Stop()
+	collectorTicker := time.NewTicker(collectorInterval)
+	defer collectorTicker.Stop()
+	runCollectorCycle(ctx, logger, collect)
 	// 使用循环和 select，同时等待退出信号与心跳事件。
 	// 收到退出信号时记录日志并返回。
 	// 收到心跳事件时记录心跳日志。
@@ -99,12 +178,20 @@ func run(ctx context.Context, logger *slog.Logger, interval time.Duration) {
 		case <-ctx.Done():
 			logger.Info("worker stopping", "module", "worker")
 			return
-		case tickedAt := <-ticker.C:
+		case tickedAt := <-heartbeat.C:
 			logger.Info(
 				"worker heartbeat",
 				"module", "worker",
 				"time_at", tickedAt,
 			)
+		case <-collectorTicker.C:
+			runCollectorCycle(ctx, logger, collect)
 		}
+	}
+}
+
+func runCollectorCycle(ctx context.Context, logger *slog.Logger, collect func(context.Context) error) {
+	if err := collect(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		logger.Error("collector cycle failed", "module", "collector", "error", err)
 	}
 }

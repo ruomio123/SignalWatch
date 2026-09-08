@@ -32,6 +32,8 @@ type Dependencies struct {
 	GetSubscriptionHandler    gin.HandlerFunc
 	UpdateSubscriptionHandler gin.HandlerFunc
 	DeleteSubscriptionHandler gin.HandlerFunc
+	ListPapersHandler         gin.HandlerFunc
+	GetPaperHandler           gin.HandlerFunc
 }
 
 // NewRouter 创建并配置 SignalWatch API 的 Gin Router。
@@ -113,6 +115,8 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 		dependencies.GetSubscriptionHandler,
 		dependencies.UpdateSubscriptionHandler,
 		dependencies.DeleteSubscriptionHandler,
+		dependencies.ListPapersHandler,
+		dependencies.GetPaperHandler,
 	)
 
 	web.RegisterRoutes(router)
@@ -193,6 +197,12 @@ func validateDependencies(dependencies Dependencies) error {
 	if dependencies.DeleteSubscriptionHandler == nil {
 		return errors.New("delete subscription handler is required")
 	}
+	if dependencies.ListPapersHandler == nil {
+		return errors.New("list papers handler is required")
+	}
+	if dependencies.GetPaperHandler == nil {
+		return errors.New("get paper handler is required")
+	}
 
 	return nil
 }
@@ -212,6 +222,8 @@ func registerAPIV1Routes(
 	getSubscriptionHandler gin.HandlerFunc,
 	updateSubscriptionHandler gin.HandlerFunc,
 	deleteSubscriptionHandler gin.HandlerFunc,
+	listPapersHandler gin.HandlerFunc,
+	getPaperHandler gin.HandlerFunc,
 ) {
 	auth := apiV1.Group("/auth")
 	auth.POST("/register", registerHandler)
@@ -235,4 +247,6 @@ func registerAPIV1Routes(
 	protected.GET("/subscriptions/:id", getSubscriptionHandler)
 	protected.PATCH("/subscriptions/:id", updateSubscriptionHandler)
 	protected.DELETE("/subscriptions/:id", deleteSubscriptionHandler)
+	protected.GET("/papers", listPapersHandler)
+	protected.GET("/papers/:id", getPaperHandler)
 }

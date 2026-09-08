@@ -9,6 +9,8 @@ import (
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+
+	"signalwatch/internal/source"
 )
 
 func TestRepositoryCreateAtomicLocksChecksAndCommitsSubscriptionWithRules(t *testing.T) {
@@ -20,39 +22,40 @@ func TestRepositoryCreateAtomicLocksChecksAndCommitsSubscriptionWithRules(t *tes
 	if err := repository.CreateAtomic(context.Background(), &item, rules); err != nil {
 		t.Fatalf("create atomic: %v", err)
 	}
-	if !manager.committed || manager.persistedSubscriptions != 1 || manager.persistedRules != 1 {
-		t.Fatalf("expected committed subscription and rule, got %+v", manager)
+	if !manager.committed || manager.persistedSubscriptions != 1 || manager.persistedRules != 0 {
+		t.Fatalf("expected one flattened subscription write, got %+v", manager)
 	}
-	wantOrder := []string{"lock", "count", "subscription", "rules"}
+	wantOrder := []string{"lock", "count", "subscription"}
 	for index, want := range wantOrder {
 		if manager.store.order[index] != want {
 			t.Fatalf("expected operation %d to be %q, got %v", index, want, manager.store.order)
 		}
 	}
-	if item.ID != 77 || rules[0].SubscriptionID != 77 {
-		t.Fatalf("expected generated subscription ID on rule, got item=%+v rules=%+v", item, rules)
+	if item.ID != 77 || item.Category != "cs.AI" || string(item.KeywordsJSON) != "[]" {
+		t.Fatalf("expected flattened category and keywords, got item=%+v", item)
 	}
 }
 
-func TestRepositoryCreateAtomicRollsBackWhenRuleInsertFails(t *testing.T) {
-	ruleError := errors.New("rule insert failed")
-	manager := &fakeTransactionManager{store: &fakeTransactionStore{ruleError: ruleError}}
+func TestRepositoryCreateAtomicRejectsUnsupportedFlatRules(t *testing.T) {
+	manager := &fakeTransactionManager{store: &fakeTransactionStore{}}
 	repository := &repository{transactions: manager}
 	item := Subscription{UserID: 42, Enabled: true}
 
-	err := repository.CreateAtomic(context.Background(), &item, []Rule{{RuleType: "category"}})
-	if !errors.Is(err, ruleError) {
-		t.Fatalf("expected rule insert failure, got %v", err)
+	err := repository.CreateAtomic(context.Background(), &item, []Rule{{
+		RuleType: "author", RuleValue: "Jane Doe", NormalizedValue: "jane doe",
+	}})
+	if !errors.Is(err, ErrInvalidStoredRule) {
+		t.Fatalf("expected unsupported flat rule failure, got %v", err)
 	}
-	if manager.committed || manager.persistedSubscriptions != 0 || manager.persistedRules != 0 {
-		t.Fatalf("failed rule insert must leave no committed subscription, got %+v", manager)
+	if manager.committed || manager.persistedSubscriptions != 0 {
+		t.Fatalf("invalid flat rules must not start a transaction, got %+v", manager)
 	}
 }
 
 func TestRepositoryCreateAtomicEnforcesEnabledLimitUnderUserLock(t *testing.T) {
 	manager := &fakeTransactionManager{store: &fakeTransactionStore{count: maxEnabledSubscriptions}}
 	err := (&repository{transactions: manager}).CreateAtomic(
-		context.Background(), &Subscription{UserID: 42, Enabled: true}, nil,
+		context.Background(), &Subscription{UserID: 42, Enabled: true}, categoryRules("cs.AI"),
 	)
 	if !errors.Is(err, ErrLimitReached) {
 		t.Fatalf("expected subscription limit, got %v", err)
@@ -68,7 +71,7 @@ func TestRepositoryCreateAtomicEnforcesEnabledLimitUnderUserLock(t *testing.T) {
 func TestRepositoryCreateAtomicPausedSubscriptionDoesNotConsumeEnabledQuota(t *testing.T) {
 	manager := &fakeTransactionManager{store: &fakeTransactionStore{count: maxEnabledSubscriptions}}
 	err := (&repository{transactions: manager}).CreateAtomic(
-		context.Background(), &Subscription{UserID: 42, Enabled: false}, nil,
+		context.Background(), &Subscription{UserID: 42, Enabled: false}, categoryRules("cs.AI"),
 	)
 	if err != nil {
 		t.Fatalf("create paused subscription: %v", err)
@@ -92,7 +95,7 @@ func TestRepositoryCreateAtomicConcurrentEnabledCreatesStopAtLimit(t *testing.T)
 			errorsFound <- repository.CreateAtomic(
 				context.Background(),
 				&Subscription{UserID: 42, Enabled: true},
-				nil,
+				categoryRules("cs.AI"),
 			)
 		}()
 	}
@@ -173,7 +176,7 @@ func TestRepositoryListSQLUsesSameFiltersAndStableOrder(t *testing.T) {
 	}
 }
 
-func TestRepositoryAttachRulesSkipsEmptyINAndBatchesPage(t *testing.T) {
+func TestRepositoryAttachRulesUsesFlattenedSubscriptionRowsWithoutQueries(t *testing.T) {
 	empty, err := (&repository{}).attachRules(context.Background(), nil)
 	if err != nil || empty == nil || len(empty) != 0 {
 		t.Fatalf("empty page should skip database and return empty slice, got %#v err=%v", empty, err)
@@ -189,13 +192,15 @@ func TestRepositoryAttachRulesSkipsEmptyINAndBatchesPage(t *testing.T) {
 	rows := make([]subscriptionQueryRow, 20)
 	for index := range rows {
 		rows[index].SubscriptionID = uint64(index + 1)
+		rows[index].SubscriptionCategory = "cs.AI"
+		rows[index].SubscriptionKeywords = []byte(`["agent"]`)
 	}
 	results, err := (&repository{db: database}).attachRules(context.Background(), rows)
 	if err != nil {
 		t.Fatalf("attach rules: %v", err)
 	}
-	if queries != 1 || len(results) != 20 {
-		t.Fatalf("expected one batched rules query for 20 subscriptions, got queries=%d results=%d", queries, len(results))
+	if queries != 0 || len(results) != 20 || len(results[0].Rules) != 2 {
+		t.Fatalf("expected zero rule-table queries for flattened rows, got queries=%d results=%d", queries, len(results))
 	}
 }
 
@@ -205,11 +210,9 @@ func TestRepositoryUpdateAtomicChangesFieldsAndReplacesRulesInOneTransaction(t *
 	enabled := true
 	manager := &fakeTransactionManager{store: &fakeTransactionStore{
 		lockedSubscription: Subscription{
-			ID: 9, UserID: 42, Name: "old name", Objective: &oldObjective, Enabled: false, Version: 3,
+			ID: 9, UserID: 42, Name: "old name", Objective: &oldObjective,
+			Category: "cs.AI", KeywordsJSON: []byte(`[]`), Enabled: false, Version: 3,
 		},
-		existingRules: []Rule{{
-			ID: 1, SubscriptionID: 9, RuleType: "category", RuleValue: "cs.AI", NormalizedValue: "cs.AI",
-		}},
 		count: 19,
 	}}
 	replacement := []Rule{{RuleType: "category", RuleValue: "cs.CL", NormalizedValue: "cs.CL"}}
@@ -232,9 +235,7 @@ func TestRepositoryUpdateAtomicChangesFieldsAndReplacesRulesInOneTransaction(t *
 	if len(rules) != 1 || rules[0].SubscriptionID != 9 || rules[0].RuleValue != "cs.CL" {
 		t.Fatalf("unexpected replacement rules %+v", rules)
 	}
-	wantOrder := []string{
-		"subscription_lock", "list_rules", "lock", "count", "update", "delete_rules", "rules",
-	}
+	wantOrder := []string{"subscription_lock", "lock", "count", "update"}
 	if strings.Join(manager.store.order, ",") != strings.Join(wantOrder, ",") {
 		t.Fatalf("unexpected update order %v", manager.store.order)
 	}
@@ -243,10 +244,10 @@ func TestRepositoryUpdateAtomicChangesFieldsAndReplacesRulesInOneTransaction(t *
 func TestRepositoryUpdateAtomicIdenticalContentDoesNotIncrementOrReplace(t *testing.T) {
 	name := "same"
 	manager := &fakeTransactionManager{store: &fakeTransactionStore{
-		lockedSubscription: Subscription{ID: 9, UserID: 42, Name: name, Enabled: true, Version: 3},
-		existingRules: []Rule{{
-			ID: 1, SubscriptionID: 9, RuleType: "category", RuleValue: "cs.AI", NormalizedValue: "cs.AI",
-		}},
+		lockedSubscription: Subscription{
+			ID: 9, UserID: 42, Name: name, Category: "cs.AI",
+			KeywordsJSON: []byte(`[]`), Enabled: true, Version: 3,
+		},
 	}}
 	replacement := []Rule{{RuleType: "category", RuleValue: "cs.AI", NormalizedValue: "cs.AI"}}
 
@@ -256,30 +257,31 @@ func TestRepositoryUpdateAtomicIdenticalContentDoesNotIncrementOrReplace(t *test
 	if err != nil {
 		t.Fatalf("idempotent update: %v", err)
 	}
-	if updated.Version != 3 || manager.store.updateCalls != 0 || manager.store.deleteRulesCalls != 0 ||
-		manager.store.createdRules != 0 {
+	if updated.Version != 3 || manager.store.updateCalls != 0 {
 		t.Fatalf("identical content must not write or increment: updated=%+v store=%+v", updated, manager.store)
 	}
 }
 
-func TestRepositoryUpdateAtomicRollsBackFieldAndRuleReplacementOnInsertFailure(t *testing.T) {
-	insertErr := errors.New("replacement insert failed")
+func TestRepositoryUpdateAtomicRollsBackFlattenedReplacementOnUpdateFailure(t *testing.T) {
+	updateErr := errors.New("subscription update failed")
 	newName := "new"
 	manager := &fakeTransactionManager{store: &fakeTransactionStore{
-		lockedSubscription: Subscription{ID: 9, UserID: 42, Name: "old", Version: 3},
-		existingRules:      []Rule{{RuleType: "category", RuleValue: "cs.AI", NormalizedValue: "cs.AI"}},
-		ruleError:          insertErr,
+		lockedSubscription: Subscription{
+			ID: 9, UserID: 42, Name: "old", Category: "cs.AI",
+			KeywordsJSON: []byte(`[]`), Version: 3,
+		},
+		updateError: updateErr,
 	}}
 	replacement := []Rule{{RuleType: "category", RuleValue: "cs.CL", NormalizedValue: "cs.CL"}}
 
 	_, _, err := (&repository{transactions: manager}).UpdateAtomic(
 		context.Background(), 42, 9, 3, SubscriptionPatch{Name: &newName}, &replacement,
 	)
-	if !errors.Is(err, insertErr) || manager.committed {
-		t.Fatalf("expected rolled-back insert error, got err=%v committed=%v", err, manager.committed)
+	if !errors.Is(err, updateErr) || manager.committed {
+		t.Fatalf("expected rolled-back update error, got err=%v committed=%v", err, manager.committed)
 	}
-	if manager.store.updateCalls != 1 || manager.store.deleteRulesCalls != 1 {
-		t.Fatalf("expected update and replacement attempts inside transaction, got %+v", manager.store)
+	if manager.store.updateCalls != 1 {
+		t.Fatalf("expected one flattened update attempt inside transaction, got %+v", manager.store)
 	}
 }
 
@@ -313,8 +315,11 @@ func TestRepositoryUpdateAtomicDistinguishesVersionConflictWithoutLeakingOwnersh
 func TestRepositoryUpdateAtomicLimitLeavesPausedSubscriptionUntouched(t *testing.T) {
 	enabled := true
 	manager := &fakeTransactionManager{store: &fakeTransactionStore{
-		lockedSubscription: Subscription{ID: 9, UserID: 42, Name: "paused", Enabled: false, Version: 3},
-		count:              maxEnabledSubscriptions,
+		lockedSubscription: Subscription{
+			ID: 9, UserID: 42, Name: "paused", Category: "cs.AI",
+			KeywordsJSON: []byte(`[]`), Enabled: false, Version: 3,
+		},
+		count: maxEnabledSubscriptions,
 	}}
 	_, _, err := (&repository{transactions: manager}).UpdateAtomic(
 		context.Background(), 42, 9, 3, SubscriptionPatch{Enabled: &enabled}, nil,
@@ -424,6 +429,19 @@ func TestRepositorySoftDeleteSQLIsVersionedOwnedAndDoesNotDeleteRules(t *testing
 	}
 }
 
+func categoryRules(category string, keywords ...string) []Rule {
+	rules := []Rule{{
+		RuleType: source.RuleTypeCategory, RuleValue: category, NormalizedValue: category,
+	}}
+	for _, keyword := range keywords {
+		rules = append(rules, Rule{
+			RuleType:  source.RuleTypeIncludeKeyword,
+			RuleValue: keyword, NormalizedValue: strings.ToLower(keyword),
+		})
+	}
+	return rules
+}
+
 type fakeDeletionStore struct {
 	deleted    bool
 	exists     bool
@@ -474,7 +492,10 @@ func (*serializedEnableStore) LockOwnedSubscription(
 	id uint64,
 	version uint32,
 ) (Subscription, error) {
-	return Subscription{ID: id, UserID: userID, Enabled: false, Version: version}, nil
+	return Subscription{
+		ID: id, UserID: userID, Category: "cs.AI", KeywordsJSON: []byte(`[]`),
+		Enabled: false, Version: version,
+	}, nil
 }
 
 func (*serializedEnableStore) OwnedActiveSubscriptionExists(context.Context, uint64, uint64) (bool, error) {
@@ -621,6 +642,12 @@ func (store *fakeTransactionStore) UpdateSubscription(_ context.Context, item *S
 	}
 	if patch.Enabled != nil {
 		item.Enabled = *patch.Enabled
+	}
+	if patch.Category != nil {
+		item.Category = *patch.Category
+	}
+	if patch.KeywordsJSON != nil {
+		item.KeywordsJSON = append(item.KeywordsJSON[:0], (*patch.KeywordsJSON)...)
 	}
 	item.Version++
 	return nil

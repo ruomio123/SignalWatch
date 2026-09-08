@@ -270,7 +270,7 @@ func TestHandlerUpdateParsesIfMatchPartialFieldsAndCompleteRules(t *testing.T) {
 	}}
 	router, _ := newSubscriptionTestRouter(service, true)
 	request := httptest.NewRequest(http.MethodPatch, createSubscriptionPath+"/9", strings.NewReader(
-		`{"objective":null,"enabled":false,"rules":{"categories":["cs.CL"],"authors":[],"include_keywords":[],"exclude_keywords":[]}}`,
+		`{"objective":null,"enabled":false,"rules":{"categories":["cs.CL"],"include_keywords":[]}}`,
 	))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("If-Match", `"3"`)
@@ -282,7 +282,8 @@ func TestHandlerUpdateParsesIfMatchPartialFieldsAndCompleteRules(t *testing.T) {
 	}
 	if gotUserID != 42 || gotID != 9 || gotVersion != 3 || gotInput.Name != nil ||
 		!gotInput.ObjectiveSet || gotInput.Objective != nil || gotInput.Enabled == nil || *gotInput.Enabled ||
-		gotInput.Rules == nil || len(gotInput.Rules.Categories) != 1 || gotInput.Rules.Authors == nil {
+		gotInput.Rules == nil || len(gotInput.Rules.Categories) != 1 ||
+		len(gotInput.Rules.Authors) != 0 || len(gotInput.Rules.ExcludeKeywords) != 0 {
 		t.Fatalf("unexpected update input user=%d id=%d version=%d input=%+v", gotUserID, gotID, gotVersion, gotInput)
 	}
 }

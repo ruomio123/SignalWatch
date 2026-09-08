@@ -24,12 +24,17 @@ export MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD
 export MYSQL_DSN MYSQL_MAX_OPEN_CONNS MYSQL_MAX_IDLE_CONNS
 export REDIS_ADDR REDIS_PASSWORD REDIS_DB
 export JWT_SECRET JWT_TTL JWT_ISSUER
+export COLLECTOR_INTERVAL COLLECTOR_LOCK_TTL ARXIV_LOOKBACK
+export ARXIV_PAGE_SIZE ARXIV_MAX_PAGES ARXIV_MAX_RESPONSE_BYTES
+export ARXIV_REQUEST_ATTEMPTS ARXIV_REQUEST_BACKOFF ARXIV_REQUEST_INTERVAL
+export ARXIV_HTTP_TIMEOUT
+export MATCHER_WORKERS MATCHER_QUEUE_CAPACITY
 export M1_TEST_MYSQL_DSN
 
 # 这些名称代表操作，不代表同名文件。
 # 即使目录中出现名为 test、api 的文件，Make 仍然会执行对应命令。
 .PHONY: deps-up deps-down api worker fmt vet test test-race openapi-check \
-	test-integration m1-verify require-env require-test-dsn migrate-up \
+	test-integration m1-verify m2-verify m3-verify require-env require-test-dsn migrate-up \
 	migrate-down migrate-status migrate-test-up migrate-test-status
 # 检查本地环境变量文件是否存在。
 # api 和 worker 缺少 .env 时，会在真正启动之前停止并显示处理方法。
@@ -71,7 +76,7 @@ migrate-down: require-env
 migrate-status: require-env
 	@$(GOOSE) -dir "$(MIGRATIONS_DIR)" mysql "$$MYSQL_DSN" status
 
-# M1 集成数据库必须由调用方预先创建；这里仅应用/查看项目迁移。
+# 集成数据库必须由调用方预先创建；这里仅应用/查看项目迁移。
 migrate-test-up: require-test-dsn
 	@$(GOOSE) -dir "$(MIGRATIONS_DIR)" mysql "$$M1_TEST_MYSQL_DSN" up
 
@@ -119,3 +124,9 @@ m1-verify: require-test-dsn
 	@$(MAKE) test
 	@$(MAKE) test-race
 	@$(MAKE) test-integration
+
+# 当前全量封板检查；保留 m1-verify 以兼容原有开发命令。
+m2-verify: m1-verify
+
+# M3 沿用五表结构；全量验收额外由 matcher 单元/竞态/真实 MySQL 测试覆盖。
+m3-verify: m2-verify

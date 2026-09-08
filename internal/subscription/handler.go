@@ -53,9 +53,7 @@ type createRequest struct {
 
 type createRulesRequest struct {
 	Categories      []string `json:"categories"`
-	Authors         []string `json:"authors"`
 	IncludeKeywords []string `json:"include_keywords"`
-	ExcludeKeywords []string `json:"exclude_keywords"`
 }
 
 type updateRequest struct {
@@ -67,9 +65,7 @@ type updateRequest struct {
 
 type updateRulesRequest struct {
 	Categories      json.RawMessage `json:"categories"`
-	Authors         json.RawMessage `json:"authors"`
 	IncludeKeywords json.RawMessage `json:"include_keywords"`
-	ExcludeKeywords json.RawMessage `json:"exclude_keywords"`
 }
 
 type Handler struct {
@@ -99,9 +95,7 @@ func (handler *Handler) Create(c *gin.Context) {
 		Enabled:   request.Enabled,
 		Rules: RulesInput{
 			Categories:      request.Rules.Categories,
-			Authors:         request.Rules.Authors,
 			IncludeKeywords: request.Rules.IncludeKeywords,
-			ExcludeKeywords: request.Rules.ExcludeKeywords,
 		},
 	})
 	if err != nil {
@@ -308,29 +302,20 @@ func parseUpdateRules(raw json.RawMessage) (RulesInput, error) {
 	if err := decodeStrictJSON(raw, &request); err != nil {
 		return RulesInput{}, err
 	}
-	groups := []*json.RawMessage{
-		&request.Categories,
-		&request.Authors,
-		&request.IncludeKeywords,
-		&request.ExcludeKeywords,
-	}
-	for _, group := range groups {
-		if *group == nil || bytes.Equal(bytes.TrimSpace(*group), []byte("null")) {
-			return RulesInput{}, ErrInvalidRule
-		}
+	if request.Categories == nil || bytes.Equal(bytes.TrimSpace(request.Categories), []byte("null")) {
+		return RulesInput{}, ErrInvalidRule
 	}
 
 	var result RulesInput
-	for _, item := range []struct {
-		raw    json.RawMessage
-		target *[]string
-	}{
-		{request.Categories, &result.Categories},
-		{request.Authors, &result.Authors},
-		{request.IncludeKeywords, &result.IncludeKeywords},
-		{request.ExcludeKeywords, &result.ExcludeKeywords},
-	} {
-		if err := decodeStrictJSON(item.raw, item.target); err != nil {
+	if err := decodeStrictJSON(request.Categories, &result.Categories); err != nil {
+		return RulesInput{}, err
+	}
+	result.IncludeKeywords = []string{}
+	if request.IncludeKeywords != nil {
+		if bytes.Equal(bytes.TrimSpace(request.IncludeKeywords), []byte("null")) {
+			return RulesInput{}, ErrInvalidRule
+		}
+		if err := decodeStrictJSON(request.IncludeKeywords, &result.IncludeKeywords); err != nil {
 			return RulesInput{}, err
 		}
 	}

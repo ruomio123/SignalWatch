@@ -16,7 +16,7 @@ import (
 	"signalwatch/internal/server"
 )
 
-func TestOpenAPIContractIsValidAndCoversM1Routes(t *testing.T) {
+func TestOpenAPIContractIsValidAndCoversCurrentRoutes(t *testing.T) {
 	specPath := projectFile(t, "api", "openapi.yaml")
 	loader := openapi3.NewLoader()
 	loader.IsExternalRefsAllowed = false
@@ -31,7 +31,7 @@ func TestOpenAPIContractIsValidAndCoversM1Routes(t *testing.T) {
 		t.Fatalf("expected OpenAPI 3.1.0, got %q", document.OpenAPI)
 	}
 
-	expected := m1Operations()
+	expected := currentOperations()
 	if document.Paths.Len() != len(expected) {
 		t.Fatalf("expected %d documented paths, got %d", len(expected), document.Paths.Len())
 	}
@@ -70,9 +70,9 @@ func TestOpenAPIRegistrationDocumentsPasswordComposition(t *testing.T) {
 	}
 }
 
-func TestOpenAPIContractMatchesRegisteredM1RouterOperations(t *testing.T) {
+func TestOpenAPIContractMatchesRegisteredRouterOperations(t *testing.T) {
 	document := loadContract(t)
-	expected := m1Operations()
+	expected := currentOperations()
 	registered := make(map[string]map[string]bool, len(expected))
 	for path := range expected {
 		registered[path] = make(map[string]bool)
@@ -97,6 +97,8 @@ func TestOpenAPIContractMatchesRegisteredM1RouterOperations(t *testing.T) {
 		GetSubscriptionHandler:    noop,
 		UpdateSubscriptionHandler: noop,
 		DeleteSubscriptionHandler: noop,
+		ListPapersHandler:         noop,
+		GetPaperHandler:           noop,
 	})
 	if err != nil {
 		t.Fatalf("create router for contract comparison: %v", err)
@@ -111,10 +113,10 @@ func TestOpenAPIContractMatchesRegisteredM1RouterOperations(t *testing.T) {
 		item := document.Paths.Find(path)
 		for _, method := range methods {
 			if !registered[path][method] {
-				t.Errorf("Router is missing documented M1 operation %s %s", method, path)
+				t.Errorf("Router is missing documented operation %s %s", method, path)
 			}
 			if item == nil || item.Operations()[method] == nil {
-				t.Errorf("OpenAPI is missing registered M1 operation %s %s", method, path)
+				t.Errorf("OpenAPI is missing registered operation %s %s", method, path)
 			}
 		}
 	}
@@ -165,7 +167,7 @@ func TestOpenAPISecurityVersionHeadersAndDeleteResponseMatchHandlers(t *testing.
 	}
 }
 
-func TestOpenAPIContainsNoDeploymentSecretsOrFutureM1Claims(t *testing.T) {
+func TestOpenAPIContainsNoDeploymentSecretsAndStatesM3Boundary(t *testing.T) {
 	content, err := os.ReadFile(projectFile(t, "api", "openapi.yaml"))
 	if err != nil {
 		t.Fatalf("read OpenAPI contract: %v", err)
@@ -183,9 +185,14 @@ func TestOpenAPIContainsNoDeploymentSecretsOrFutureM1Claims(t *testing.T) {
 			t.Errorf("OpenAPI contract contains forbidden deployment detail %q", forbidden)
 		}
 	}
-	for _, boundary := range []string{"content ingestion", "matching", "email delivery", "llms", "agents"} {
+	if !strings.Contains(lower, "background local matching") ||
+		!strings.Contains(lower, "explainable match reasons") ||
+		!strings.Contains(lower, "matched arxiv papers") {
+		t.Error("OpenAPI contract must describe the M3 matching and paper-query boundary")
+	}
+	for _, boundary := range []string{"email", "delivery", "llms", "agents"} {
 		if !strings.Contains(lower, boundary) {
-			t.Errorf("OpenAPI contract must state that %q is outside M1", boundary)
+			t.Errorf("OpenAPI contract must state that %q is outside the M3 public API", boundary)
 		}
 	}
 }
@@ -222,7 +229,7 @@ func mapKeys[V any](values map[string]V) []string {
 	return keys
 }
 
-func m1Operations() map[string][]string {
+func currentOperations() map[string][]string {
 	return map[string][]string{
 		"/healthz":                   {"GET"},
 		"/readyz":                    {"GET"},
@@ -233,5 +240,7 @@ func m1Operations() map[string][]string {
 		"/api/v1/sources/{id}":       {"GET"},
 		"/api/v1/subscriptions":      {"GET", "POST"},
 		"/api/v1/subscriptions/{id}": {"GET", "PATCH", "DELETE"},
+		"/api/v1/papers":             {"GET"},
+		"/api/v1/papers/{id}":        {"GET"},
 	}
 }

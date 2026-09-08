@@ -28,23 +28,48 @@ type Config struct {
 	JWTSecret string
 	JWTTTL    time.Duration
 	JWTIssuer string
+
+	CollectorInterval     time.Duration
+	CollectorLockTTL      time.Duration
+	ArXivLookback         time.Duration
+	ArXivPageSize         int
+	ArXivMaxPages         int
+	ArXivMaxResponseBytes int64
+	ArXivRequestAttempts  int
+	ArXivRequestBackoff   time.Duration
+	ArXivRequestInterval  time.Duration
+	ArXivHTTPTimeout      time.Duration
+	MatcherWorkers        int
+	MatcherQueueCapacity  int
 }
 
 // 把环境变量的名字集中管理，避免项目中到处直接写字符串
 const (
-	envAppEnv            = "APP_ENV"
-	envHTTPAddr          = "HTTP_ADDR"
-	envLogLevel          = "LOG_LEVEL"
-	envWorkerHeartbeat   = "WORKER_HEARTBEAT"
-	envMySQLDSN          = "MYSQL_DSN"
-	envMySQLMaxOpenConns = "MYSQL_MAX_OPEN_CONNS"
-	envMySQLMaxIdleConns = "MYSQL_MAX_IDLE_CONNS"
-	envRedisAddr         = "REDIS_ADDR"
-	envRedisPassword     = "REDIS_PASSWORD"
-	envRedisDB           = "REDIS_DB"
-	envJWTSecret         = "JWT_SECRET"
-	envJWTTTL            = "JWT_TTL"
-	envJWTIssuer         = "JWT_ISSUER"
+	envAppEnv                = "APP_ENV"
+	envHTTPAddr              = "HTTP_ADDR"
+	envLogLevel              = "LOG_LEVEL"
+	envWorkerHeartbeat       = "WORKER_HEARTBEAT"
+	envMySQLDSN              = "MYSQL_DSN"
+	envMySQLMaxOpenConns     = "MYSQL_MAX_OPEN_CONNS"
+	envMySQLMaxIdleConns     = "MYSQL_MAX_IDLE_CONNS"
+	envRedisAddr             = "REDIS_ADDR"
+	envRedisPassword         = "REDIS_PASSWORD"
+	envRedisDB               = "REDIS_DB"
+	envJWTSecret             = "JWT_SECRET"
+	envJWTTTL                = "JWT_TTL"
+	envJWTIssuer             = "JWT_ISSUER"
+	envCollectorInterval     = "COLLECTOR_INTERVAL"
+	envCollectorLockTTL      = "COLLECTOR_LOCK_TTL"
+	envArXivLookback         = "ARXIV_LOOKBACK"
+	envArXivPageSize         = "ARXIV_PAGE_SIZE"
+	envArXivMaxPages         = "ARXIV_MAX_PAGES"
+	envArXivMaxResponseBytes = "ARXIV_MAX_RESPONSE_BYTES"
+	envArXivRequestAttempts  = "ARXIV_REQUEST_ATTEMPTS"
+	envArXivRequestBackoff   = "ARXIV_REQUEST_BACKOFF"
+	envArXivRequestInterval  = "ARXIV_REQUEST_INTERVAL"
+	envArXivHTTPTimeout      = "ARXIV_HTTP_TIMEOUT"
+	envMatcherWorkers        = "MATCHER_WORKERS"
+	envMatcherQueueCapacity  = "MATCHER_QUEUE_CAPACITY"
 )
 
 /*
@@ -119,19 +144,31 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg := Config{
-		AppEnv:            appEnv,
-		HTTPAddr:          httpAddr,
-		LogLevel:          logLevel,
-		WorkerHeartbeat:   heartbeat,
-		MySQLDSN:          mysqlDSN,
-		MySQLMaxOpenConns: mysqlMaxOpenConns,
-		MySQLMaxIdleConns: mysqlMaxIdleConns,
-		RedisAddr:         redisAddr,
-		RedisPassword:     redisPassword,
-		RedisDB:           redisDB,
-		JWTSecret:         jwtSecret,
-		JWTTTL:            jwtTTL,
-		JWTIssuer:         jwtIssuer,
+		AppEnv:                appEnv,
+		HTTPAddr:              httpAddr,
+		LogLevel:              logLevel,
+		WorkerHeartbeat:       heartbeat,
+		MySQLDSN:              mysqlDSN,
+		MySQLMaxOpenConns:     mysqlMaxOpenConns,
+		MySQLMaxIdleConns:     mysqlMaxIdleConns,
+		RedisAddr:             redisAddr,
+		RedisPassword:         redisPassword,
+		RedisDB:               redisDB,
+		JWTSecret:             jwtSecret,
+		JWTTTL:                jwtTTL,
+		JWTIssuer:             jwtIssuer,
+		CollectorInterval:     durationEnvOrDefault(envCollectorInterval, time.Hour),
+		CollectorLockTTL:      durationEnvOrDefault(envCollectorLockTTL, 55*time.Minute),
+		ArXivLookback:         durationEnvOrDefault(envArXivLookback, 48*time.Hour),
+		ArXivPageSize:         intEnvOrDefault(envArXivPageSize, 100),
+		ArXivMaxPages:         intEnvOrDefault(envArXivMaxPages, 10),
+		ArXivMaxResponseBytes: int64EnvOrDefault(envArXivMaxResponseBytes, 5<<20),
+		ArXivRequestAttempts:  intEnvOrDefault(envArXivRequestAttempts, 3),
+		ArXivRequestBackoff:   durationEnvOrDefault(envArXivRequestBackoff, 5*time.Second),
+		ArXivRequestInterval:  durationEnvOrDefault(envArXivRequestInterval, 3*time.Second),
+		ArXivHTTPTimeout:      durationEnvOrDefault(envArXivHTTPTimeout, 30*time.Second),
+		MatcherWorkers:        intEnvOrDefault(envMatcherWorkers, 4),
+		MatcherQueueCapacity:  intEnvOrDefault(envMatcherQueueCapacity, 256),
 	}
 
 	if err := validate(cfg); err != nil {
@@ -211,6 +248,18 @@ func validate(cfg Config) error {
 	if strings.TrimSpace(cfg.JWTIssuer) == "" {
 		return fmt.Errorf("invalid JWT_ISSUER: must not be blank")
 	}
+	if cfg.CollectorInterval <= 0 || cfg.CollectorLockTTL <= 0 || cfg.ArXivLookback <= 0 {
+		return fmt.Errorf("invalid collector scheduling configuration")
+	}
+	if cfg.ArXivPageSize < 1 || cfg.ArXivPageSize > 2000 || cfg.ArXivMaxPages < 1 ||
+		cfg.ArXivMaxResponseBytes < 1024 || cfg.ArXivRequestAttempts < 1 ||
+		cfg.ArXivRequestBackoff < 0 || cfg.ArXivRequestInterval < 3*time.Second ||
+		cfg.ArXivHTTPTimeout <= 0 {
+		return fmt.Errorf("invalid arxiv configuration")
+	}
+	if cfg.MatcherWorkers < 1 || cfg.MatcherQueueCapacity < 1 {
+		return fmt.Errorf("invalid matcher configuration")
+	}
 
 	return nil
 }
@@ -231,4 +280,40 @@ func requiredInt(key string) (int, error) {
 		return 0, fmt.Errorf("invalid %s: must be an integer", key)
 	}
 	return value, nil
+}
+
+func durationEnvOrDefault(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+func intEnvOrDefault(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+func int64EnvOrDefault(key string, fallback int64) int64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return value
 }

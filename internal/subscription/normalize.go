@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	maxCategories      = 10
+	maxCategories      = 1
 	maxAuthors         = 20
 	maxIncludeKeywords = 30
 	maxExcludeKeywords = 30
@@ -77,6 +77,9 @@ func NormalizeRules(input RulesInput, catalog source.PublicSource) (NormalizedRu
 	}
 	if catalog.Kind == source.KindArXiv && len(input.Categories) == 0 {
 		return NormalizedRules{}, ErrCategoryRequired
+	}
+	if catalog.Kind == source.KindArXiv && (len(input.Authors) > 0 || len(input.ExcludeKeywords) > 0) {
+		return NormalizedRules{}, ErrRuleNotSupported
 	}
 
 	groups := []struct {

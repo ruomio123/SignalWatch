@@ -57,9 +57,7 @@ func (source Source) Public() (PublicSource, error) {
 	if len(ruleTypes) == 0 && source.Kind == KindArXiv {
 		ruleTypes = []string{
 			RuleTypeCategory,
-			RuleTypeAuthor,
 			RuleTypeIncludeKeyword,
-			RuleTypeExcludeKeyword,
 		}
 	}
 

@@ -58,7 +58,7 @@ func TestNewRouterRegistersHealthRoutes(t *testing.T) {
 func TestNewRouterServesEmbeddedFrontend(t *testing.T) {
 	router := newTestRouter(t)
 
-	for _, path := range []string{"/", "/login", "/register", "/app", "/subscriptions", "/settings"} {
+	for _, path := range []string{"/", "/login", "/register", "/app", "/papers", "/subscriptions", "/settings"} {
 		t.Run(path, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, path, nil)
 			recorder := httptest.NewRecorder()
@@ -294,6 +294,7 @@ func TestNewRouterProtectsAndDispatchesSourceAndSubscriptionRoutes(t *testing.T)
 	listCalls, getCalls, createCalls := 0, 0, 0
 	listSubscriptionCalls, getSubscriptionCalls := 0, 0
 	updateSubscriptionCalls, deleteSubscriptionCalls := 0, 0
+	listPaperCalls, getPaperCalls := 0, 0
 	dependencies.ListSourcesHandler = func(c *gin.Context) {
 		listCalls++
 		c.Status(http.StatusOK)
@@ -328,6 +329,17 @@ func TestNewRouterProtectsAndDispatchesSourceAndSubscriptionRoutes(t *testing.T)
 		deleteSubscriptionCalls++
 		c.Status(http.StatusNoContent)
 	}
+	dependencies.ListPapersHandler = func(c *gin.Context) {
+		listPaperCalls++
+		c.Status(http.StatusOK)
+	}
+	dependencies.GetPaperHandler = func(c *gin.Context) {
+		getPaperCalls++
+		if c.Param("id") != "11" {
+			t.Fatalf("expected paper ID path parameter 11, got %q", c.Param("id"))
+		}
+		c.Status(http.StatusOK)
+	}
 
 	router, err := NewRouter(dependencies)
 	if err != nil {
@@ -350,6 +362,8 @@ func TestNewRouterProtectsAndDispatchesSourceAndSubscriptionRoutes(t *testing.T)
 		{http.MethodGet, "/api/v1/subscriptions/9", http.StatusOK},
 		{http.MethodPatch, "/api/v1/subscriptions/9", http.StatusOK},
 		{http.MethodDelete, "/api/v1/subscriptions/9", http.StatusNoContent},
+		{http.MethodGet, "/api/v1/papers", http.StatusOK},
+		{http.MethodGet, "/api/v1/papers/11", http.StatusOK},
 	}
 	for _, requestCase := range requests {
 		request := httptest.NewRequest(requestCase.method, requestCase.path, nil)
@@ -362,11 +376,12 @@ func TestNewRouterProtectsAndDispatchesSourceAndSubscriptionRoutes(t *testing.T)
 	}
 	if listCalls != 1 || getCalls != 1 || createCalls != 1 ||
 		listSubscriptionCalls != 1 || getSubscriptionCalls != 1 ||
-		updateSubscriptionCalls != 1 || deleteSubscriptionCalls != 1 {
+		updateSubscriptionCalls != 1 || deleteSubscriptionCalls != 1 ||
+		listPaperCalls != 1 || getPaperCalls != 1 {
 		t.Fatalf(
-			"unexpected handler calls sources_list=%d source_get=%d create=%d subscriptions_list=%d subscription_get=%d update=%d delete=%d",
+			"unexpected handler calls sources_list=%d source_get=%d create=%d subscriptions_list=%d subscription_get=%d update=%d delete=%d papers_list=%d paper_get=%d",
 			listCalls, getCalls, createCalls, listSubscriptionCalls, getSubscriptionCalls,
-			updateSubscriptionCalls, deleteSubscriptionCalls,
+			updateSubscriptionCalls, deleteSubscriptionCalls, listPaperCalls, getPaperCalls,
 		)
 	}
 }
@@ -605,6 +620,18 @@ func TestNewRouterValidatesDependencies(t *testing.T) {
 				dependencies.DeleteSubscriptionHandler = nil
 			},
 		},
+		{
+			name: "missing list papers handler",
+			mutate: func(dependencies *Dependencies) {
+				dependencies.ListPapersHandler = nil
+			},
+		},
+		{
+			name: "missing get paper handler",
+			mutate: func(dependencies *Dependencies) {
+				dependencies.GetPaperHandler = nil
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -678,6 +705,12 @@ func validTestDependencies() Dependencies {
 		},
 		DeleteSubscriptionHandler: func(c *gin.Context) {
 			c.Status(http.StatusNoContent)
+		},
+		ListPapersHandler: func(c *gin.Context) {
+			c.Status(http.StatusOK)
+		},
+		GetPaperHandler: func(c *gin.Context) {
+			c.Status(http.StatusOK)
 		},
 	}
 }
