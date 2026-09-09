@@ -3,18 +3,19 @@ package integration_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"strconv"
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	"signalwatch/internal/collector"
 	"signalwatch/internal/paper"
 	"signalwatch/internal/source"
 	"signalwatch/internal/source/arxiv"
-	"signalwatch/internal/subscription"
-	"signalwatch/internal/user"
 )
 
 type m2PageClient struct {
@@ -30,12 +31,20 @@ func (client m2PageClient) FetchPage(
 	}, nil
 }
 
-type m2ClientFactory struct {
-	client collector.ArXivClient
+func (client m2PageClient) FetchIDs(context.Context, []string) (arxiv.FetchPageResult, error) {
+	return arxiv.FetchPageResult{Records: []paper.Record{client.record}, Requests: 1, TotalResults: 1}, nil
 }
 
-func (factory m2ClientFactory) Create(string) (collector.ArXivClient, error) {
+type m2ClientFactory struct {
+	client collector.SearchClient
+}
+
+func (factory m2ClientFactory) CreateSearch(string) (collector.SearchClient, error) {
 	return factory.client, nil
+}
+
+func (m2ClientFactory) CreateFeed() (collector.FeedClient, error) {
+	return nil, errors.New("Feed client is not used by bootstrap")
 }
 
 type m2Lock struct{}
@@ -48,7 +57,21 @@ type m2Submitter struct{}
 
 func (m2Submitter) Submit(context.Context, uint64) error { return nil }
 
-func TestM2StatelessDemandAndSingleRowPaperUpsert(t *testing.T) {
+type m2SourceRepository struct {
+	db     *gorm.DB
+	active collector.ActiveSource
+}
+
+func (repository m2SourceRepository) ListEnabledArXivSources(context.Context) ([]collector.ActiveSource, error) {
+	return []collector.ActiveSource{repository.active}, nil
+}
+
+func (repository m2SourceRepository) UpdateLastSuccessfulSyncAt(_ context.Context, id uint64, at time.Time) error {
+	return repository.db.Model(&source.Source{}).Where("id = ?", id).
+		Update("last_successful_sync_at", at.UTC()).Error
+}
+
+func TestV2SystemIngestionCheckpointAndSingleRowPaperUpsert(t *testing.T) {
 	database, sqlDB, _ := openM1TestDatabase(t)
 	t.Cleanup(func() {
 		if err := sqlDB.Close(); err != nil {
@@ -58,6 +81,9 @@ func TestM2StatelessDemandAndSingleRowPaperUpsert(t *testing.T) {
 
 	if !database.Migrator().HasTable(&paper.Paper{}) {
 		t.Fatal("papers table is missing; apply all migrations")
+	}
+	if !database.Migrator().HasColumn(&source.Source{}, "last_successful_sync_at") {
+		t.Fatal("source sync checkpoint is missing; apply all migrations")
 	}
 	for _, removed := range []string{
 		"source_categories", "fetch_targets", "fetch_runs", "contents", "content_revisions",
@@ -98,65 +124,26 @@ func TestM2StatelessDemandAndSingleRowPaperUpsert(t *testing.T) {
 	if err := database.Create(&sourceRecord).Error; err != nil {
 		t.Fatalf("create source: %v", err)
 	}
-	userRecord := user.User{
-		Email: "m2-" + nonce + "@example.test", PasswordHash: "not-used-in-this-test",
-		Timezone: "UTC", DigestTime: "08:00:00", MaxItemsPerDigest: 50,
-		Status: "active", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := database.Create(&userRecord).Error; err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	var subscriptionIDs []uint64
 	t.Cleanup(func() {
 		_ = database.Where("source_id = ?", sourceRecord.ID).Delete(&paper.Paper{}).Error
-		if len(subscriptionIDs) > 0 {
-			_ = database.Unscoped().Where("id IN ?", subscriptionIDs).Delete(&subscription.Subscription{}).Error
-		}
 		_ = database.Delete(&sourceRecord).Error
-		_ = database.Delete(&userRecord).Error
 	})
 
-	createSubscription := func(name string, enabled bool, category string) uint64 {
-		subscriptionRecord := subscription.Subscription{
-			UserID: userRecord.ID, SourceID: sourceRecord.ID, Name: name,
-			Category: category, KeywordsJSON: json.RawMessage(`[]`),
-			Enabled: enabled, Version: subscription.InitialVersion,
-			CreatedAt: now, UpdatedAt: now,
-		}
-		if err := database.Create(&subscriptionRecord).Error; err != nil {
-			t.Fatalf("create subscription: %v", err)
-		}
-		subscriptionIDs = append(subscriptionIDs, subscriptionRecord.ID)
-		return subscriptionRecord.ID
-	}
-
-	firstID := createSubscription("first", true, "cs.CV")
-	createSubscription("second", true, "cs.AI")
-	createSubscription("disabled", false, "cs.CV")
-
-	demands := collector.NewRepository(database)
-	active, err := demands.ListActiveArXivSources(t.Context())
+	sources := collector.NewRepository(database)
+	active, err := sources.ListEnabledArXivSources(t.Context())
 	if err != nil {
 		t.Fatalf("list active arxiv sources: %v", err)
 	}
-	if len(active) != 1 || active[0].Source.ID != sourceRecord.ID ||
-		len(active[0].Categories) != 2 ||
-		active[0].Categories[0] != "cs.AI" || active[0].Categories[1] != "cs.CV" {
-		t.Fatalf("active categories must be shared and deduplicated: %+v", active)
+	var fixture *collector.ActiveSource
+	for index := range active {
+		if active[index].Source.ID == sourceRecord.ID {
+			fixture = &active[index]
+			break
+		}
 	}
-
-	if err := database.Model(&subscription.Subscription{}).
-		Where("id = ?", firstID).
-		Update("deleted_at", now).Error; err != nil {
-		t.Fatalf("soft delete first subscription: %v", err)
-	}
-	active, err = demands.ListActiveArXivSources(t.Context())
-	if err != nil {
-		t.Fatalf("list demand after soft delete: %v", err)
-	}
-	if len(active) != 1 || len(active[0].Categories) != 1 || active[0].Categories[0] != "cs.AI" {
-		t.Fatalf("disabled and deleted subscriptions must not create demand: %+v", active)
+	if fixture == nil || len(fixture.Categories) != 2 ||
+		fixture.Categories[0] != "cs.AI" || fixture.Categories[1] != "cs.CV" {
+		t.Fatalf("source categories must come directly from source configuration: %+v", active)
 	}
 
 	published := now.Add(-time.Hour)
@@ -210,21 +197,28 @@ func TestM2StatelessDemandAndSingleRowPaperUpsert(t *testing.T) {
 
 	collectorNow := now.Add(2 * time.Hour)
 	collectorService, err := collector.NewService(
-		demands,
+		m2SourceRepository{db: database, active: *fixture},
 		papers,
 		m2Submitter{},
 		m2Lock{},
 		m2ClientFactory{client: m2PageClient{record: record}},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		func() time.Time { return collectorNow },
-		collector.Config{Lookback: 48 * time.Hour, LockTTL: time.Minute, MaxPages: 2},
+		collector.Config{
+			BootstrapLookback: 7 * 24 * time.Hour, RecoveryOverlap: 24 * time.Hour,
+			LockTTL: time.Minute, PageSize: 100, MaxPages: 2,
+		},
 	)
 	if err != nil {
 		t.Fatalf("create collector service: %v", err)
 	}
+	due := collectorNow.Add(-time.Hour)
 	for run := 1; run <= 2; run++ {
-		if err := collectorService.Run(t.Context()); err != nil {
-			t.Fatalf("collector rerun %d: %v", run, err)
+		result, err := collectorService.Sync(t.Context(), collector.SyncRequest{
+			Trigger: collector.TriggerStartup, DueAt: due, PreviousDueAt: due.AddDate(0, 0, -1),
+		})
+		if err != nil || !result.AllCurrent {
+			t.Fatalf("collector rerun %d: result=%+v error=%v", run, result, err)
 		}
 	}
 	if err := database.Model(&paper.Paper{}).
@@ -239,5 +233,12 @@ func TestM2StatelessDemandAndSingleRowPaperUpsert(t *testing.T) {
 	}
 	if count != 1 || !stored.FirstSeenAt.Equal(now) || stored.Title != record.Title {
 		t.Fatalf("collector reruns must remain idempotent: count=%d paper=%+v", count, stored)
+	}
+	var checkpointed source.Source
+	if err := database.Where("id = ?", sourceRecord.ID).Take(&checkpointed).Error; err != nil {
+		t.Fatalf("load source checkpoint: %v", err)
+	}
+	if checkpointed.LastSuccessfulSyncAt == nil || !checkpointed.LastSuccessfulSyncAt.Equal(collectorNow) {
+		t.Fatalf("successful system ingestion did not persist checkpoint: %+v", checkpointed.LastSuccessfulSyncAt)
 	}
 }

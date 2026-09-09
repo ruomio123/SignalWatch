@@ -77,6 +77,54 @@ func TestClientFetchPageUsesCategoryOnlyDescendingQueryAndParsesStableIDs(t *tes
 	}
 }
 
+func TestClientFetchIDsUsesIDListForMetadataHydration(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/papers.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var requested *http.Request
+	client, err := NewClient(doerFunc(func(request *http.Request) (*http.Response, error) {
+		requested = request
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(fixture)))}, nil
+	}), limiterFunc(func(context.Context) error { return nil }), Config{
+		Endpoint: "https://export.arxiv.org/api/query", PageSize: 100,
+		MaxResponseBytes: 1 << 20, RequestAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	result, err := client.FetchIDs(context.Background(), []string{"2608.00001v1", "2608.00002v2"})
+	if err != nil || len(result.Records) != 2 {
+		t.Fatalf("hydrate IDs: result=%+v error=%v", result, err)
+	}
+	if requested.URL.Query().Get("id_list") != "2608.00001v1,2608.00002v2" ||
+		requested.URL.Query().Get("search_query") != "" || requested.URL.Query().Get("max_results") != "2" {
+		t.Fatalf("unexpected hydration query: %s", requested.URL.RawQuery)
+	}
+}
+
+func TestClientFetchIDsRejectsMalformedIdentifiersBeforeHTTP(t *testing.T) {
+	httpCalls := 0
+	client, err := NewClient(doerFunc(func(*http.Request) (*http.Response, error) {
+		httpCalls++
+		return nil, errors.New("must not be called")
+	}), limiterFunc(func(context.Context) error { return nil }), Config{
+		Endpoint: "https://export.arxiv.org/api/query", PageSize: 100,
+		MaxResponseBytes: 1 << 20, RequestAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	for _, identifier := range []string{"bad", "2609.1v1", "2609.00001v0", "cs.AI/not-an-id"} {
+		if _, err := client.FetchIDs(context.Background(), []string{identifier}); err == nil {
+			t.Fatalf("expected malformed identifier %q to fail", identifier)
+		}
+	}
+	if httpCalls != 0 {
+		t.Fatalf("malformed identifiers must not make HTTP requests: %d", httpCalls)
+	}
+}
+
 func TestClientClassifiesNonRetryableHTTPStatus(t *testing.T) {
 	client, err := NewClient(
 		doerFunc(func(*http.Request) (*http.Response, error) {

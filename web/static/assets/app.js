@@ -330,7 +330,7 @@ function dashboardPage() {
   const matchedPapers = state.dashboardPapers == null ? "--" : state.dashboardPapers.total;
   const recentPapers = state.dashboardPapers && state.dashboardPapers.items.length
     ? `<div class="dashboard-paper-list">${state.dashboardPapers.items.map((paper) => `<button class="dashboard-paper" type="button" data-open-paper="${paper.id}"><span><strong>${escapeHTML(paper.title)}</strong><small>${escapeHTML(paper.categories.join(" · "))} · ${escapeHTML(formatDateTime(paper.first_seen_at))}</small></span>${icon("chevronRight")}</button>`).join("")}</div>`
-    : `<div class="empty-signals"><div><div class="radar"><span class="radar-dot"></span></div><h3>${activeSubscriptions > 0 ? "正在等待新的研究信号" : "创建你的第一条订阅"}</h3><p>${activeSubscriptions > 0 ? "Matcher 会在论文进入最近 48 小时抓取窗口后，按分类和标题摘要关键词建立匹配。" : "先创建订阅，系统才会抓取对应分类并生成匹配论文。"}</p><a class="button button-primary button-small empty-action" href="${activeSubscriptions > 0 ? "/papers" : "/subscriptions"}" data-route>${activeSubscriptions > 0 ? "查看匹配论文" : "创建订阅"} ${icon("arrowRight")}</a></div></div>`;
+    : `<div class="empty-signals"><div><div class="radar"><span class="radar-dot"></span></div><h3>${activeSubscriptions > 0 ? "正在等待新的研究信号" : "创建你的第一条订阅"}</h3><p>${activeSubscriptions > 0 ? "Matcher 会在新论文进入本地论文库后，按分类和标题摘要关键词建立匹配。" : "创建订阅后会立即回填本地最近 7 天的匹配论文。"}</p><a class="button button-primary button-small empty-action" href="${activeSubscriptions > 0 ? "/papers" : "/subscriptions"}" data-route>${activeSubscriptions > 0 ? "查看匹配论文" : "创建订阅"} ${icon("arrowRight")}</a></div></div>`;
 
   const content = `<header class="workspace-header"><div><p class="eyebrow">SIGNAL DESK</p><h1>${greeting}</h1><p>查看你的阅读偏好，管理持续关注的研究主题。</p></div><span class="date-chip">${icon("calendar")} ${today}</span></header>
     <section class="metric-grid" aria-label="账户摘要">
@@ -343,7 +343,7 @@ function dashboardPage() {
       <article class="content-card"><header class="card-header"><h2>最近匹配</h2><a class="text-link" href="/papers" data-route>查看全部</a></header>${recentPapers}</article>
       <article class="content-card"><header class="card-header"><h2>使用建议</h2><span>保持关注范围清晰</span></header><div class="roadmap-list">
         <div class="roadmap-item"><span class="roadmap-check">${icon("check")}</span><span class="roadmap-copy"><strong>设置阅读偏好</strong><span>选择适合自己的时区、时间和数量上限</span></span></div>
-        <div class="roadmap-item"><span class="roadmap-check">${icon("layers")}</span><span class="roadmap-copy"><strong>定义关注范围</strong><span>使用分类、作者和包含关键词描述主题</span></span></div>
+        <div class="roadmap-item"><span class="roadmap-check">${icon("layers")}</span><span class="roadmap-copy"><strong>定义关注范围</strong><span>使用分类和包含关键词描述主题</span></span></div>
         <div class="roadmap-item"><span class="roadmap-check">${icon("filter")}</span><span class="roadmap-copy"><strong>减少无关内容</strong><span>通过排除关键词持续优化每条订阅</span></span></div>
       </div></article>
     </section>`;
@@ -454,7 +454,7 @@ function papersPage() {
   const totalPages = Math.max(1, Math.ceil(result.total / result.page_size));
   const list = result.items.length
     ? `<div class="matched-paper-list">${result.items.map(paperCard).join("")}</div>`
-    : `<div class="subscriptions-empty papers-empty"><span>${icon("book")}</span><h2>${filters.subscriptionId ? "这条订阅还没有匹配论文" : "还没有捕捉到论文信号"}</h2><p>${filters.subscriptionId ? "可以切换到全部订阅，或等待下一轮 Collector 完成抓取和匹配。" : "创建并启用订阅后，系统会在后台抓取最近 48 小时的 arXiv 更新并显示匹配结果。"}</p><a class="button button-primary" href="/subscriptions" data-route>${icon("plus")} 管理订阅</a></div>`;
+    : `<div class="subscriptions-empty papers-empty"><span>${icon("book")}</span><h2>${filters.subscriptionId ? "这条订阅还没有匹配论文" : "还没有捕捉到论文信号"}</h2><p>${filters.subscriptionId ? "可以切换到全部订阅，或等待下一次系统级 arXiv 同步完成抓取和匹配。" : "系统会独立维护 arXiv 论文库；创建订阅后会立即回填本地最近 7 天的匹配结果。"}</p><a class="button button-primary" href="/subscriptions" data-route>${icon("plus")} 管理订阅</a></div>`;
   const content = `<header class="workspace-header subscriptions-heading"><div><p class="eyebrow">MATCHED PAPERS</p><h1>匹配论文</h1><p>每篇论文只展示一次，并保留所有命中订阅与首次匹配原因。</p></div><span class="date-chip">${icon("activity")} 本地确定性匹配</span></header>
     <section class="subscription-toolbar paper-toolbar" aria-label="匹配论文筛选">
       <div><strong>${result.total}</strong><span>篇论文</span></div>

@@ -110,31 +110,49 @@ func main() {
 		logger.Error("initialize matcher pool failed", "module", "matcher", "error", err)
 		os.Exit(1)
 	}
+	arXivTransport := http.DefaultTransport.(*http.Transport).Clone()
+	arXivTransport.MaxConnsPerHost = 1
+	arXivTransport.MaxIdleConnsPerHost = 1
 	collectorService, err := collector.NewService(
 		collector.NewRepository(database),
 		paper.NewRepository(database),
 		matcherPool,
 		lockManager,
 		collector.ArXivClientFactory{
-			HTTPClient: &http.Client{Timeout: cfg.ArXivHTTPTimeout},
+			HTTPClient: &http.Client{Timeout: cfg.ArXivHTTPTimeout, Transport: arXivTransport},
 			Limiter:    limiter,
-			Config: arxiv.Config{
+			SearchConfig: arxiv.Config{
 				PageSize:         cfg.ArXivPageSize,
 				MaxResponseBytes: cfg.ArXivMaxResponseBytes,
 				RequestAttempts:  cfg.ArXivRequestAttempts,
 				RetryBackoff:     cfg.ArXivRequestBackoff,
 			},
+			FeedConfig: arxiv.FeedConfig{
+				Endpoint: cfg.ArXivFeedEndpoint, MaxResponseBytes: cfg.ArXivMaxResponseBytes,
+				RequestAttempts: cfg.ArXivRequestAttempts, RetryBackoff: cfg.ArXivRequestBackoff,
+			},
 		},
 		logger,
 		func() time.Time { return time.Now().UTC() },
 		collector.Config{
-			Lookback: cfg.ArXivLookback,
-			LockTTL:  cfg.CollectorLockTTL,
+			BootstrapLookback: cfg.ArXivBootstrapLookback,
+			RecoveryOverlap:   cfg.ArXivRecoveryOverlap,
+			LockTTL:           cfg.CollectorLockTTL, PageSize: cfg.ArXivPageSize,
 			MaxPages: cfg.ArXivMaxPages,
 		},
 	)
 	if err != nil {
 		logger.Error("initialize collector service failed", "module", "collector", "error", err)
+		os.Exit(1)
+	}
+	collectorScheduler, err := collector.NewScheduler(
+		collectorService, logger, func() time.Time { return time.Now().UTC() },
+		collector.SchedulerConfig{
+			DailySyncTime: cfg.ArXivDailySyncTime, RetryInterval: cfg.ArXivSyncRetryInterval,
+		},
+	)
+	if err != nil {
+		logger.Error("initialize collector scheduler failed", "module", "collector", "error", err)
 		os.Exit(1)
 	}
 	digestRepository := digest.NewRepository(database)
@@ -179,6 +197,9 @@ func main() {
 		"worker starting",
 		"module", "worker",
 		"heartbeat", cfg.WorkerHeartbeat,
+		"arxiv_daily_sync_time", cfg.ArXivDailySyncTime,
+		"arxiv_daily_sync_timezone", "America/New_York",
+		"arxiv_sync_retry_interval", cfg.ArXivSyncRetryInterval,
 		"matcher_workers", cfg.MatcherWorkers,
 		"matcher_queue_capacity", cfg.MatcherQueueCapacity,
 		"digest_interval", cfg.DigestInterval,
@@ -191,16 +212,19 @@ func main() {
 		defer close(matcherDone)
 		matcherPool.Run(ctx)
 	}()
+	collectorDone := make(chan struct{})
+	go func() {
+		defer close(collectorDone)
+		collectorScheduler.Run(ctx)
+	}()
 	mailDone := make(chan struct{})
 	go func() {
 		defer close(mailDone)
 		mailPool.Run(ctx)
 	}()
 	// 调用 run，启动 Worker 的长期运行循环。
-	run(
-		ctx, logger, cfg.WorkerHeartbeat, cfg.CollectorInterval, cfg.DigestInterval,
-		collectorService.Run, digestScheduler.Run,
-	)
+	run(ctx, logger, cfg.WorkerHeartbeat, cfg.DigestInterval, digestScheduler.Run)
+	<-collectorDone
 	<-matcherDone
 	<-mailDone
 	// run 返回后，记录 Worker 已停止的日志。
@@ -211,19 +235,14 @@ func run(
 	ctx context.Context,
 	logger *slog.Logger,
 	heartbeatInterval time.Duration,
-	collectorInterval time.Duration,
 	digestInterval time.Duration,
-	collect func(context.Context) error,
 	scheduleDigests func(context.Context) (digest.ScheduleResult, error),
 ) {
 	// 按照 interval 创建 Ticker(定时器)，并确保函数退出时停止它。
 	heartbeat := time.NewTicker(heartbeatInterval)
 	defer heartbeat.Stop()
-	collectorTicker := time.NewTicker(collectorInterval)
-	defer collectorTicker.Stop()
 	digestTicker := time.NewTicker(digestInterval)
 	defer digestTicker.Stop()
-	runCollectorCycle(ctx, logger, collect)
 	runDigestCycle(ctx, logger, scheduleDigests)
 	// 使用循环和 select，同时等待退出信号与心跳事件。
 	// 收到退出信号时记录日志并返回。
@@ -239,8 +258,6 @@ func run(
 				"module", "worker",
 				"time_at", tickedAt,
 			)
-		case <-collectorTicker.C:
-			runCollectorCycle(ctx, logger, collect)
 		case <-digestTicker.C:
 			runDigestCycle(ctx, logger, scheduleDigests)
 		}
@@ -263,10 +280,4 @@ func runDigestCycle(
 		"digest schedule cycle finished", "module", "digest", "users", result.Users,
 		"due", result.Due, "submitted", result.Submitted, "invalid", result.Invalid,
 	)
-}
-
-func runCollectorCycle(ctx context.Context, logger *slog.Logger, collect func(context.Context) error) {
-	if err := collect(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Error("collector cycle failed", "module", "collector", "error", err)
-	}
 }

@@ -58,7 +58,6 @@ func (service *Service) Match(ctx context.Context, paperID uint64) (Result, erro
 		return Result{}, err
 	}
 	result := Result{Candidates: len(candidates)}
-	searchText := normalizeSearchText(stored.Title + " " + stored.Abstract)
 	matchedAt := service.now().UTC()
 	matches := make([]paper.SubscriptionPaper, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -68,12 +67,11 @@ func (service *Service) Match(ctx context.Context, paperID uint64) (Result, erro
 			!containsCategory(categories, candidate.Category) {
 			continue
 		}
-		keywords, err := decodeStoredStrings(candidate.KeywordsJSON, "subscription keywords", true)
+		matchedKeywords, matched, err := Evaluate(stored, candidate)
 		if err != nil {
 			return Result{}, fmt.Errorf("subscription %d: %w", candidate.ID, err)
 		}
-		matchedKeywords := matchKeywords(searchText, keywords)
-		if len(keywords) > 0 && len(matchedKeywords) == 0 {
+		if !matched {
 			continue
 		}
 		encoded, err := json.Marshal(matchedKeywords)
@@ -94,6 +92,27 @@ func (service *Service) Match(ctx context.Context, paperID uint64) (Result, erro
 	}
 	result.Inserted = inserted
 	return result, nil
+}
+
+// Evaluate applies the shared deterministic category and keyword rules without
+// applying the normal stream's from-now boundary.
+func Evaluate(stored paper.Paper, candidate Candidate) ([]string, bool, error) {
+	categories, err := decodeStoredStrings(stored.CategoriesJSON, "paper categories", false)
+	if err != nil {
+		return nil, false, err
+	}
+	if !containsCategory(deduplicateCategories(categories), candidate.Category) {
+		return nil, false, nil
+	}
+	keywords, err := decodeStoredStrings(candidate.KeywordsJSON, "subscription keywords", true)
+	if err != nil {
+		return nil, false, err
+	}
+	matchedKeywords := matchKeywords(normalizeSearchText(stored.Title+" "+stored.Abstract), keywords)
+	if len(keywords) > 0 && len(matchedKeywords) == 0 {
+		return nil, false, nil
+	}
+	return matchedKeywords, true, nil
 }
 
 func decodeStoredStrings(raw []byte, field string, allowEmpty bool) ([]string, error) {

@@ -18,15 +18,16 @@ const (
 // Source is the persistence model. Endpoint and ConfigJSON must never be
 // serialized directly in an HTTP response.
 type Source struct {
-	ID         uint64          `gorm:"column:id;primaryKey;autoIncrement"`
-	SourceKey  string          `gorm:"column:source_key"`
-	Kind       string          `gorm:"column:kind"`
-	Name       string          `gorm:"column:name"`
-	Endpoint   *string         `gorm:"column:endpoint"`
-	Enabled    bool            `gorm:"column:enabled"`
-	ConfigJSON json.RawMessage `gorm:"column:config_json"`
-	CreatedAt  time.Time       `gorm:"column:created_at"`
-	UpdatedAt  time.Time       `gorm:"column:updated_at"`
+	ID                   uint64          `gorm:"column:id;primaryKey;autoIncrement"`
+	SourceKey            string          `gorm:"column:source_key"`
+	Kind                 string          `gorm:"column:kind"`
+	Name                 string          `gorm:"column:name"`
+	Endpoint             *string         `gorm:"column:endpoint"`
+	Enabled              bool            `gorm:"column:enabled"`
+	ConfigJSON           json.RawMessage `gorm:"column:config_json"`
+	LastSuccessfulSyncAt *time.Time      `gorm:"column:last_successful_sync_at"`
+	CreatedAt            time.Time       `gorm:"column:created_at"`
+	UpdatedAt            time.Time       `gorm:"column:updated_at"`
 }
 
 func (Source) TableName() string { return "sources" }

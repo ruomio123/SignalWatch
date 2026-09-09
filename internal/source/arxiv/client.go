@@ -17,10 +17,11 @@ import (
 	"signalwatch/internal/paper"
 )
 
-const userAgent = "SignalWatch/0.1 (subscription-driven research monitor)"
+const userAgent = "SignalWatch/0.2 (system-maintained research monitor)"
 
 var versionPattern = regexp.MustCompile(`^(.*)v([1-9][0-9]*)$`)
 var categoryPattern = regexp.MustCompile(`^[A-Za-z0-9.-]+$`)
+var identifierPattern = regexp.MustCompile(`^(?:[0-9]{4}\.[0-9]{4,5}|[A-Za-z][A-Za-z0-9.-]*/[0-9]{7})(?:v[1-9][0-9]*)?$`)
 
 type HTTPDoer interface {
 	Do(request *http.Request) (*http.Response, error)
@@ -83,7 +84,11 @@ func (client *Client) FetchPage(ctx context.Context, input FetchPageRequest) (Fe
 		return FetchPageResult{}, &FetchError{Code: "ARXIV_INVALID_REQUEST", Err: errors.New("invalid page request")}
 	}
 
-	feed, requests, err := client.fetchPage(ctx, category, input.Start)
+	requestURL, err := client.buildPageURL(category, input.Start)
+	if err != nil {
+		return FetchPageResult{}, &FetchError{Code: "ARXIV_BUILD_REQUEST", Err: err}
+	}
+	feed, requests, err := client.fetch(ctx, requestURL)
 	result := FetchPageResult{
 		Records:  make([]paper.Record, 0, len(feed.Entries)),
 		Requests: requests, TotalResults: feed.TotalResults,
@@ -102,15 +107,39 @@ func (client *Client) FetchPage(ctx context.Context, input FetchPageRequest) (Fe
 	return result, nil
 }
 
-func (client *Client) fetchPage(
-	ctx context.Context,
-	category string,
-	startIndex int,
-) (atomFeed, int, error) {
-	requestURL, err := client.buildURL(category, startIndex)
-	if err != nil {
-		return atomFeed{}, 0, &FetchError{Code: "ARXIV_BUILD_REQUEST", Err: err}
+func (client *Client) FetchIDs(ctx context.Context, identifiers []string) (FetchPageResult, error) {
+	if len(identifiers) == 0 || len(identifiers) > client.config.PageSize {
+		return FetchPageResult{}, &FetchError{Code: "ARXIV_INVALID_REQUEST", Err: errors.New("invalid id batch")}
 	}
+	clean := make([]string, len(identifiers))
+	for index, identifier := range identifiers {
+		identifier = strings.TrimSpace(identifier)
+		if !identifierPattern.MatchString(identifier) {
+			return FetchPageResult{}, &FetchError{Code: "ARXIV_INVALID_REQUEST", Err: errors.New("invalid arxiv id")}
+		}
+		clean[index] = identifier
+	}
+	requestURL, err := client.buildIDsURL(clean)
+	if err != nil {
+		return FetchPageResult{}, &FetchError{Code: "ARXIV_BUILD_REQUEST", Err: err}
+	}
+	feed, requests, err := client.fetch(ctx, requestURL)
+	result := FetchPageResult{Records: make([]paper.Record, 0, len(feed.Entries)), Requests: requests, TotalResults: feed.TotalResults}
+	if err != nil {
+		return result, err
+	}
+	for _, entry := range feed.Entries {
+		record, err := normalizeEntry(entry)
+		if err != nil {
+			return FetchPageResult{Requests: requests, TotalResults: feed.TotalResults},
+				&FetchError{Code: "ARXIV_INVALID_ENTRY", Err: err}
+		}
+		result.Records = append(result.Records, record)
+	}
+	return result, nil
+}
+
+func (client *Client) fetch(ctx context.Context, requestURL string) (atomFeed, int, error) {
 	requests := 0
 	for attempt := 1; attempt <= client.config.RequestAttempts; attempt++ {
 		if err := client.limiter.Wait(ctx); err != nil {
@@ -149,7 +178,7 @@ func (client *Client) fetchPage(
 	return atomFeed{}, requests, &FetchError{Code: "ARXIV_RETRY_EXHAUSTED", Retryable: true, Err: errors.New("retry exhausted")}
 }
 
-func (client *Client) buildURL(
+func (client *Client) buildPageURL(
 	category string,
 	startIndex int,
 ) (string, error) {
@@ -163,6 +192,22 @@ func (client *Client) buildURL(
 	query.Set("max_results", strconv.Itoa(client.config.PageSize))
 	query.Set("sortBy", "lastUpdatedDate")
 	query.Set("sortOrder", "descending")
+	requestURL.RawQuery = query.Encode()
+	return requestURL.String(), nil
+}
+
+func (client *Client) buildIDsURL(identifiers []string) (string, error) {
+	requestURL, err := url.Parse(client.config.Endpoint)
+	if err != nil {
+		return "", err
+	}
+	query := requestURL.Query()
+	query.Del("search_query")
+	query.Del("sortBy")
+	query.Del("sortOrder")
+	query.Set("id_list", strings.Join(identifiers, ","))
+	query.Set("start", "0")
+	query.Set("max_results", strconv.Itoa(len(identifiers)))
 	requestURL.RawQuery = query.Encode()
 	return requestURL.String(), nil
 }
@@ -253,6 +298,18 @@ func externalIDFromURL(raw string) (string, error) {
 	identifier, err = url.PathUnescape(identifier)
 	if err != nil || identifier == "" || strings.Contains(identifier, "..") {
 		return "", errors.New("invalid arxiv entry id")
+	}
+	return identifier, nil
+}
+
+// StableID removes an arXiv version suffix while preserving legacy archive prefixes.
+func StableID(identifier string) (string, error) {
+	identifier = strings.TrimSpace(identifier)
+	if !identifierPattern.MatchString(identifier) {
+		return "", errors.New("invalid arxiv id")
+	}
+	if match := versionPattern.FindStringSubmatch(identifier); len(match) == 3 {
+		return match[1], nil
 	}
 	return identifier, nil
 }

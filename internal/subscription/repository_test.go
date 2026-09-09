@@ -6,10 +6,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 
+	"signalwatch/internal/paper"
 	"signalwatch/internal/source"
 )
 
@@ -19,13 +21,13 @@ func TestRepositoryCreateAtomicLocksChecksAndCommitsSubscriptionWithRules(t *tes
 	item := Subscription{UserID: 42, Enabled: true}
 	rules := []Rule{{RuleType: "category", RuleValue: "cs.AI", NormalizedValue: "cs.AI"}}
 
-	if err := repository.CreateAtomic(context.Background(), &item, rules); err != nil {
+	if err := repository.CreateAtomic(context.Background(), &item, rules, testBackfillWindow()); err != nil {
 		t.Fatalf("create atomic: %v", err)
 	}
 	if !manager.committed || manager.persistedSubscriptions != 1 || manager.persistedRules != 0 {
 		t.Fatalf("expected one flattened subscription write, got %+v", manager)
 	}
-	wantOrder := []string{"lock", "count", "subscription"}
+	wantOrder := []string{"lock", "count", "subscription", "backfill", "matches"}
 	for index, want := range wantOrder {
 		if manager.store.order[index] != want {
 			t.Fatalf("expected operation %d to be %q, got %v", index, want, manager.store.order)
@@ -43,7 +45,7 @@ func TestRepositoryCreateAtomicRejectsUnsupportedFlatRules(t *testing.T) {
 
 	err := repository.CreateAtomic(context.Background(), &item, []Rule{{
 		RuleType: "author", RuleValue: "Jane Doe", NormalizedValue: "jane doe",
-	}})
+	}}, testBackfillWindow())
 	if !errors.Is(err, ErrInvalidStoredRule) {
 		t.Fatalf("expected unsupported flat rule failure, got %v", err)
 	}
@@ -52,10 +54,20 @@ func TestRepositoryCreateAtomicRejectsUnsupportedFlatRules(t *testing.T) {
 	}
 }
 
+func TestRepositoryCreateAtomicRejectsInvalidEnabledBackfillWindow(t *testing.T) {
+	manager := &fakeTransactionManager{store: &fakeTransactionStore{}}
+	err := (&repository{transactions: manager}).CreateAtomic(
+		context.Background(), &Subscription{UserID: 42, Enabled: true}, categoryRules("cs.AI"), BackfillWindow{},
+	)
+	if !errors.Is(err, ErrInvalidBackfillWindow) || manager.committed {
+		t.Fatalf("invalid window must fail before transaction: error=%v committed=%v", err, manager.committed)
+	}
+}
+
 func TestRepositoryCreateAtomicEnforcesEnabledLimitUnderUserLock(t *testing.T) {
 	manager := &fakeTransactionManager{store: &fakeTransactionStore{count: maxEnabledSubscriptions}}
 	err := (&repository{transactions: manager}).CreateAtomic(
-		context.Background(), &Subscription{UserID: 42, Enabled: true}, categoryRules("cs.AI"),
+		context.Background(), &Subscription{UserID: 42, Enabled: true}, categoryRules("cs.AI"), testBackfillWindow(),
 	)
 	if !errors.Is(err, ErrLimitReached) {
 		t.Fatalf("expected subscription limit, got %v", err)
@@ -71,13 +83,56 @@ func TestRepositoryCreateAtomicEnforcesEnabledLimitUnderUserLock(t *testing.T) {
 func TestRepositoryCreateAtomicPausedSubscriptionDoesNotConsumeEnabledQuota(t *testing.T) {
 	manager := &fakeTransactionManager{store: &fakeTransactionStore{count: maxEnabledSubscriptions}}
 	err := (&repository{transactions: manager}).CreateAtomic(
-		context.Background(), &Subscription{UserID: 42, Enabled: false}, categoryRules("cs.AI"),
+		context.Background(), &Subscription{UserID: 42, Enabled: false}, categoryRules("cs.AI"), testBackfillWindow(),
 	)
 	if err != nil {
 		t.Fatalf("create paused subscription: %v", err)
 	}
 	if manager.store.countCalls != 0 || !manager.committed {
 		t.Fatalf("paused subscription should skip enabled count and commit, got %+v", manager)
+	}
+}
+
+func TestRepositoryCreateAtomicBackfillsRecentMatchingPapers(t *testing.T) {
+	window := testBackfillWindow()
+	manager := &fakeTransactionManager{store: &fakeTransactionStore{
+		backfillPapers: []paper.Paper{
+			{ID: 10, CategoriesJSON: []byte(`["cs.AI"]`), Title: "Agent planning", Abstract: "tools"},
+			{ID: 11, CategoriesJSON: []byte(`["cs.AI"]`), Title: "unrelated", Abstract: "paper"},
+		},
+	}}
+	item := Subscription{UserID: 42, SourceID: 3, Enabled: true}
+	err := (&repository{transactions: manager}).CreateAtomic(
+		context.Background(), &item, categoryRules("cs.AI", "agent"), window,
+	)
+	if err != nil {
+		t.Fatalf("create with backfill: %v", err)
+	}
+	if manager.store.backfillSourceID != 3 || !manager.store.backfillFrom.Equal(window.From) ||
+		!manager.store.backfillTo.Equal(window.To) || len(manager.store.matches) != 1 {
+		t.Fatalf("unexpected backfill query or matches: %+v", manager.store)
+	}
+	match := manager.store.matches[0]
+	if match.SubscriptionID != 77 || match.PaperID != 10 || !match.MatchedAt.Equal(window.MatchedAt) ||
+		string(match.MatchedKeywordsJSON) != `["agent"]` {
+		t.Fatalf("unexpected durable backfill match: %+v", match)
+	}
+}
+
+func TestRepositoryCreateAtomicRollsBackWhenBackfillWriteFails(t *testing.T) {
+	writeError := errors.New("backfill write failed")
+	manager := &fakeTransactionManager{store: &fakeTransactionStore{
+		backfillPapers: []paper.Paper{{
+			ID: 10, CategoriesJSON: []byte(`["cs.AI"]`), Title: "Agent planning",
+		}},
+		matchesError: writeError,
+	}}
+	err := (&repository{transactions: manager}).CreateAtomic(
+		context.Background(), &Subscription{UserID: 42, SourceID: 3, Enabled: true},
+		categoryRules("cs.AI"), testBackfillWindow(),
+	)
+	if !errors.Is(err, writeError) || manager.committed {
+		t.Fatalf("backfill failure must roll back subscription: error=%v committed=%v", err, manager.committed)
 	}
 }
 
@@ -96,6 +151,7 @@ func TestRepositoryCreateAtomicConcurrentEnabledCreatesStopAtLimit(t *testing.T)
 				context.Background(),
 				&Subscription{UserID: 42, Enabled: true},
 				categoryRules("cs.AI"),
+				testBackfillWindow(),
 			)
 		}()
 	}
@@ -442,6 +498,11 @@ func categoryRules(category string, keywords ...string) []Rule {
 	return rules
 }
 
+func testBackfillWindow() BackfillWindow {
+	now := time.Date(2026, 9, 9, 1, 2, 3, 0, time.UTC)
+	return BackfillWindow{From: now.Add(-7 * 24 * time.Hour), To: now, MatchedAt: now}
+}
+
 type fakeDeletionStore struct {
 	deleted    bool
 	exists     bool
@@ -483,6 +544,14 @@ func (store *serializedEnableStore) CountEnabled(context.Context, uint64) (int64
 }
 
 func (*serializedEnableStore) CreateSubscription(context.Context, *Subscription) error { return nil }
+
+func (*serializedEnableStore) ListBackfillPapers(context.Context, uint64, time.Time, time.Time) ([]paper.Paper, error) {
+	return nil, nil
+}
+
+func (*serializedEnableStore) InsertBackfillMatches(context.Context, []paper.SubscriptionPaper) error {
+	return nil
+}
 
 func (*serializedEnableStore) CreateRules(context.Context, []Rule) error { return nil }
 
@@ -584,6 +653,12 @@ type fakeTransactionStore struct {
 	createdRules             int
 	updateCalls              int
 	deleteRulesCalls         int
+	backfillPapers           []paper.Paper
+	backfillSourceID         uint64
+	backfillFrom             time.Time
+	backfillTo               time.Time
+	matches                  []paper.SubscriptionPaper
+	matchesError             error
 }
 
 func (store *fakeTransactionStore) LockActiveUser(context.Context, uint64) error {
@@ -602,6 +677,18 @@ func (store *fakeTransactionStore) CreateSubscription(_ context.Context, item *S
 	store.createSubscriptionCalls++
 	item.ID = 77
 	return nil
+}
+
+func (store *fakeTransactionStore) ListBackfillPapers(_ context.Context, sourceID uint64, from time.Time, to time.Time) ([]paper.Paper, error) {
+	store.order = append(store.order, "backfill")
+	store.backfillSourceID, store.backfillFrom, store.backfillTo = sourceID, from, to
+	return store.backfillPapers, nil
+}
+
+func (store *fakeTransactionStore) InsertBackfillMatches(_ context.Context, matches []paper.SubscriptionPaper) error {
+	store.order = append(store.order, "matches")
+	store.matches = append([]paper.SubscriptionPaper(nil), matches...)
+	return store.matchesError
 }
 
 func (store *fakeTransactionStore) CreateRules(_ context.Context, rules []Rule) error {
@@ -696,6 +783,14 @@ func (store *serializedQuotaStore) CountEnabled(context.Context, uint64) (int64,
 
 func (store *serializedQuotaStore) CreateSubscription(_ context.Context, item *Subscription) error {
 	store.createdEnabled = item.Enabled
+	return nil
+}
+
+func (*serializedQuotaStore) ListBackfillPapers(context.Context, uint64, time.Time, time.Time) ([]paper.Paper, error) {
+	return nil, nil
+}
+
+func (*serializedQuotaStore) InsertBackfillMatches(context.Context, []paper.SubscriptionPaper) error {
 	return nil
 }
 

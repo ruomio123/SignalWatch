@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/mail"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -30,18 +31,21 @@ type Config struct {
 	JWTTTL    time.Duration
 	JWTIssuer string
 
-	CollectorInterval     time.Duration
-	CollectorLockTTL      time.Duration
-	ArXivLookback         time.Duration
-	ArXivPageSize         int
-	ArXivMaxPages         int
-	ArXivMaxResponseBytes int64
-	ArXivRequestAttempts  int
-	ArXivRequestBackoff   time.Duration
-	ArXivRequestInterval  time.Duration
-	ArXivHTTPTimeout      time.Duration
-	MatcherWorkers        int
-	MatcherQueueCapacity  int
+	CollectorLockTTL       time.Duration
+	ArXivBootstrapLookback time.Duration
+	ArXivRecoveryOverlap   time.Duration
+	ArXivDailySyncTime     string
+	ArXivSyncRetryInterval time.Duration
+	ArXivFeedEndpoint      string
+	ArXivPageSize          int
+	ArXivMaxPages          int
+	ArXivMaxResponseBytes  int64
+	ArXivRequestAttempts   int
+	ArXivRequestBackoff    time.Duration
+	ArXivRequestInterval   time.Duration
+	ArXivHTTPTimeout       time.Duration
+	MatcherWorkers         int
+	MatcherQueueCapacity   int
 
 	DigestInterval      time.Duration
 	DigestLockTTL       time.Duration
@@ -58,42 +62,45 @@ type Config struct {
 
 // 把环境变量的名字集中管理，避免项目中到处直接写字符串
 const (
-	envAppEnv                = "APP_ENV"
-	envHTTPAddr              = "HTTP_ADDR"
-	envLogLevel              = "LOG_LEVEL"
-	envWorkerHeartbeat       = "WORKER_HEARTBEAT"
-	envMySQLDSN              = "MYSQL_DSN"
-	envMySQLMaxOpenConns     = "MYSQL_MAX_OPEN_CONNS"
-	envMySQLMaxIdleConns     = "MYSQL_MAX_IDLE_CONNS"
-	envRedisAddr             = "REDIS_ADDR"
-	envRedisPassword         = "REDIS_PASSWORD"
-	envRedisDB               = "REDIS_DB"
-	envJWTSecret             = "JWT_SECRET"
-	envJWTTTL                = "JWT_TTL"
-	envJWTIssuer             = "JWT_ISSUER"
-	envCollectorInterval     = "COLLECTOR_INTERVAL"
-	envCollectorLockTTL      = "COLLECTOR_LOCK_TTL"
-	envArXivLookback         = "ARXIV_LOOKBACK"
-	envArXivPageSize         = "ARXIV_PAGE_SIZE"
-	envArXivMaxPages         = "ARXIV_MAX_PAGES"
-	envArXivMaxResponseBytes = "ARXIV_MAX_RESPONSE_BYTES"
-	envArXivRequestAttempts  = "ARXIV_REQUEST_ATTEMPTS"
-	envArXivRequestBackoff   = "ARXIV_REQUEST_BACKOFF"
-	envArXivRequestInterval  = "ARXIV_REQUEST_INTERVAL"
-	envArXivHTTPTimeout      = "ARXIV_HTTP_TIMEOUT"
-	envMatcherWorkers        = "MATCHER_WORKERS"
-	envMatcherQueueCapacity  = "MATCHER_QUEUE_CAPACITY"
-	envDigestInterval        = "DIGEST_INTERVAL"
-	envDigestLockTTL         = "DIGEST_LOCK_TTL"
-	envDigestCompletionTTL   = "DIGEST_COMPLETION_TTL"
-	envMailWorkers           = "MAIL_WORKERS"
-	envMailQueueCapacity     = "MAIL_QUEUE_CAPACITY"
-	envSMTPAddr              = "SMTP_ADDR"
-	envSMTPFrom              = "SMTP_FROM"
-	envSMTPUsername          = "SMTP_USERNAME"
-	envSMTPPassword          = "SMTP_PASSWORD"
-	envSMTPStartTLS          = "SMTP_STARTTLS"
-	envSMTPTimeout           = "SMTP_TIMEOUT"
+	envAppEnv                 = "APP_ENV"
+	envHTTPAddr               = "HTTP_ADDR"
+	envLogLevel               = "LOG_LEVEL"
+	envWorkerHeartbeat        = "WORKER_HEARTBEAT"
+	envMySQLDSN               = "MYSQL_DSN"
+	envMySQLMaxOpenConns      = "MYSQL_MAX_OPEN_CONNS"
+	envMySQLMaxIdleConns      = "MYSQL_MAX_IDLE_CONNS"
+	envRedisAddr              = "REDIS_ADDR"
+	envRedisPassword          = "REDIS_PASSWORD"
+	envRedisDB                = "REDIS_DB"
+	envJWTSecret              = "JWT_SECRET"
+	envJWTTTL                 = "JWT_TTL"
+	envJWTIssuer              = "JWT_ISSUER"
+	envCollectorLockTTL       = "COLLECTOR_LOCK_TTL"
+	envArXivBootstrapLookback = "ARXIV_BOOTSTRAP_LOOKBACK"
+	envArXivRecoveryOverlap   = "ARXIV_RECOVERY_OVERLAP"
+	envArXivDailySyncTime     = "ARXIV_DAILY_SYNC_TIME"
+	envArXivSyncRetryInterval = "ARXIV_SYNC_RETRY_INTERVAL"
+	envArXivFeedEndpoint      = "ARXIV_FEED_ENDPOINT"
+	envArXivPageSize          = "ARXIV_PAGE_SIZE"
+	envArXivMaxPages          = "ARXIV_MAX_PAGES"
+	envArXivMaxResponseBytes  = "ARXIV_MAX_RESPONSE_BYTES"
+	envArXivRequestAttempts   = "ARXIV_REQUEST_ATTEMPTS"
+	envArXivRequestBackoff    = "ARXIV_REQUEST_BACKOFF"
+	envArXivRequestInterval   = "ARXIV_REQUEST_INTERVAL"
+	envArXivHTTPTimeout       = "ARXIV_HTTP_TIMEOUT"
+	envMatcherWorkers         = "MATCHER_WORKERS"
+	envMatcherQueueCapacity   = "MATCHER_QUEUE_CAPACITY"
+	envDigestInterval         = "DIGEST_INTERVAL"
+	envDigestLockTTL          = "DIGEST_LOCK_TTL"
+	envDigestCompletionTTL    = "DIGEST_COMPLETION_TTL"
+	envMailWorkers            = "MAIL_WORKERS"
+	envMailQueueCapacity      = "MAIL_QUEUE_CAPACITY"
+	envSMTPAddr               = "SMTP_ADDR"
+	envSMTPFrom               = "SMTP_FROM"
+	envSMTPUsername           = "SMTP_USERNAME"
+	envSMTPPassword           = "SMTP_PASSWORD"
+	envSMTPStartTLS           = "SMTP_STARTTLS"
+	envSMTPTimeout            = "SMTP_TIMEOUT"
 )
 
 /*
@@ -172,42 +179,45 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg := Config{
-		AppEnv:                appEnv,
-		HTTPAddr:              httpAddr,
-		LogLevel:              logLevel,
-		WorkerHeartbeat:       heartbeat,
-		MySQLDSN:              mysqlDSN,
-		MySQLMaxOpenConns:     mysqlMaxOpenConns,
-		MySQLMaxIdleConns:     mysqlMaxIdleConns,
-		RedisAddr:             redisAddr,
-		RedisPassword:         redisPassword,
-		RedisDB:               redisDB,
-		JWTSecret:             jwtSecret,
-		JWTTTL:                jwtTTL,
-		JWTIssuer:             jwtIssuer,
-		CollectorInterval:     durationEnvOrDefault(envCollectorInterval, time.Hour),
-		CollectorLockTTL:      durationEnvOrDefault(envCollectorLockTTL, 55*time.Minute),
-		ArXivLookback:         durationEnvOrDefault(envArXivLookback, 48*time.Hour),
-		ArXivPageSize:         intEnvOrDefault(envArXivPageSize, 100),
-		ArXivMaxPages:         intEnvOrDefault(envArXivMaxPages, 10),
-		ArXivMaxResponseBytes: int64EnvOrDefault(envArXivMaxResponseBytes, 5<<20),
-		ArXivRequestAttempts:  intEnvOrDefault(envArXivRequestAttempts, 3),
-		ArXivRequestBackoff:   durationEnvOrDefault(envArXivRequestBackoff, 5*time.Second),
-		ArXivRequestInterval:  durationEnvOrDefault(envArXivRequestInterval, 3*time.Second),
-		ArXivHTTPTimeout:      durationEnvOrDefault(envArXivHTTPTimeout, 30*time.Second),
-		MatcherWorkers:        intEnvOrDefault(envMatcherWorkers, 4),
-		MatcherQueueCapacity:  intEnvOrDefault(envMatcherQueueCapacity, 256),
-		DigestInterval:        durationEnvOrDefault(envDigestInterval, time.Minute),
-		DigestLockTTL:         durationEnvOrDefault(envDigestLockTTL, 10*time.Minute),
-		DigestCompletionTTL:   durationEnvOrDefault(envDigestCompletionTTL, 72*time.Hour),
-		MailWorkers:           intEnvOrDefault(envMailWorkers, 2),
-		MailQueueCapacity:     intEnvOrDefault(envMailQueueCapacity, 128),
-		SMTPAddr:              stringEnvOrDefault(envSMTPAddr, "127.0.0.1:1025"),
-		SMTPFrom:              stringEnvOrDefault(envSMTPFrom, "SignalWatch <digest@signalwatch.local>"),
-		SMTPUsername:          strings.TrimSpace(os.Getenv(envSMTPUsername)),
-		SMTPPassword:          os.Getenv(envSMTPPassword),
-		SMTPStartTLS:          smtpStartTLS,
-		SMTPTimeout:           durationEnvOrDefault(envSMTPTimeout, 10*time.Second),
+		AppEnv:                 appEnv,
+		HTTPAddr:               httpAddr,
+		LogLevel:               logLevel,
+		WorkerHeartbeat:        heartbeat,
+		MySQLDSN:               mysqlDSN,
+		MySQLMaxOpenConns:      mysqlMaxOpenConns,
+		MySQLMaxIdleConns:      mysqlMaxIdleConns,
+		RedisAddr:              redisAddr,
+		RedisPassword:          redisPassword,
+		RedisDB:                redisDB,
+		JWTSecret:              jwtSecret,
+		JWTTTL:                 jwtTTL,
+		JWTIssuer:              jwtIssuer,
+		CollectorLockTTL:       durationEnvOrDefault(envCollectorLockTTL, 55*time.Minute),
+		ArXivBootstrapLookback: durationEnvOrDefault(envArXivBootstrapLookback, 7*24*time.Hour),
+		ArXivRecoveryOverlap:   durationEnvOrDefault(envArXivRecoveryOverlap, 24*time.Hour),
+		ArXivDailySyncTime:     stringEnvOrDefault(envArXivDailySyncTime, "00:30"),
+		ArXivSyncRetryInterval: durationEnvOrDefault(envArXivSyncRetryInterval, 15*time.Minute),
+		ArXivFeedEndpoint:      stringEnvOrDefault(envArXivFeedEndpoint, "https://rss.arxiv.org/atom"),
+		ArXivPageSize:          intEnvOrDefault(envArXivPageSize, 100),
+		ArXivMaxPages:          intEnvOrDefault(envArXivMaxPages, 10),
+		ArXivMaxResponseBytes:  int64EnvOrDefault(envArXivMaxResponseBytes, 5<<20),
+		ArXivRequestAttempts:   intEnvOrDefault(envArXivRequestAttempts, 3),
+		ArXivRequestBackoff:    durationEnvOrDefault(envArXivRequestBackoff, 5*time.Second),
+		ArXivRequestInterval:   durationEnvOrDefault(envArXivRequestInterval, 3*time.Second),
+		ArXivHTTPTimeout:       durationEnvOrDefault(envArXivHTTPTimeout, 30*time.Second),
+		MatcherWorkers:         intEnvOrDefault(envMatcherWorkers, 4),
+		MatcherQueueCapacity:   intEnvOrDefault(envMatcherQueueCapacity, 256),
+		DigestInterval:         durationEnvOrDefault(envDigestInterval, time.Minute),
+		DigestLockTTL:          durationEnvOrDefault(envDigestLockTTL, 10*time.Minute),
+		DigestCompletionTTL:    durationEnvOrDefault(envDigestCompletionTTL, 72*time.Hour),
+		MailWorkers:            intEnvOrDefault(envMailWorkers, 2),
+		MailQueueCapacity:      intEnvOrDefault(envMailQueueCapacity, 128),
+		SMTPAddr:               stringEnvOrDefault(envSMTPAddr, "127.0.0.1:1025"),
+		SMTPFrom:               stringEnvOrDefault(envSMTPFrom, "SignalWatch <digest@signalwatch.local>"),
+		SMTPUsername:           strings.TrimSpace(os.Getenv(envSMTPUsername)),
+		SMTPPassword:           os.Getenv(envSMTPPassword),
+		SMTPStartTLS:           smtpStartTLS,
+		SMTPTimeout:            durationEnvOrDefault(envSMTPTimeout, 10*time.Second),
 	}
 
 	if err := validate(cfg); err != nil {
@@ -287,8 +297,16 @@ func validate(cfg Config) error {
 	if strings.TrimSpace(cfg.JWTIssuer) == "" {
 		return fmt.Errorf("invalid JWT_ISSUER: must not be blank")
 	}
-	if cfg.CollectorInterval <= 0 || cfg.CollectorLockTTL <= 0 || cfg.ArXivLookback <= 0 {
+	if cfg.CollectorLockTTL <= 0 || cfg.ArXivBootstrapLookback <= 0 ||
+		cfg.ArXivRecoveryOverlap <= 0 || cfg.ArXivSyncRetryInterval <= 0 {
 		return fmt.Errorf("invalid collector scheduling configuration")
+	}
+	if _, err := time.Parse("15:04", cfg.ArXivDailySyncTime); err != nil {
+		return fmt.Errorf("invalid ARXIV_DAILY_SYNC_TIME: must use HH:mm")
+	}
+	feedURL, err := url.Parse(cfg.ArXivFeedEndpoint)
+	if err != nil || feedURL.Scheme != "https" || !strings.EqualFold(feedURL.Hostname(), "rss.arxiv.org") {
+		return fmt.Errorf("invalid ARXIV_FEED_ENDPOINT")
 	}
 	if cfg.ArXivPageSize < 1 || cfg.ArXivPageSize > 2000 || cfg.ArXivMaxPages < 1 ||
 		cfg.ArXivMaxResponseBytes < 1024 || cfg.ArXivRequestAttempts < 1 ||

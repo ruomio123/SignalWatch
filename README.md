@@ -2,7 +2,7 @@
 
 SignalWatch 提供内嵌 Web 前端、API、Worker，以及本地开发所需的 MySQL、Redis 和 Mailpit 服务。
 
-## 当前功能（M4）
+## 当前功能（V2）
 
 - Web 欢迎页、注册、登录、工作台与偏好设置页面
 - 邮箱注册和密码登录
@@ -13,14 +13,17 @@ SignalWatch 提供内嵌 Web 前端、API、Worker，以及本地开发所需的
 - 创建、分页查询、修改、启停和软删除用户订阅
 - 单分类与关键词订阅归一化、完整替换、版本冲突检查和启用额度保护
 - API、MySQL 和 Redis 健康状态展示
-- 订阅驱动、分类级共享的 arXiv 抓取
-- 每小时无状态执行，并固定重复抓取最近 48 小时
+- 独立于用户订阅、由来源允许分类驱动的本地 arXiv 论文库
+- Search API 七天 Bootstrap/停机 Recovery 与每日逐分类 Atom Feed 增量发现
+- Daily Feed ID 经 Search API 批量补全，保持首版时间、作者和版本元数据语义
+- 来源级持久化同步 checkpoint、24 小时 Recovery overlap 和失败重试
 - 基于 Redis Server Time 的全 Worker 三秒 arXiv 请求间隔
 - arXiv ID 单行论文模型，v2/v3 直接覆盖并保留 first_seen_at
 - 全局 Collector 锁、有限 HTTP 重试和 papers UPSERT 幂等
 - Collector 每页落库后把新增和更新论文都提交给 Matcher
 - 有界内存队列、固定 Matcher Worker Pool 和队列满时的生产者背压
 - 交叉分类、标题/摘要关键词 OR 和 from-now 的确定性匹配
+- 新建启用订阅时原子回填本地最近七天论文，不访问 arXiv
 - subscription_papers 唯一约束幂等，并保留首次匹配原因与时间
 - 当前用户匹配论文列表与详情 API，按论文去重并支持订阅筛选
 - 匹配论文工作区、完整摘要详情和多订阅命中原因展示
@@ -30,13 +33,12 @@ SignalWatch 提供内嵌 Web 前端、API、Worker，以及本地开发所需的
 - 有界 Mail Queue、固定 Mail Worker Pool 和队列满时的生产者背压
 - UTF-8 纯文本/HTML 邮件，包含论文、订阅和关键词命中原因
 - SMTP 成功后事务更新 delivered_at，失败不写完成标记
-- OpenAPI 3.1 接口契约和可重复的 M1/M2/M3/M4 集成验收
+- OpenAPI 3.1 接口契约和可重复的 M1–M4/V2 集成验收
 
-M4 已打通完整 V1 闭环：
+V2 在 M4 完整闭环上重构了采集层：
 
 ~~~text
-创建订阅
-→ arXiv updated 倒序分页与本地窗口截断
+系统级 arXiv Bootstrap / Recovery / Daily Feed
 → papers UPSERT
 → subscription_papers 本地匹配
 → 用户当地时间的每日 Digest
@@ -46,15 +48,17 @@ M4 已打通完整 V1 闭环：
 
 当前**尚未实现**用户反馈、LLM 或自然语言订阅助手；这些能力不得视为已交付功能。
 
-Worker 不会全量轮询全部 arXiv 分类。它在每轮开始时直接查询启用且未删除的订阅，
-汇总并去重其分类；没有活跃分类时不请求 arXiv。关键词始终留在本地，M2 不把
-用户关键词发送给 arXiv，也不保存抓取目标、运行记录或 checkpoint。
+Worker 不再根据订阅决定抓取目标。它读取启用 arXiv 来源的 `allowed_categories`，即使
+没有用户或启用订阅也会维护本地论文库。关键词始终留在本地，不会发送给 arXiv。
+首次运行使用 Search API 回看七天；错过每日任务时从最后成功时间减去 24 小时恢复；
+只有整轮抓取、UPSERT 和 Matcher 入队成功后才推进 `sources.last_successful_sync_at`。
 
 Matcher 只检查同一来源下仍启用且未删除的订阅。论文的任一交叉分类与订阅分类相同即
 满足分类条件；空关键词表示仅按分类匹配，否则在标题和摘要拼接文本中按大小写不敏感
-的 OR 语义查找关键词。作者和分类文本不参与关键词搜索。只有
-`paper.first_seen_at >= subscription.created_at` 才会建立关系，因此新建订阅不会追溯
-历史论文。
+的 OR 语义查找关键词。作者和分类文本不参与关键词搜索。
+普通论文匹配仍要求 `paper.first_seen_at >= subscription.created_at`。新建启用订阅则会在
+同一数据库事务内额外匹配本地 `published_at` 最近七天的论文，创建成功后可立即在
+`/papers` 查看。修改规则或重新启用不会重新回填。
 
 ## 环境要求
 
@@ -99,12 +103,23 @@ make api
 make worker
 ```
 
-Worker 启动后立即执行一次 Collector，此后按 `COLLECTOR_INTERVAL` 再次运行。每轮固定
-回看 `ARXIV_LOOKBACK`，默认 48 小时，并依赖 `(source_id, arxiv_id)` 唯一约束重复
-UPSERT。每页 UPSERT 返回的全部论文 ID 都会进入 Matcher 队列，包括已存在论文；队列
-由 `MATCHER_QUEUE_CAPACITY` 限制，`MATCHER_WORKERS` 个 Worker 并发消费。队列满时
-Collector 会等待，从而形成背压。进程退出时未完成的内存任务由下一轮 48 小时重抓恢复。
-Redis 不可用时不会绕过全局锁和限速继续访问 arXiv。
+Worker 启动后读取来源 checkpoint：空 checkpoint 执行七天 Bootstrap，落后于最近每日
+边界则执行带 24 小时 overlap 的 Recovery，否则等待 Daily。Daily 默认在
+`00:30 America/New_York` 逐分类读取 Atom Feed，再通过 Search API `id_list` 补全元数据。
+失败任务每 15 分钟保持原模式重试。系统依赖 `(source_id, arxiv_id)` 唯一约束重复 UPSERT。
+每批 UPSERT 返回的全部论文 ID 都会进入 Matcher 队列，包括已存在论文；队列由
+`MATCHER_QUEUE_CAPACITY` 限制，`MATCHER_WORKERS` 个 Worker 并发消费。队列满时采集器会
+等待，从而形成背压。进程退出时未完成的内存任务由下一轮 Recovery 重抓恢复。Redis
+不可用时不会绕过全局锁和限速继续访问 arXiv。
+
+```dotenv
+COLLECTOR_LOCK_TTL=55m
+ARXIV_BOOTSTRAP_LOOKBACK=168h
+ARXIV_RECOVERY_OVERLAP=24h
+ARXIV_DAILY_SYNC_TIME=00:30
+ARXIV_SYNC_RETRY_INTERVAL=15m
+ARXIV_FEED_ENDPOINT=https://rss.arxiv.org/atom
+```
 
 同一个 Worker 启动时也会立即执行一次 Digest 调度，此后按 `DIGEST_INTERVAL` 检查。
 用户当地时间达到 `digest_time` 后会进入有界邮件队列；失败任务会在当天后续调度中重试，
@@ -186,7 +201,7 @@ curl -i -X POST http://127.0.0.1:8080/api/v1/subscriptions \
   -H 'Content-Type: application/json' \
   -d "{\"source_id\":$SOURCE_ID,\"name\":\"Agent papers\",\"objective\":\"Track agent systems\",\"rules\":{\"categories\":[\"cs.AI\"],\"include_keywords\":[\"tool use\"]}}"
 
-# Worker 完成抓取与匹配后，读取按论文去重的结果和完整详情
+# 创建时会先回填本地七天论文；Worker 后续持续采集并匹配新论文
 curl -i 'http://127.0.0.1:8080/api/v1/papers?page=1&page_size=20' \
   -H "Authorization: Bearer $TOKEN"
 
@@ -215,7 +230,7 @@ curl -i -X DELETE http://127.0.0.1:8080/api/v1/subscriptions/$SUBSCRIPTION_ID \
   -H 'If-Match: "2"'
 ```
 
-## M1/M2/M3/M4 集成验收数据库
+## M1–M4/V2 集成验收数据库
 
 集成测试使用真实 Router、JWT、Service、Repository 和 MySQL。为防止误删开发数据，
 它只接受数据库名以 `_test` 结尾的 `M1_TEST_MYSQL_DSN`，不会回退读取
@@ -236,9 +251,11 @@ make test-integration
 ```
 
 集成测试使用带随机后缀的隔离数据，只清理本次测试生成的记录；不会清空数据库或操作
-开发库。它覆盖注册登录、资料、来源能力、订阅 CRUD、用户隔离，以及活跃分类汇总、
-无需求时停止抓取、papers 幂等、arXiv 更新覆盖语义，以及 M3 匹配规则、from-now、
+开发库。它覆盖注册登录、资料、来源能力、订阅 CRUD、用户隔离，以及系统来源分类、
+零订阅采集、同步 checkpoint、papers 幂等、arXiv 更新覆盖语义，以及 M3 匹配规则、from-now、
 禁用/删除过滤、首次原因保留和并发幂等。
+V2 还覆盖新建启用订阅的本地七天原子回填、暂停订阅不回填，以及未投递关系可供
+后续 Digest 聚合。
 匹配论文 API 的验收还覆盖分页、按订阅筛选、同一论文跨订阅去重，以及严格的用户数据隔离。
 M4 验收使用本地 Mailpit，覆盖用户级聚合、跨订阅去重、已投递排除、数量上限、SMTP
 失败重试、事务投递标记和同日幂等。运行验收前确保 `make deps-up` 中的 Mailpit 健康。
@@ -253,8 +270,8 @@ make test-race
 make openapi-check
 ```
 
-配置好独立测试数据库后，可以运行当前 M4 全量封板检查：
+配置好独立测试数据库后，可以运行当前 V2 全量封板检查：
 
 ```bash
-make m4-verify
+make v2-verify
 ```

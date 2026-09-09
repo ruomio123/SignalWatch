@@ -59,6 +59,30 @@ func TestServiceCreatePersistsNormalizedSubscriptionAndDefaultsEnabled(t *testin
 	}
 }
 
+func TestServiceCreateUsesOneUTCInstantForSevenDayBackfill(t *testing.T) {
+	now := time.Date(2026, time.September, 9, 6, 7, 8, 900, time.FixedZone("local", 8*60*60))
+	var captured BackfillWindow
+	repository := subscriptionRepositoryStub{
+		create: func(context.Context, *Subscription, []Rule) error { return nil },
+		captureBackfill: func(window BackfillWindow) {
+			captured = window
+		},
+	}
+	service := NewServiceWithClock(repository, sourceCatalogStub{get: validSourceGet}, func() time.Time { return now })
+
+	_, err := service.Create(context.Background(), 42, CreateInput{
+		SourceID: 1, Name: "agents", Rules: RulesInput{Categories: []string{"cs.AI"}},
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	want := now.UTC()
+	if !captured.To.Equal(want) || !captured.MatchedAt.Equal(want) ||
+		!captured.From.Equal(want.Add(-7*24*time.Hour)) || captured.To.Location() != time.UTC {
+		t.Fatalf("unexpected atomic backfill window: %+v", captured)
+	}
+}
+
 func TestServiceCreatePreservesExplicitFalseAndBlankObjective(t *testing.T) {
 	disabled := false
 	blank := " \t "
@@ -432,15 +456,19 @@ func updateQueryResult() QueryResult {
 }
 
 type subscriptionRepositoryStub struct {
-	create func(context.Context, *Subscription, []Rule) error
-	count  func(context.Context, uint64, ListFilter) (int64, error)
-	list   func(context.Context, uint64, ListFilter, int, int) ([]QueryResult, error)
-	get    func(context.Context, uint64, uint64) (QueryResult, error)
-	update func(context.Context, uint64, uint64, uint32, SubscriptionPatch, *[]Rule) (Subscription, []Rule, error)
-	delete func(context.Context, uint64, uint64, uint32) error
+	create          func(context.Context, *Subscription, []Rule) error
+	captureBackfill func(BackfillWindow)
+	count           func(context.Context, uint64, ListFilter) (int64, error)
+	list            func(context.Context, uint64, ListFilter, int, int) ([]QueryResult, error)
+	get             func(context.Context, uint64, uint64) (QueryResult, error)
+	update          func(context.Context, uint64, uint64, uint32, SubscriptionPatch, *[]Rule) (Subscription, []Rule, error)
+	delete          func(context.Context, uint64, uint64, uint32) error
 }
 
-func (stub subscriptionRepositoryStub) CreateAtomic(ctx context.Context, item *Subscription, rules []Rule) error {
+func (stub subscriptionRepositoryStub) CreateAtomic(ctx context.Context, item *Subscription, rules []Rule, backfill BackfillWindow) error {
+	if stub.captureBackfill != nil {
+		stub.captureBackfill(backfill)
+	}
 	if stub.create == nil {
 		return nil
 	}

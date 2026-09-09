@@ -4,25 +4,29 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"signalwatch/internal/matcher"
+	"signalwatch/internal/paper"
 	"signalwatch/internal/source"
 )
 
 const maxEnabledSubscriptions = int64(20)
 
 var (
-	ErrLimitReached    = errors.New("subscription limit reached")
-	ErrUserNotFound    = errors.New("active user not found")
-	ErrNotFound        = errors.New("subscription not found")
-	ErrVersionConflict = errors.New("subscription version conflict")
+	ErrLimitReached          = errors.New("subscription limit reached")
+	ErrUserNotFound          = errors.New("active user not found")
+	ErrNotFound              = errors.New("subscription not found")
+	ErrVersionConflict       = errors.New("subscription version conflict")
+	ErrInvalidBackfillWindow = errors.New("invalid subscription backfill window")
 )
 
 type Repository interface {
-	CreateAtomic(ctx context.Context, subscription *Subscription, rules []Rule) error
+	CreateAtomic(ctx context.Context, subscription *Subscription, rules []Rule, backfill BackfillWindow) error
 	Count(ctx context.Context, userID uint64, filter ListFilter) (int64, error)
 	List(ctx context.Context, userID uint64, filter ListFilter, offset, limit int) ([]QueryResult, error)
 	Get(ctx context.Context, userID, id uint64) (QueryResult, error)
@@ -30,10 +34,18 @@ type Repository interface {
 	SoftDelete(ctx context.Context, userID, id uint64, expectedVersion uint32) error
 }
 
+type BackfillWindow struct {
+	From      time.Time
+	To        time.Time
+	MatchedAt time.Time
+}
+
 type transactionStore interface {
 	LockActiveUser(ctx context.Context, userID uint64) error
 	CountEnabled(ctx context.Context, userID uint64) (int64, error)
 	CreateSubscription(ctx context.Context, subscription *Subscription) error
+	ListBackfillPapers(ctx context.Context, sourceID uint64, from, to time.Time) ([]paper.Paper, error)
+	InsertBackfillMatches(ctx context.Context, matches []paper.SubscriptionPaper) error
 	LockOwnedSubscription(ctx context.Context, userID, id uint64, expectedVersion uint32) (Subscription, error)
 	OwnedActiveSubscriptionExists(ctx context.Context, userID, id uint64) (bool, error)
 	UpdateSubscription(ctx context.Context, subscription *Subscription, patch SubscriptionPatch) error
@@ -58,7 +70,15 @@ func (repository *repository) CreateAtomic(
 	ctx context.Context,
 	subscription *Subscription,
 	rules []Rule,
+	backfill BackfillWindow,
 ) error {
+	if subscription == nil {
+		return errors.New("subscription is required")
+	}
+	if subscription.Enabled && (backfill.From.IsZero() || backfill.To.IsZero() ||
+		backfill.MatchedAt.IsZero() || backfill.From.After(backfill.To)) {
+		return ErrInvalidBackfillWindow
+	}
 	category, keywordsJSON, err := flattenRules(rules)
 	if err != nil {
 		return err
@@ -80,6 +100,40 @@ func (repository *repository) CreateAtomic(
 		}
 		if err := tx.CreateSubscription(ctx, subscription); err != nil {
 			return err
+		}
+		if !subscription.Enabled {
+			return nil
+		}
+		papers, err := tx.ListBackfillPapers(
+			ctx, subscription.SourceID, backfill.From.UTC(), backfill.To.UTC(),
+		)
+		if err != nil {
+			return fmt.Errorf("list subscription backfill papers: %w", err)
+		}
+		candidate := matcher.Candidate{
+			ID: subscription.ID, Category: subscription.Category,
+			KeywordsJSON: subscription.KeywordsJSON,
+		}
+		matches := make([]paper.SubscriptionPaper, 0, len(papers))
+		for _, stored := range papers {
+			matchedKeywords, matched, err := matcher.Evaluate(stored, candidate)
+			if err != nil {
+				return fmt.Errorf("evaluate subscription backfill paper %d: %w", stored.ID, err)
+			}
+			if !matched {
+				continue
+			}
+			encoded, err := json.Marshal(matchedKeywords)
+			if err != nil {
+				return fmt.Errorf("encode subscription backfill keywords: %w", err)
+			}
+			matches = append(matches, paper.SubscriptionPaper{
+				SubscriptionID: subscription.ID, PaperID: stored.ID,
+				MatchedKeywordsJSON: encoded, MatchedAt: backfill.MatchedAt.UTC(),
+			})
+		}
+		if err := tx.InsertBackfillMatches(ctx, matches); err != nil {
+			return fmt.Errorf("insert subscription backfill matches: %w", err)
 		}
 		return nil
 	})
@@ -481,6 +535,32 @@ func (store gormTransactionStore) CreateSubscription(
 	subscription *Subscription,
 ) error {
 	return store.db.WithContext(ctx).Create(subscription).Error
+}
+
+func (store gormTransactionStore) ListBackfillPapers(
+	ctx context.Context,
+	sourceID uint64,
+	from time.Time,
+	to time.Time,
+) ([]paper.Paper, error) {
+	var papers []paper.Paper
+	err := store.db.WithContext(ctx).
+		Where("source_id = ? AND published_at >= ? AND published_at <= ?", sourceID, from, to).
+		Order("id ASC").
+		Find(&papers).Error
+	return papers, err
+}
+
+func (store gormTransactionStore) InsertBackfillMatches(
+	ctx context.Context,
+	matches []paper.SubscriptionPaper,
+) error {
+	if len(matches) == 0 {
+		return nil
+	}
+	return store.db.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&matches).Error
 }
 
 func (store gormTransactionStore) LockOwnedSubscription(

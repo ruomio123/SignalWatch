@@ -24,7 +24,8 @@ export MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD
 export MYSQL_DSN MYSQL_MAX_OPEN_CONNS MYSQL_MAX_IDLE_CONNS
 export REDIS_ADDR REDIS_PASSWORD REDIS_DB
 export JWT_SECRET JWT_TTL JWT_ISSUER
-export COLLECTOR_INTERVAL COLLECTOR_LOCK_TTL ARXIV_LOOKBACK
+export COLLECTOR_LOCK_TTL ARXIV_BOOTSTRAP_LOOKBACK ARXIV_RECOVERY_OVERLAP
+export ARXIV_DAILY_SYNC_TIME ARXIV_SYNC_RETRY_INTERVAL ARXIV_FEED_ENDPOINT
 export ARXIV_PAGE_SIZE ARXIV_MAX_PAGES ARXIV_MAX_RESPONSE_BYTES
 export ARXIV_REQUEST_ATTEMPTS ARXIV_REQUEST_BACKOFF ARXIV_REQUEST_INTERVAL
 export ARXIV_HTTP_TIMEOUT
@@ -37,7 +38,7 @@ export M1_TEST_MYSQL_DSN M4_TEST_SMTP_ADDR
 # 这些名称代表操作，不代表同名文件。
 # 即使目录中出现名为 test、api 的文件，Make 仍然会执行对应命令。
 .PHONY: deps-up deps-down api worker fmt vet test test-race openapi-check \
-	test-integration m1-verify m2-verify m3-verify m4-verify require-env require-test-dsn migrate-up \
+	test-integration m1-verify m2-verify m3-verify m4-verify v2-verify require-env require-test-dsn migrate-up \
 	migrate-down migrate-status migrate-test-up migrate-test-status
 # 检查本地环境变量文件是否存在。
 # api 和 worker 缺少 .env 时，会在真正启动之前停止并显示处理方法。
@@ -136,3 +137,6 @@ m3-verify: m2-verify
 
 # M4 沿用五表结构；全量验收额外覆盖 Digest、邮件并发与 Mailpit。
 m4-verify: m3-verify
+
+# V2 保留 M4 产品闭环，并以系统级同步替换订阅驱动采集。
+v2-verify: m4-verify

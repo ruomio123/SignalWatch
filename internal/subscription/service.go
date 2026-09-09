@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"signalwatch/internal/source"
@@ -104,10 +105,18 @@ func (service *Service) Get(
 type Service struct {
 	repository Repository
 	sources    SourceCatalog
+	now        func() time.Time
 }
 
 func NewService(repository Repository, sources SourceCatalog) *Service {
-	return &Service{repository: repository, sources: sources}
+	return &Service{repository: repository, sources: sources, now: time.Now}
+}
+
+func NewServiceWithClock(repository Repository, sources SourceCatalog, now func() time.Time) *Service {
+	if now == nil {
+		now = time.Now
+	}
+	return &Service{repository: repository, sources: sources, now: now}
 }
 
 func (service *Service) Create(
@@ -153,7 +162,10 @@ func (service *Service) Create(
 		Version:   InitialVersion,
 	}
 	rules := persistenceRules(normalizedRules)
-	if err := service.repository.CreateAtomic(ctx, &subscription, rules); err != nil {
+	commandTime := service.now().UTC()
+	if err := service.repository.CreateAtomic(ctx, &subscription, rules, BackfillWindow{
+		From: commandTime.Add(-7 * 24 * time.Hour), To: commandTime, MatchedAt: commandTime,
+	}); err != nil {
 		return PublicSubscription{}, fmt.Errorf("create subscription atomically: %w", err)
 	}
 
