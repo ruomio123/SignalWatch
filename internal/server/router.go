@@ -23,6 +23,10 @@ type Dependencies struct {
 	RegisterHandler           gin.HandlerFunc
 	LoginHandler              gin.HandlerFunc
 	AuthMiddleware            gin.HandlerFunc
+	ActiveRoleMiddleware      gin.HandlerFunc
+	UserRoleMiddleware        gin.HandlerFunc
+	OperatorRoleMiddleware    gin.HandlerFunc
+	OperationsAuditMiddleware gin.HandlerFunc
 	GetProfileHandler         gin.HandlerFunc
 	UpdateProfileHandler      gin.HandlerFunc
 	ListSourcesHandler        gin.HandlerFunc
@@ -34,6 +38,8 @@ type Dependencies struct {
 	DeleteSubscriptionHandler gin.HandlerFunc
 	ListPapersHandler         gin.HandlerFunc
 	GetPaperHandler           gin.HandlerFunc
+	OperationsStatusHandler   gin.HandlerFunc
+	OperationsSourcesHandler  gin.HandlerFunc
 }
 
 // NewRouter 创建并配置 SignalWatch API 的 Gin Router。
@@ -106,6 +112,10 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 		dependencies.RegisterHandler,
 		dependencies.LoginHandler,
 		dependencies.AuthMiddleware,
+		dependencies.ActiveRoleMiddleware,
+		dependencies.UserRoleMiddleware,
+		dependencies.OperatorRoleMiddleware,
+		dependencies.OperationsAuditMiddleware,
 		dependencies.GetProfileHandler,
 		dependencies.UpdateProfileHandler,
 		dependencies.ListSourcesHandler,
@@ -117,6 +127,8 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 		dependencies.DeleteSubscriptionHandler,
 		dependencies.ListPapersHandler,
 		dependencies.GetPaperHandler,
+		dependencies.OperationsStatusHandler,
+		dependencies.OperationsSourcesHandler,
 	)
 
 	web.RegisterRoutes(router)
@@ -170,6 +182,10 @@ func validateDependencies(dependencies Dependencies) error {
 	if dependencies.AuthMiddleware == nil {
 		return errors.New("auth middleware is required")
 	}
+	if dependencies.ActiveRoleMiddleware == nil || dependencies.UserRoleMiddleware == nil ||
+		dependencies.OperatorRoleMiddleware == nil || dependencies.OperationsAuditMiddleware == nil {
+		return errors.New("role and operations middleware are required")
+	}
 	if dependencies.GetProfileHandler == nil {
 		return errors.New("get profile handler is required")
 	}
@@ -203,6 +219,9 @@ func validateDependencies(dependencies Dependencies) error {
 	if dependencies.GetPaperHandler == nil {
 		return errors.New("get paper handler is required")
 	}
+	if dependencies.OperationsStatusHandler == nil || dependencies.OperationsSourcesHandler == nil {
+		return errors.New("operations handlers are required")
+	}
 
 	return nil
 }
@@ -213,6 +232,10 @@ func registerAPIV1Routes(
 	registerHandler gin.HandlerFunc,
 	loginHandler gin.HandlerFunc,
 	authMiddleware gin.HandlerFunc,
+	activeRoleMiddleware gin.HandlerFunc,
+	userRoleMiddleware gin.HandlerFunc,
+	operatorRoleMiddleware gin.HandlerFunc,
+	operationsAuditMiddleware gin.HandlerFunc,
 	getProfileHandler gin.HandlerFunc,
 	updateProfileHandler gin.HandlerFunc,
 	listSourcesHandler gin.HandlerFunc,
@@ -224,20 +247,22 @@ func registerAPIV1Routes(
 	deleteSubscriptionHandler gin.HandlerFunc,
 	listPapersHandler gin.HandlerFunc,
 	getPaperHandler gin.HandlerFunc,
+	operationsStatusHandler gin.HandlerFunc,
+	operationsSourcesHandler gin.HandlerFunc,
 ) {
 	auth := apiV1.Group("/auth")
 	auth.POST("/register", registerHandler)
 	auth.POST("/login", loginHandler)
 
 	protectedAuth := auth.Group("")
-	protectedAuth.Use(authMiddleware)
+	protectedAuth.Use(authMiddleware, activeRoleMiddleware)
 	protectedAuth.GET("/probe", func(c *gin.Context) {
 		userID, _ := httpx.CurrentUserID(c)
 		c.JSON(http.StatusOK, gin.H{"user_id": userID})
 	})
 
 	protected := apiV1.Group("")
-	protected.Use(authMiddleware)
+	protected.Use(authMiddleware, userRoleMiddleware)
 	protected.GET("/me", getProfileHandler)
 	protected.PATCH("/me", updateProfileHandler)
 	protected.GET("/sources", listSourcesHandler)
@@ -249,4 +274,9 @@ func registerAPIV1Routes(
 	protected.DELETE("/subscriptions/:id", deleteSubscriptionHandler)
 	protected.GET("/papers", listPapersHandler)
 	protected.GET("/papers/:id", getPaperHandler)
+
+	operations := apiV1.Group("/ops")
+	operations.Use(authMiddleware, operatorRoleMiddleware, operationsAuditMiddleware)
+	operations.GET("/status", operationsStatusHandler)
+	operations.GET("/sources", operationsSourcesHandler)
 }

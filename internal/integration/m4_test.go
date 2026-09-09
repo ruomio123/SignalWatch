@@ -64,7 +64,7 @@ func TestM4MailpitDigestDeliveryAndRetryBoundaries(t *testing.T) {
 	userRecord := user.User{
 		Email: "m4-" + nonce + "@example.test", PasswordHash: "not-used-in-this-test",
 		Timezone: "UTC", DigestTime: "00:00:00", MaxItemsPerDigest: 2,
-		Status: user.StatusActive, CreatedAt: now, UpdatedAt: now,
+		Status: user.StatusActive, Role: user.RoleUser, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := database.Create(&userRecord).Error; err != nil {
 		t.Fatalf("create M4 user: %v", err)

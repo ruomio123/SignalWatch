@@ -8,6 +8,7 @@ SignalWatch 提供内嵌 Web 前端、API、Worker，以及本地开发所需的
 - 邮箱注册和密码登录
 - 注册密码至少 8 个字符，且必须同时包含字母和数字
 - JWT Bearer 鉴权
+- 数据库实时授权的 `user` / `operator` 互斥角色和本地运维账号管理 CLI
 - 读取与修改用户时区、摘要时间和单次条目上限
 - 查询系统启用的来源、允许分类及来源能力
 - 创建、分页查询、修改、启停和软删除用户订阅
@@ -33,6 +34,7 @@ SignalWatch 提供内嵌 Web 前端、API、Worker，以及本地开发所需的
 - 有界 Mail Queue、固定 Mail Worker Pool 和队列满时的生产者背压
 - UTF-8 纯文本/HTML 邮件，包含论文、订阅和关键词命中原因
 - SMTP 成功后事务更新 delivered_at，失败不写完成标记
+- Redis 多 Worker 心跳、队列/任务快照和只读受保护运维状态接口
 - OpenAPI 3.1 接口契约和可重复的 M1–M4/V2 集成验收
 
 V2 在 M4 完整闭环上重构了采集层：
@@ -51,7 +53,7 @@ V2 在 M4 完整闭环上重构了采集层：
 Worker 不再根据订阅决定抓取目标。它读取启用 arXiv 来源的 `allowed_categories`，即使
 没有用户或启用订阅也会维护本地论文库。关键词始终留在本地，不会发送给 arXiv。
 首次运行使用 Search API 回看七天；错过每日任务时从最后成功时间减去 24 小时恢复；
-只有整轮抓取、UPSERT 和 Matcher 入队成功后才推进 `sources.last_successful_sync_at`。
+只有整轮抓取、UPSERT 和 Matcher 批次处理全部成功后才推进 `sources.last_successful_sync_at`。
 
 Matcher 只检查同一来源下仍启用且未删除的订阅。论文的任一交叉分类与订阅分类相同即
 满足分类条件；空关键词表示仅按分类匹配，否则在标题和摘要拼接文本中按大小写不敏感
@@ -109,7 +111,8 @@ Worker 启动后读取来源 checkpoint：空 checkpoint 执行七天 Bootstrap�
 失败任务每 15 分钟保持原模式重试。系统依赖 `(source_id, arxiv_id)` 唯一约束重复 UPSERT。
 每批 UPSERT 返回的全部论文 ID 都会进入 Matcher 队列，包括已存在论文；队列由
 `MATCHER_QUEUE_CAPACITY` 限制，`MATCHER_WORKERS` 个 Worker 并发消费。队列满时采集器会
-等待，从而形成背压。进程退出时未完成的内存任务由下一轮 Recovery 重抓恢复。Redis
+等待，从而形成背压。Collector 会等待当前页的匹配结果；匹配失败或取消时不推进
+checkpoint，下一次同步按 Bootstrap/Recovery 重抓并幂等重试。Redis
 不可用时不会绕过全局锁和限速继续访问 arXiv。
 
 ```dotenv
@@ -122,6 +125,7 @@ ARXIV_FEED_ENDPOINT=https://rss.arxiv.org/atom
 ```
 
 同一个 Worker 启动时也会立即执行一次 Digest 调度，此后按 `DIGEST_INTERVAL` 检查。
+Digest 调度串行运行在独立循环中，邮件队列背压不会阻塞 Worker 心跳。
 用户当地时间达到 `digest_time` 后会进入有界邮件队列；失败任务会在当天后续调度中重试，
 成功或当天没有候选时写入 Redis 日期完成标记。单封邮件按最早发现顺序选择最多
 `max_items_per_digest` 篇，剩余论文保留到下一天。开发环境邮件默认投递到 Mailpit，访问
@@ -143,6 +147,12 @@ SMTP_STARTTLS=false
 SMTP_TIMEOUT=10s
 ```
 
+运维状态快照默认在 Redis 保留七天；配置不得短于一小时：
+
+```dotenv
+OPS_STATUS_RETENTION=168h
+```
+
 生产环境应使用真实 SMTP 地址和发件人，并根据服务商设置认证与 STARTTLS。密码只保存在
 本地环境变量中，不提交到版本库。
 
@@ -151,6 +161,56 @@ API 启动后访问 [http://127.0.0.1:8080](http://127.0.0.1:8080) 即可使用 
 
 接口契约位于 [`api/openapi.yaml`](api/openapi.yaml)。所有受保护接口使用登录响应中的
 Bearer JWT；所有时间戳按 UTC RFC3339 返回，用户摘要时间使用 `HH:mm`。
+
+### 当前可靠性边界
+
+- Collector 和 Digest 使用固定 TTL 的 Redis 锁，目前不续租；部署时应确保单轮任务耗时小于
+  对应锁 TTL，超时场景不承诺跨 Worker 互斥。
+- SMTP 成功与 MySQL 投递标记不属于同一事务；邮件已被 SMTP 接收但投递标记写入失败时，
+  后续重试可能重复发送。SMTP 接收成功也不代表收件方最终送达。
+- 当天没有候选会写每日完成标记，之后新匹配的论文保留到下一天。
+
+## 系统运维角色
+
+公开注册始终创建普通 `user`，请求体中的 `role` 会被拒绝。运维人员复用登录接口获取
+JWT；JWT 只保存用户 ID，每次请求都会从 MySQL 读取当前账号状态和角色，因此授权、撤权或
+停用账号会立即生效。`operator` 只能访问 `/api/v1/ops/*`，不能使用资料、订阅、来源和论文
+业务接口，也不会进入 Digest 调度。普通 `user` 访问运维接口会得到 `403 AUTH_FORBIDDEN`。
+
+先注册一个专用账号，再由本机执行角色管理命令：
+
+```bash
+make ops-grant EMAIL=operator@example.com
+make ops-list
+make ops-revoke EMAIL=operator@example.com
+```
+
+授权和撤权命令幂等，只操作已存在账号；非活跃账号不能被授权，最后一个活跃 operator
+不能被撤销。每次变更和列表查询都输出结构化审计日志。部署时必须先运行
+`make migrate-up` 添加 `users.role`，再启动新版 API/Worker 并授权专用账号。
+
+登录后可读取两个只读接口：
+
+```bash
+OPS_TOKEN='<operator access_token>'
+
+curl -i http://127.0.0.1:8080/api/v1/ops/status \
+  -H "Authorization: Bearer $OPS_TOKEN"
+
+curl -i http://127.0.0.1:8080/api/v1/ops/sources \
+  -H "Authorization: Bearer $OPS_TOKEN"
+```
+
+`/api/v1/ops/status` 汇总 MySQL/Redis 检查耗时、Worker 在线状态、Matcher/Mail 队列、
+Collector/Digest/Matcher/Mail 最近任务状态和来源 checkpoint 汇总。没有在线 Worker、缺失或
+失败的任务状态、来源未同步/落后，或队列使用率达到 80% 时会显示 `degraded`。组件故障会
+尽量以 `200` 返回 `unavailable` 状态；负载均衡仍应使用公开 `/readyz` 的 `503` 判断 API
+能否接流量。
+
+`/api/v1/ops/sources` 返回 arXiv 来源允许分类、论文统计、同步 checkpoint、纽约每日边界下
+的 `current/stale/never_synced` 状态和安全的最近尝试摘要。接口不会返回原始
+`config_json`、Redis 锁值、连接串、SMTP 凭证或完整内部错误。系统不提供运维后台页面、
+日志下载、手动同步、重试、取消或发信接口；部署环境负责采集 JSON stdout。
 
 ### Web 页面
 
@@ -256,6 +316,8 @@ make test-integration
 禁用/删除过滤、首次原因保留和并发幂等。
 V2 还覆盖新建启用订阅的本地七天原子回填、暂停订阅不回填，以及未投递关系可供
 后续 Digest 聚合。
+运维验收覆盖角色默认值和约束、授权/撤权幂等、非活跃账号、最后一个 operator 保护、
+实时角色路由隔离、Worker 状态降级规则、纽约夏令时和安全审计字段。
 匹配论文 API 的验收还覆盖分页、按订阅筛选、同一论文跨订阅去重，以及严格的用户数据隔离。
 M4 验收使用本地 Mailpit，覆盖用户级聚合、跨订阅去重、已投递排除、数量上限、SMTP
 失败重试、事务投递标记和同日幂等。运行验收前确保 `make deps-up` 中的 Mailpit 健康。

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 type JobProcessor interface {
@@ -17,10 +19,34 @@ type PoolConfig struct {
 }
 
 type Pool struct {
-	processor JobProcessor
-	logger    *slog.Logger
-	config    PoolConfig
-	queue     chan Job
+	processor   JobProcessor
+	logger      *slog.Logger
+	config      PoolConfig
+	queue       chan Job
+	active      atomic.Int64
+	success     atomic.Uint64
+	failed      atomic.Uint64
+	lastSuccess atomic.Int64
+	lastFailure atomic.Int64
+}
+
+type PoolStats struct {
+	Depth         int
+	Capacity      int
+	Workers       int
+	Processing    int64
+	Succeeded     uint64
+	Failed        uint64
+	LastSuccessAt time.Time
+	LastFailureAt time.Time
+}
+
+func (pool *Pool) Stats() PoolStats {
+	return PoolStats{
+		Depth: len(pool.queue), Capacity: cap(pool.queue), Workers: pool.config.Workers,
+		Processing: pool.active.Load(), Succeeded: pool.success.Load(), Failed: pool.failed.Load(),
+		LastSuccessAt: poolTime(pool.lastSuccess.Load()), LastFailureAt: poolTime(pool.lastFailure.Load()),
+	}
 }
 
 func NewPool(processor JobProcessor, logger *slog.Logger, config PoolConfig) (*Pool, error) {
@@ -69,18 +95,29 @@ func (pool *Pool) runWorker(ctx context.Context, workerID int) {
 			if ctx.Err() != nil {
 				return
 			}
+			pool.active.Add(1)
+			startedAt := time.Now()
 			result, err := pool.processor.Process(ctx, job)
+			pool.active.Add(-1)
 			if err != nil {
 				if !errors.Is(err, context.Canceled) {
+					pool.failed.Add(1)
+					pool.lastFailure.Store(time.Now().UTC().UnixNano())
 					pool.logger.Error(
-						"digest processing failed", "module", "digest", "worker_id", workerID,
+						"digest processing failed", "module", "digest", "event", "mail_job",
+						"task", "mail", "state", "failed", "error_stage", "process",
+						"duration_ms", time.Since(startedAt).Milliseconds(), "worker_id", workerID,
 						"user_id", job.UserID, "local_date", job.LocalDate, "error", err,
 					)
 				}
 				continue
 			}
+			pool.success.Add(1)
+			pool.lastSuccess.Store(time.Now().UTC().UnixNano())
 			pool.logger.Info(
-				"digest processed", "module", "digest", "worker_id", workerID,
+				"digest processed", "module", "digest", "event", "mail_job",
+				"task", "mail", "state", "succeeded", "duration_ms", time.Since(startedAt).Milliseconds(),
+				"worker_id", workerID,
 				"user_id", job.UserID, "local_date", job.LocalDate,
 				"items", result.Items, "marked_relations", result.MarkedRelations,
 				"locked", result.Locked, "already_complete", result.AlreadyComplete,
@@ -88,4 +125,11 @@ func (pool *Pool) runWorker(ctx context.Context, workerID int) {
 			)
 		}
 	}
+}
+
+func poolTime(nanoseconds int64) time.Time {
+	if nanoseconds == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanoseconds).UTC()
 }

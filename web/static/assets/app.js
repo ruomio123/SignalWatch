@@ -237,8 +237,8 @@ function landingPage() {
           <p>把重复的信息筛选交给系统，把有限的注意力留给真正重要的问题。</p>
         </div>
         <div class="feature-grid">
-          <article class="feature-card"><span class="feature-number">01 / 设定范围</span><span class="feature-icon">${icon("filter")}</span><h3>定义你的信号</h3><p>组合分类、作者、包含和排除关键词，让订阅规则贴近你的研究边界。</p></article>
-          <article class="feature-card"><span class="feature-number">02 / 持续监听</span><span class="feature-icon">${icon("pulse")}</span><h3>自动追踪来源</h3><p>系统按计划检查 arXiv 等来源，把新增内容与每一条订阅规则进行匹配。</p></article>
+          <article class="feature-card"><span class="feature-number">01 / 设定范围</span><span class="feature-icon">${icon("filter")}</span><h3>定义你的信号</h3><p>选择一个分类并设置包含关键词，让订阅规则贴近你的研究边界。</p></article>
+          <article class="feature-card"><span class="feature-number">02 / 持续监听</span><span class="feature-icon">${icon("pulse")}</span><h3>自动追踪来源</h3><p>系统按计划检查 arXiv，把论文与已启用的订阅规则进行匹配。</p></article>
           <article class="feature-card"><span class="feature-number">03 / 按时送达</span><span class="feature-icon">${icon("clock")}</span><h3>收到克制的摘要</h3><p>选择时区、送达时间和数量上限，获得不过载、可执行的每日阅读清单。</p></article>
         </div>
       </section>
@@ -570,8 +570,8 @@ function subscriptionsPage() {
   const totalPages = Math.max(1, Math.ceil(result.total / result.page_size));
   const list = result.items.length
     ? `<div class="subscription-list">${result.items.map(subscriptionCard).join("")}</div>`
-    : `<div class="subscriptions-empty"><span>${icon("layers")}</span><h2>${filters.enabled || filters.sourceId ? "没有符合筛选条件的订阅" : "建立第一条研究信号"}</h2><p>${filters.enabled || filters.sourceId ? "调整筛选条件，或创建一条新的订阅。" : "选择来源和分类，再用作者、包含及排除关键词收窄范围。"}</p><button class="button button-primary" type="button" data-new-subscription>${icon("plus")} 创建订阅</button></div>`;
-  const content = `<header class="workspace-header subscriptions-heading"><div><p class="eyebrow">SUBSCRIPTIONS</p><h1>订阅管理</h1><p>集中管理你关注的信息来源、分类、作者和关键词。</p></div><button class="button button-primary" type="button" data-new-subscription>${icon("plus")} 新建订阅</button></header>
+    : `<div class="subscriptions-empty"><span>${icon("layers")}</span><h2>${filters.enabled || filters.sourceId ? "没有符合筛选条件的订阅" : "建立第一条研究信号"}</h2><p>${filters.enabled || filters.sourceId ? "调整筛选条件，或创建一条新的订阅。" : "选择 arXiv 分类，再用包含关键词收窄范围。"}</p><button class="button button-primary" type="button" data-new-subscription>${icon("plus")} 创建订阅</button></div>`;
+  const content = `<header class="workspace-header subscriptions-heading"><div><p class="eyebrow">SUBSCRIPTIONS</p><h1>订阅管理</h1><p>集中管理你关注的 arXiv 分类和包含关键词。</p></div><button class="button button-primary" type="button" data-new-subscription>${icon("plus")} 新建订阅</button></header>
     <section class="subscription-toolbar" aria-label="订阅筛选">
       <div><strong>${result.total}</strong><span>条订阅</span></div>
       <label><span>状态</span><select class="form-select compact-select" data-filter-enabled><option value="" ${filters.enabled === "" ? "selected" : ""}>全部状态</option><option value="true" ${filters.enabled === "true" ? "selected" : ""}>监听中</option><option value="false" ${filters.enabled === "false" ? "selected" : ""}>已暂停</option></select></label>

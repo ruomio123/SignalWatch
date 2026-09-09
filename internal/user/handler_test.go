@@ -35,6 +35,7 @@ func TestHandlerRegisterReturnsCreatedPublicUser(t *testing.T) {
 		DigestTime:        DefaultDigestTime,
 		MaxItemsPerDigest: DefaultMaxItemsPerDigest,
 		Status:            StatusActive,
+		Role:              RoleUser,
 		CreatedAt:         createdAt,
 		UpdatedAt:         updatedAt,
 	}
@@ -84,6 +85,7 @@ func TestHandlerRegisterReturnsCreatedPublicUser(t *testing.T) {
 		wantInput.Password,
 		createdUser.PasswordHash,
 		"password_hash",
+		`"role"`,
 	} {
 		if strings.Contains(responseBody, secret) {
 			t.Fatalf("response leaked sensitive value %q", secret)

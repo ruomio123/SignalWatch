@@ -84,6 +84,9 @@ func TestServiceRegisterCreatesNormalizedUserWithDefaults(t *testing.T) {
 	if captured.Status != StatusActive {
 		t.Fatalf("expected status %q, got %q", StatusActive, captured.Status)
 	}
+	if captured.Role != RoleUser {
+		t.Fatalf("expected role %q, got %q", RoleUser, captured.Role)
+	}
 
 	if registered != captured {
 		t.Fatalf("expected registered user %+v, got %+v", captured, registered)

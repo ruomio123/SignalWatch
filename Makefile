@@ -30,6 +30,7 @@ export ARXIV_PAGE_SIZE ARXIV_MAX_PAGES ARXIV_MAX_RESPONSE_BYTES
 export ARXIV_REQUEST_ATTEMPTS ARXIV_REQUEST_BACKOFF ARXIV_REQUEST_INTERVAL
 export ARXIV_HTTP_TIMEOUT
 export MATCHER_WORKERS MATCHER_QUEUE_CAPACITY
+export OPS_STATUS_RETENTION
 export DIGEST_INTERVAL DIGEST_LOCK_TTL DIGEST_COMPLETION_TTL
 export MAIL_WORKERS MAIL_QUEUE_CAPACITY
 export SMTP_ADDR SMTP_FROM SMTP_USERNAME SMTP_PASSWORD SMTP_STARTTLS SMTP_TIMEOUT
@@ -37,7 +38,7 @@ export M1_TEST_MYSQL_DSN M4_TEST_SMTP_ADDR
 
 # 这些名称代表操作，不代表同名文件。
 # 即使目录中出现名为 test、api 的文件，Make 仍然会执行对应命令。
-.PHONY: deps-up deps-down api worker fmt vet test test-race openapi-check \
+.PHONY: deps-up deps-down api worker ops-grant ops-revoke ops-list fmt vet test test-race openapi-check \
 	test-integration m1-verify m2-verify m3-verify m4-verify v2-verify require-env require-test-dsn migrate-up \
 	migrate-down migrate-status migrate-test-up migrate-test-status
 # 检查本地环境变量文件是否存在。
@@ -93,6 +94,17 @@ api: require-env
 # 加载 .env 中导出的变量并启动 Worker。
 worker: require-env
 	@exec go run ./cmd/worker
+
+ops-grant: require-env
+	@test -n "$(EMAIL)" || { echo "error: EMAIL is required" >&2; exit 1; }
+	@go run ./cmd/ops role grant --email "$(EMAIL)"
+
+ops-revoke: require-env
+	@test -n "$(EMAIL)" || { echo "error: EMAIL is required" >&2; exit 1; }
+	@go run ./cmd/ops role revoke --email "$(EMAIL)"
+
+ops-list: require-env
+	@go run ./cmd/ops role list
 
 # 格式化项目中的所有 Go 包。
 fmt:

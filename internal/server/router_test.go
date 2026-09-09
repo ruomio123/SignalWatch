@@ -12,8 +12,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"signalwatch/internal/auth"
 	"signalwatch/internal/platform/httpx"
+	"signalwatch/internal/user"
 )
+
+type roleLoaderFunc func(context.Context, uint64) (user.User, error)
+
+func (loader roleLoaderFunc) FindActiveByID(ctx context.Context, id uint64) (user.User, error) {
+	return loader(ctx, id)
+}
 
 func TestNewRouterRegistersHealthRoutes(t *testing.T) {
 	router := newTestRouter(t)
@@ -172,6 +180,46 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("expected register handler once, got %d", calls)
+	}
+}
+
+func TestNewRouterKeepsUserAndOperatorRoutesMutuallyExclusive(t *testing.T) {
+	dependencies := validTestDependencies()
+	role := user.RoleUser
+	loader := roleLoaderFunc(func(_ context.Context, id uint64) (user.User, error) {
+		return user.User{ID: id, Status: user.StatusActive, Role: role}, nil
+	})
+	dependencies.AuthMiddleware = func(c *gin.Context) {
+		httpx.SetCurrentUserID(c, 42)
+		c.Next()
+	}
+	dependencies.ActiveRoleMiddleware = auth.RequireRoles(loader, dependencies.Logger, user.RoleUser, user.RoleOperator)
+	dependencies.UserRoleMiddleware = auth.RequireRoles(loader, dependencies.Logger, user.RoleUser)
+	dependencies.OperatorRoleMiddleware = auth.RequireRoles(loader, dependencies.Logger, user.RoleOperator)
+	router, err := NewRouter(dependencies)
+	if err != nil {
+		t.Fatalf("create router: %v", err)
+	}
+
+	requestStatus := func(path string) int {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response.Code
+	}
+	if status := requestStatus("/api/v1/me"); status != http.StatusOK {
+		t.Fatalf("expected user to access product route, got %d", status)
+	}
+	if status := requestStatus("/api/v1/ops/status"); status != http.StatusForbidden {
+		t.Fatalf("expected user to be forbidden from operations route, got %d", status)
+	}
+
+	role = user.RoleOperator
+	if status := requestStatus("/api/v1/ops/status"); status != http.StatusOK {
+		t.Fatalf("expected operator to access operations route, got %d", status)
+	}
+	if status := requestStatus("/api/v1/me"); status != http.StatusForbidden {
+		t.Fatalf("expected operator to be forbidden from product route, got %d", status)
 	}
 }
 
@@ -679,6 +727,18 @@ func validTestDependencies() Dependencies {
 		AuthMiddleware: func(c *gin.Context) {
 			c.Next()
 		},
+		ActiveRoleMiddleware: func(c *gin.Context) {
+			c.Next()
+		},
+		UserRoleMiddleware: func(c *gin.Context) {
+			c.Next()
+		},
+		OperatorRoleMiddleware: func(c *gin.Context) {
+			c.Next()
+		},
+		OperationsAuditMiddleware: func(c *gin.Context) {
+			c.Next()
+		},
 		GetProfileHandler: func(c *gin.Context) {
 			c.Status(http.StatusOK)
 		},
@@ -710,6 +770,12 @@ func validTestDependencies() Dependencies {
 			c.Status(http.StatusOK)
 		},
 		GetPaperHandler: func(c *gin.Context) {
+			c.Status(http.StatusOK)
+		},
+		OperationsStatusHandler: func(c *gin.Context) {
+			c.Status(http.StatusOK)
+		},
+		OperationsSourcesHandler: func(c *gin.Context) {
 			c.Status(http.StatusOK)
 		},
 	}

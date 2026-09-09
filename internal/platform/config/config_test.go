@@ -33,6 +33,9 @@ func TestLoadReadsJWTConfiguration(t *testing.T) {
 		t.Fatalf("unexpected matcher defaults: workers=%d queue=%d",
 			cfg.MatcherWorkers, cfg.MatcherQueueCapacity)
 	}
+	if cfg.OpsStatusRetention != 168*time.Hour {
+		t.Fatalf("unexpected operations status retention: %s", cfg.OpsStatusRetention)
+	}
 	if cfg.DigestInterval != time.Minute || cfg.DigestLockTTL != 10*time.Minute ||
 		cfg.DigestCompletionTTL != 72*time.Hour || cfg.MailWorkers != 2 ||
 		cfg.MailQueueCapacity != 128 || cfg.SMTPAddr != "127.0.0.1:1025" ||
@@ -168,6 +171,14 @@ func TestLoadRejectsInvalidMatcherConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsShortOperationsStatusRetention(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv(envOpsStatusRetention, "59m")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected operations status retention validation error")
+	}
+}
+
 func TestLoadRejectsInvalidDigestConfiguration(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -242,6 +253,7 @@ func validConfig() Config {
 		ArXivHTTPTimeout:       30 * time.Second,
 		MatcherWorkers:         4,
 		MatcherQueueCapacity:   256,
+		OpsStatusRetention:     168 * time.Hour,
 		DigestInterval:         time.Minute,
 		DigestLockTTL:          10 * time.Minute,
 		DigestCompletionTTL:    72 * time.Hour,

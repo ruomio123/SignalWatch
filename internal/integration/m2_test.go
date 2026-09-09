@@ -55,7 +55,7 @@ func (m2Lock) Acquire(context.Context, time.Duration) (collector.ReleaseFunc, bo
 
 type m2Submitter struct{}
 
-func (m2Submitter) Submit(context.Context, uint64) error { return nil }
+func (m2Submitter) SubmitBatch(context.Context, []uint64) error { return nil }
 
 type m2SourceRepository struct {
 	db     *gorm.DB

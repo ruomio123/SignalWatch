@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -29,7 +30,10 @@ type Scheduler struct {
 	hour         int
 	minute       int
 	retry        time.Duration
+	observer     Observer
 }
+
+func (scheduler *Scheduler) SetObserver(observer Observer) { scheduler.observer = observer }
 
 func NewScheduler(
 	synchronizer Synchronizer,
@@ -77,22 +81,70 @@ func (scheduler *Scheduler) Run(ctx context.Context) {
 
 func (scheduler *Scheduler) retryUntilCurrent(ctx context.Context, trigger Trigger, due time.Time) bool {
 	for {
+		startedAt := scheduler.now().UTC()
+		attemptID := rand.Text()
 		request := SyncRequest{
 			Trigger: trigger, DueAt: due.UTC(), PreviousDueAt: due.AddDate(0, 0, -1).UTC(),
+			AttemptID: attemptID,
 		}
+		scheduler.observe(ctx, ScheduleObservation{
+			State: "running", Trigger: trigger, AttemptID: attemptID, DueAt: due.UTC(),
+			StartedAt: startedAt, UpdatedAt: startedAt,
+		})
 		result, err := scheduler.synchronizer.Sync(ctx, request)
+		if ctx.Err() != nil {
+			now := scheduler.now().UTC()
+			statusContext, cancelStatus := context.WithTimeout(context.Background(), 2*time.Second)
+			scheduler.observe(statusContext, ScheduleObservation{
+				State: "cancelled", Trigger: trigger, AttemptID: attemptID, DueAt: due.UTC(),
+				StartedAt: startedAt, UpdatedAt: now, FailStage: "cancelled",
+				Metrics: map[string]int{"sources": result.Sources, "synced": result.Synced, "current": result.Current},
+			})
+			cancelStatus()
+			return false
+		}
 		if err == nil && result.AllCurrent {
+			now := scheduler.now().UTC()
+			scheduler.observe(ctx, ScheduleObservation{
+				State: "succeeded", Trigger: trigger, AttemptID: attemptID, DueAt: due.UTC(),
+				StartedAt: startedAt, UpdatedAt: now,
+				Metrics: map[string]int{"sources": result.Sources, "synced": result.Synced, "current": result.Current},
+			})
 			return true
 		}
 		if err != nil && !errors.Is(err, context.Canceled) {
 			scheduler.logger.Error(
-				"arxiv sync attempt failed", "module", "collector", "trigger", trigger,
-				"due_at", due.UTC(), "retry_in", scheduler.retry, "error", err,
+				"arxiv sync attempt failed", "module", "collector", "event", "collector_schedule",
+				"task", "collector", "attempt_id", attemptID, "trigger", trigger,
+				"state", "retry_wait", "error_stage", "sync", "due_at", due.UTC(),
+				"duration_ms", scheduler.now().UTC().Sub(startedAt).Milliseconds(),
+				"retry_in", scheduler.retry, "error", err,
 			)
 		}
+		now := scheduler.now().UTC()
+		nextRetry := now.Add(scheduler.retry)
+		stage := "lock_wait"
+		if err != nil {
+			stage = "sync"
+		}
+		scheduler.observe(ctx, ScheduleObservation{
+			State: "retry_wait", Trigger: trigger, AttemptID: attemptID, DueAt: due.UTC(),
+			StartedAt: startedAt, UpdatedAt: now, NextRetryAt: &nextRetry, FailStage: stage,
+			Metrics: map[string]int{"sources": result.Sources, "synced": result.Synced, "current": result.Current},
+		})
 		if !waitDuration(ctx, scheduler.retry) {
 			return false
 		}
+	}
+}
+
+func (scheduler *Scheduler) observe(ctx context.Context, observation ScheduleObservation) {
+	if scheduler.observer == nil {
+		return
+	}
+	if err := scheduler.observer.ObserveSchedule(ctx, observation); err != nil {
+		scheduler.logger.Warn("collector schedule observation failed", "module", "collector",
+			"event", "collector_schedule_status_write_failed", "error", err)
 	}
 }
 

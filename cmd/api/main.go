@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"signalwatch/internal/auth"
+	"signalwatch/internal/operations"
 	"signalwatch/internal/paper"
 	"signalwatch/internal/platform/config"
 	"signalwatch/internal/platform/db"
@@ -78,6 +79,11 @@ func main() {
 	redisCheck := func(ctx context.Context) error {
 		return redisClient.Ping(ctx).Err()
 	}
+	opsStore, err := operations.NewRedisStore(redisClient, "signalwatch:ops", cfg.OpsStatusRetention)
+	if err != nil {
+		logger.Error("initialize operations store failed", "module", "operations", "error", err)
+		os.Exit(1)
+	}
 
 	// main 是组合根：在这里使用真实数据库组装业务依赖。
 	// internal/server 只负责中间件和路由注册。
@@ -108,6 +114,19 @@ func main() {
 	subscriptionHandler := subscription.NewHandler(subscriptionService, logger)
 	paperQueryService := paper.NewQueryService(paper.NewQueryRepository(database))
 	paperQueryHandler := paper.NewQueryHandler(paperQueryService, logger)
+	opsService, err := operations.NewService(
+		database, opsStore, sqlDB.PingContext, redisCheck,
+		func() time.Time { return time.Now().UTC() }, cfg.ArXivDailySyncTime,
+	)
+	if err != nil {
+		logger.Error("initialize operations service failed", "module", "operations", "error", err)
+		os.Exit(1)
+	}
+	opsHandler, err := operations.NewHandler(opsService, logger)
+	if err != nil {
+		logger.Error("initialize operations handler failed", "module", "operations", "error", err)
+		os.Exit(1)
+	}
 
 	router, err := server.NewRouter(server.Dependencies{
 		AppEnv:                    cfg.AppEnv,
@@ -118,6 +137,10 @@ func main() {
 		RegisterHandler:           userHandler.Register,
 		LoginHandler:              authHandler.Login,
 		AuthMiddleware:            auth.Middleware(tokenService),
+		ActiveRoleMiddleware:      auth.RequireRoles(userRepository, logger, user.RoleUser, user.RoleOperator),
+		UserRoleMiddleware:        auth.RequireRoles(userRepository, logger, user.RoleUser),
+		OperatorRoleMiddleware:    auth.RequireRoles(userRepository, logger, user.RoleOperator),
+		OperationsAuditMiddleware: operations.AuditMiddleware(logger),
 		GetProfileHandler:         userHandler.GetProfile,
 		UpdateProfileHandler:      userHandler.UpdateProfile,
 		ListSourcesHandler:        sourceHandler.List,
@@ -129,6 +152,8 @@ func main() {
 		DeleteSubscriptionHandler: subscriptionHandler.Delete,
 		ListPapersHandler:         paperQueryHandler.List,
 		GetPaperHandler:           paperQueryHandler.Get,
+		OperationsStatusHandler:   opsHandler.Status,
+		OperationsSourcesHandler:  opsHandler.Sources,
 	})
 	if err != nil {
 		logger.Error(

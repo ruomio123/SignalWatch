@@ -13,6 +13,7 @@ import (
 	"signalwatch/internal/collector"
 	"signalwatch/internal/digest"
 	"signalwatch/internal/matcher"
+	"signalwatch/internal/operations"
 	"signalwatch/internal/paper"
 	"signalwatch/internal/platform/config"
 	"signalwatch/internal/platform/db"
@@ -81,6 +82,19 @@ func main() {
 	// 创建能够监听 os.Interrupt 和 syscall.SIGTERM 的 Context。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	opsStore, err := operations.NewRedisStore(redisClient, "signalwatch:ops", cfg.OpsStatusRetention)
+	if err != nil {
+		logger.Error("initialize operations store failed", "module", "operations", "error", err)
+		os.Exit(1)
+	}
+	opsReporter, err := operations.NewReporter(
+		opsStore, logger, func() time.Time { return time.Now().UTC() }, cfg.WorkerHeartbeat,
+	)
+	if err != nil {
+		logger.Error("initialize operations reporter failed", "module", "operations", "error", err)
+		os.Exit(1)
+	}
+	logger = logger.With("worker_instance_id", opsReporter.InstanceID())
 	limiter, err := arxiv.NewRedisLimiter(
 		redisClient,
 		"signalwatch:arxiv:next_allowed_at",
@@ -185,6 +199,8 @@ func main() {
 		logger.Error("initialize mail pool failed", "module", "digest", "error", err)
 		os.Exit(1)
 	}
+	collectorService.SetObserver(opsReporter)
+	collectorScheduler.SetObserver(opsReporter)
 	digestScheduler, err := digest.NewScheduler(
 		digestRepository, mailPool, logger, func() time.Time { return time.Now().UTC() },
 	)
@@ -196,6 +212,8 @@ func main() {
 	logger.Info(
 		"worker starting",
 		"module", "worker",
+		"event", "worker_starting",
+		"worker_instance_id", opsReporter.InstanceID(),
 		"heartbeat", cfg.WorkerHeartbeat,
 		"arxiv_daily_sync_time", cfg.ArXivDailySyncTime,
 		"arxiv_daily_sync_timezone", "America/New_York",
@@ -223,12 +241,41 @@ func main() {
 		mailPool.Run(ctx)
 	}()
 	// 调用 run，启动 Worker 的长期运行循环。
-	run(ctx, logger, cfg.WorkerHeartbeat, cfg.DigestInterval, digestScheduler.Run)
+	reportHeartbeat := func(reportContext context.Context) {
+		matcherStats, mailStats := matcherPool.Stats(), mailPool.Stats()
+		matcherQueue, mailQueue := matcherQueueSnapshot(matcherStats), mailQueueSnapshot(mailStats)
+		opsReporter.Heartbeat(reportContext, matcherQueue, mailQueue)
+		updatedAt := time.Now().UTC()
+		opsReporter.RecordTask(reportContext, queueTaskSnapshot("matcher", updatedAt, matcherQueue, matcherStats.LastSuccessAt, matcherStats.LastFailureAt))
+		opsReporter.RecordTask(reportContext, queueTaskSnapshot("mail", updatedAt, mailQueue, mailStats.LastSuccessAt, mailStats.LastFailureAt))
+	}
+	scheduleDigests := func(scheduleContext context.Context) (digest.ScheduleResult, error) {
+		startedAt := time.Now().UTC()
+		result, scheduleErr := digestScheduler.Run(scheduleContext)
+		updatedAt := time.Now().UTC()
+		state := "succeeded"
+		task := operations.TaskSnapshot{
+			Task: "digest", State: state, StartedAt: &startedAt, UpdatedAt: updatedAt,
+			Metrics: map[string]int{"users": result.Users, "due": result.Due, "submitted": result.Submitted, "invalid": result.Invalid},
+		}
+		if scheduleErr != nil {
+			task.State = "failed"
+			task.Failure = operations.SafeFailure("schedule", updatedAt)
+		} else {
+			task.LastSuccessAt = &updatedAt
+		}
+		opsReporter.RecordTask(scheduleContext, task)
+		return result, scheduleErr
+	}
+	run(ctx, logger, cfg.WorkerHeartbeat, cfg.DigestInterval, reportHeartbeat, scheduleDigests)
 	<-collectorDone
 	<-matcherDone
 	<-mailDone
+	stopContext, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	opsReporter.Stop(stopContext, matcherQueueSnapshot(matcherPool.Stats()), mailQueueSnapshot(mailPool.Stats()))
+	stopCancel()
 	// run 返回后，记录 Worker 已停止的日志。
-	logger.Info("worker stopped", "module", "worker")
+	logger.Info("worker stopped", "module", "worker", "event", "worker_stopped", "state", "stopped")
 }
 
 func run(
@@ -236,32 +283,91 @@ func run(
 	logger *slog.Logger,
 	heartbeatInterval time.Duration,
 	digestInterval time.Duration,
+	reportHeartbeat func(context.Context),
 	scheduleDigests func(context.Context) (digest.ScheduleResult, error),
 ) {
 	// 按照 interval 创建 Ticker(定时器)，并确保函数退出时停止它。
 	heartbeat := time.NewTicker(heartbeatInterval)
 	defer heartbeat.Stop()
-	digestTicker := time.NewTicker(digestInterval)
-	defer digestTicker.Stop()
-	runDigestCycle(ctx, logger, scheduleDigests)
+	reportHeartbeat(ctx)
+	// Keep one sequential scheduler independent of heartbeat reporting: queue
+	// backpressure must not make a healthy Worker appear offline.
+	digestDone := make(chan struct{})
+	go func() {
+		defer close(digestDone)
+		ticker := time.NewTicker(digestInterval)
+		defer ticker.Stop()
+		runDigestCycle(ctx, logger, scheduleDigests)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runDigestCycle(ctx, logger, scheduleDigests)
+			}
+		}
+	}()
+	defer func() { <-digestDone }()
 	// 使用循环和 select，同时等待退出信号与心跳事件。
 	// 收到退出信号时记录日志并返回。
 	// 收到心跳事件时记录心跳日志。
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("worker stopping", "module", "worker")
+			logger.Info("worker stopping", "module", "worker", "event", "worker_stopping", "state", "stopping")
 			return
 		case tickedAt := <-heartbeat.C:
+			reportHeartbeat(ctx)
 			logger.Info(
 				"worker heartbeat",
 				"module", "worker",
+				"event", "worker_heartbeat",
+				"state", "running",
 				"time_at", tickedAt,
 			)
-		case <-digestTicker.C:
-			runDigestCycle(ctx, logger, scheduleDigests)
 		}
 	}
+}
+
+func matcherQueueSnapshot(stats matcher.PoolStats) operations.QueueSnapshot {
+	return operations.QueueSnapshot{
+		Depth: stats.Depth, Capacity: stats.Capacity, Workers: stats.Workers,
+		Processing: stats.Processing, Succeeded: stats.Succeeded, Failed: stats.Failed,
+	}
+}
+
+func mailQueueSnapshot(stats digest.PoolStats) operations.QueueSnapshot {
+	return operations.QueueSnapshot{
+		Depth: stats.Depth, Capacity: stats.Capacity, Workers: stats.Workers,
+		Processing: stats.Processing, Succeeded: stats.Succeeded, Failed: stats.Failed,
+	}
+}
+
+func queueTaskSnapshot(task string, updatedAt time.Time, queue operations.QueueSnapshot, lastSuccess, lastFailure time.Time) operations.TaskSnapshot {
+	state := "idle"
+	if queue.Processing > 0 {
+		state = "running"
+	} else if !lastFailure.IsZero() && (lastSuccess.IsZero() || lastFailure.After(lastSuccess)) {
+		state = "failed"
+	} else if !lastSuccess.IsZero() {
+		state = "succeeded"
+	}
+	snapshot := operations.TaskSnapshot{
+		Task: task, State: state, UpdatedAt: updatedAt,
+		Metrics: map[string]int{
+			"queue_depth": queue.Depth, "queue_capacity": queue.Capacity,
+			"workers": queue.Workers, "processing": int(queue.Processing),
+			"succeeded": int(queue.Succeeded), "failed": int(queue.Failed),
+		},
+	}
+	if !lastSuccess.IsZero() {
+		value := lastSuccess.UTC()
+		snapshot.LastSuccessAt = &value
+	}
+	if state == "failed" {
+		snapshot.Failure = operations.SafeFailure("process", lastFailure)
+	}
+	return snapshot
 }
 
 func runDigestCycle(
@@ -269,15 +375,20 @@ func runDigestCycle(
 	logger *slog.Logger,
 	schedule func(context.Context) (digest.ScheduleResult, error),
 ) {
+	startedAt := time.Now()
 	result, err := schedule(ctx)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
-			logger.Error("digest schedule cycle failed", "module", "digest", "error", err)
+			logger.Error("digest schedule cycle failed", "module", "digest", "event", "digest_schedule",
+				"task", "digest", "state", "failed", "error_stage", "schedule",
+				"duration_ms", time.Since(startedAt).Milliseconds(), "error", err)
 		}
 		return
 	}
 	logger.Info(
-		"digest schedule cycle finished", "module", "digest", "users", result.Users,
+		"digest schedule cycle finished", "module", "digest", "event", "digest_schedule",
+		"task", "digest", "state", "succeeded", "duration_ms", time.Since(startedAt).Milliseconds(),
+		"users", result.Users,
 		"due", result.Due, "submitted", result.Submitted, "invalid", result.Invalid,
 	)
 }

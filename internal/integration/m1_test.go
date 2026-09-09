@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	mysqldriver "github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 
@@ -539,6 +540,9 @@ func assertM1Schema(t *testing.T, database *gorm.DB) {
 	if !database.Migrator().HasColumn(&user.User{}, "max_items_per_digest") {
 		t.Fatal("M1 test database is not migrated: users.max_items_per_digest is missing")
 	}
+	if !database.Migrator().HasColumn(&user.User{}, "role") {
+		t.Fatal("test database is not migrated: users.role is missing")
+	}
 }
 
 func newM1TestAPI(
@@ -578,6 +582,10 @@ func newM1TestAPI(
 		RegisterHandler:           userHandler.Register,
 		LoginHandler:              authHandler.Login,
 		AuthMiddleware:            auth.Middleware(tokenService),
+		ActiveRoleMiddleware:      auth.RequireRoles(userRepository, logger, user.RoleUser, user.RoleOperator),
+		UserRoleMiddleware:        auth.RequireRoles(userRepository, logger, user.RoleUser),
+		OperatorRoleMiddleware:    auth.RequireRoles(userRepository, logger, user.RoleOperator),
+		OperationsAuditMiddleware: func(c *gin.Context) { c.Next() },
 		GetProfileHandler:         userHandler.GetProfile,
 		UpdateProfileHandler:      userHandler.UpdateProfile,
 		ListSourcesHandler:        sourceHandler.List,
@@ -589,6 +597,8 @@ func newM1TestAPI(
 		DeleteSubscriptionHandler: subscriptionHandler.Delete,
 		ListPapersHandler:         paperQueryHandler.List,
 		GetPaperHandler:           paperQueryHandler.Get,
+		OperationsStatusHandler:   func(c *gin.Context) { c.Status(http.StatusOK) },
+		OperationsSourcesHandler:  func(c *gin.Context) { c.Status(http.StatusOK) },
 	})
 	if err != nil {
 		t.Fatalf("create in-process M1 API: %v", err)

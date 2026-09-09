@@ -60,8 +60,8 @@ type submitterStub struct {
 	err error
 }
 
-func (stub *submitterStub) Submit(_ context.Context, id uint64) error {
-	stub.ids = append(stub.ids, id)
+func (stub *submitterStub) SubmitBatch(_ context.Context, ids []uint64) error {
+	stub.ids = append(stub.ids, ids...)
 	return stub.err
 }
 
@@ -107,6 +107,22 @@ type factoryStub struct {
 	feed   FeedClient
 }
 
+type observerStub struct {
+	sources   []SourceObservation
+	schedules []ScheduleObservation
+	err       error
+}
+
+func (stub *observerStub) ObserveSource(_ context.Context, observation SourceObservation) error {
+	stub.sources = append(stub.sources, observation)
+	return stub.err
+}
+
+func (stub *observerStub) ObserveSchedule(_ context.Context, observation ScheduleObservation) error {
+	stub.schedules = append(stub.schedules, observation)
+	return stub.err
+}
+
 func (stub factoryStub) CreateSearch(string) (SearchClient, error) { return stub.search, nil }
 func (stub factoryStub) CreateFeed() (FeedClient, error)           { return stub.feed, nil }
 
@@ -138,6 +154,35 @@ func TestServiceBootstrapUsesConfiguredCategoriesWithoutSubscriptionDemand(t *te
 	}
 	if papers.calls != 2 || len(submitter.ids) != 2 || len(sources.updates) != 1 || !sources.updates[0].Equal(now) {
 		t.Fatalf("bootstrap did not persist, submit, and checkpoint atomically by cycle: papers=%d submitted=%v checkpoints=%v", papers.calls, submitter.ids, sources.updates)
+	}
+}
+
+func TestServiceStatusReportingIsBestEffortAndIncludesAttemptMetrics(t *testing.T) {
+	now := time.Date(2026, 9, 9, 6, 0, 0, 0, time.UTC)
+	endpoint := "https://export.arxiv.org/api/query"
+	sources := &sourceStub{active: []ActiveSource{{
+		Source: source.Source{ID: 7, Endpoint: &endpoint}, Categories: []string{"cs.AI"},
+	}}}
+	search := &searchStub{page: func(arxiv.FetchPageRequest) (arxiv.FetchPageResult, error) {
+		return arxiv.FetchPageResult{Records: []paper.Record{validRecordAt("2609.00001", now)}, Requests: 1, TotalResults: 1}, nil
+	}}
+	service := newTestService(t, sources, &paperStub{}, &submitterStub{}, search, &feedStub{}, now, 100)
+	observer := &observerStub{err: errors.New("redis unavailable")}
+	service.SetObserver(observer)
+
+	result, err := service.Sync(context.Background(), SyncRequest{
+		Trigger: TriggerStartup, DueAt: now.Add(-time.Hour), AttemptID: "attempt-safe",
+	})
+	if err != nil || !result.AllCurrent || len(sources.updates) != 1 {
+		t.Fatalf("status write failure affected ingestion: result=%+v error=%v", result, err)
+	}
+	if len(observer.sources) != 2 || observer.sources[0].State != "running" || observer.sources[1].State != "succeeded" {
+		t.Fatalf("unexpected source observations: %+v", observer.sources)
+	}
+	completed := observer.sources[1]
+	if completed.AttemptID != "attempt-safe" || completed.Metrics["inserted"] != 1 || completed.Metrics["submitted"] != 1 ||
+		completed.WindowFrom == nil || completed.WindowTo == nil {
+		t.Fatalf("missing safe status details: %+v", completed)
 	}
 }
 
@@ -381,5 +426,27 @@ func validRecordAt(id string, updatedAt time.Time) paper.Record {
 		Categories: []string{"cs.AI"}, PublishedAt: updatedAt.Add(-time.Hour),
 		ArXivUpdatedAt: updatedAt, ArXivURL: "https://arxiv.org/abs/" + id,
 		PDFURL: "https://arxiv.org/pdf/" + id,
+	}
+}
+
+func TestMatcherFailureKeepsCheckpointPendingForRetry(t *testing.T) {
+	now := time.Date(2026, 9, 9, 6, 0, 0, 0, time.UTC)
+	endpoint := "https://export.arxiv.org/api/query"
+	sources := &sourceStub{active: []ActiveSource{{Source: source.Source{ID: 1, Endpoint: &endpoint}, Categories: []string{"cs.AI"}}}}
+	search := &searchStub{page: func(arxiv.FetchPageRequest) (arxiv.FetchPageResult, error) {
+		return arxiv.FetchPageResult{Records: []paper.Record{validRecordAt("cs.AI", now.Add(-time.Hour))}, TotalResults: 1}, nil
+	}}
+	failure := errors.New("matcher transaction failed")
+	submitter := &submitterStub{err: failure}
+	service := newTestService(t, sources, &paperStub{}, submitter, search, &feedStub{}, now, 100)
+	request := startupRequest(now.Add(-time.Hour))
+	result, err := service.Sync(context.Background(), request)
+	if !errors.Is(err, failure) || result.AllCurrent || len(sources.updates) != 0 {
+		t.Fatalf("failed matching advanced checkpoint: result=%+v updates=%v err=%v", result, sources.updates, err)
+	}
+	submitter.err = nil
+	result, err = service.Sync(context.Background(), request)
+	if err != nil || !result.AllCurrent || len(sources.updates) != 1 || len(submitter.ids) != 2 {
+		t.Fatalf("retry must rematch before checkpoint: result=%+v updates=%v err=%v", result, sources.updates, err)
 	}
 }

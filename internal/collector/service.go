@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -31,7 +32,8 @@ type PaperRepository interface {
 }
 
 type PaperSubmitter interface {
-	Submit(ctx context.Context, paperID uint64) error
+	// SubmitBatch returns only after all papers have finished matching.
+	SubmitBatch(ctx context.Context, paperIDs []uint64) error
 }
 
 type Trigger string
@@ -53,6 +55,7 @@ type SyncRequest struct {
 	Trigger       Trigger
 	DueAt         time.Time
 	PreviousDueAt time.Time
+	AttemptID     string
 }
 
 type SyncResult struct {
@@ -94,7 +97,10 @@ type Service struct {
 	logger    *slog.Logger
 	now       func() time.Time
 	config    Config
+	observer  Observer
 }
+
+func (service *Service) SetObserver(observer Observer) { service.observer = observer }
 
 func NewService(
 	sources SourceRepository,
@@ -146,18 +152,40 @@ func (service *Service) Sync(ctx context.Context, request SyncRequest) (SyncResu
 			continue
 		}
 		mode := service.modeFor(checkpoint, request)
+		attemptID := request.AttemptID
+		if attemptID == "" {
+			attemptID = rand.Text()
+		}
+		windowFrom, windowTo := service.observationWindow(active, mode, request)
+		startedAt := service.now().UTC()
+		service.observeSource(ctx, SourceObservation{
+			SourceID: active.Source.ID, State: "running", Mode: mode, AttemptID: attemptID,
+			WindowFrom: windowFrom, WindowTo: windowTo, StartedAt: startedAt,
+		})
 		stats, err := service.syncSource(ctx, active, mode, request)
+		if stats.windowFrom == nil {
+			stats.windowFrom = windowFrom
+		}
+		if stats.windowTo == nil {
+			stats.windowTo = windowTo
+		}
 		if err != nil {
 			result.AllCurrent = false
 			syncErrors = append(syncErrors, fmt.Errorf("sync source %d in %s mode: %w", active.Source.ID, mode, err))
-			service.logSource(active, mode, checkpoint, nil, stats, err)
+			service.logSource(active, mode, attemptID, startedAt, checkpoint, nil, stats, err)
+			completed := service.now().UTC()
+			service.observeSource(ctx, sourceObservation(active.Source.ID, "failed", mode, attemptID, startedAt, &completed, stats))
 			continue
 		}
 		if err := ctx.Err(); err != nil {
 			stats.failStage = "cancelled"
 			result.AllCurrent = false
 			syncErrors = append(syncErrors, err)
-			service.logSource(active, mode, checkpoint, nil, stats, err)
+			service.logSource(active, mode, attemptID, startedAt, checkpoint, nil, stats, err)
+			completed := service.now().UTC()
+			statusContext, cancelStatus := context.WithTimeout(context.Background(), 2*time.Second)
+			service.observeSource(statusContext, sourceObservation(active.Source.ID, "cancelled", mode, attemptID, startedAt, &completed, stats))
+			cancelStatus()
 			continue
 		}
 		completedAt := service.now().UTC()
@@ -165,13 +193,61 @@ func (service *Service) Sync(ctx context.Context, request SyncRequest) (SyncResu
 			stats.failStage = "checkpoint_update"
 			result.AllCurrent = false
 			syncErrors = append(syncErrors, err)
-			service.logSource(active, mode, checkpoint, nil, stats, err)
+			service.logSource(active, mode, attemptID, startedAt, checkpoint, nil, stats, err)
+			completed := service.now().UTC()
+			service.observeSource(ctx, sourceObservation(active.Source.ID, "failed", mode, attemptID, startedAt, &completed, stats))
 			continue
 		}
 		result.Synced++
-		service.logSource(active, mode, checkpoint, &completedAt, stats, nil)
+		service.logSource(active, mode, attemptID, startedAt, checkpoint, &completedAt, stats, nil)
+		service.observeSource(ctx, sourceObservation(active.Source.ID, "succeeded", mode, attemptID, startedAt, &completedAt, stats))
 	}
 	return result, errors.Join(syncErrors...)
+}
+
+func (service *Service) observationWindow(active ActiveSource, mode SyncMode, request SyncRequest) (*time.Time, *time.Time) {
+	to := service.now().UTC()
+	var from time.Time
+	switch mode {
+	case ModeBootstrap:
+		from = to.Add(-service.config.BootstrapLookback)
+	case ModeRecovery:
+		from = active.Source.LastSuccessfulSyncAt.UTC().Add(-service.config.RecoveryOverlap)
+	default:
+		from, to = request.PreviousDueAt.UTC(), request.DueAt.UTC()
+	}
+	return &from, &to
+}
+
+func sourceObservation(
+	sourceID uint64,
+	state string,
+	mode SyncMode,
+	attemptID string,
+	started time.Time,
+	completed *time.Time,
+	stats syncStats,
+) SourceObservation {
+	return SourceObservation{
+		SourceID: sourceID, State: state, Mode: mode, AttemptID: attemptID,
+		WindowFrom: stats.windowFrom, WindowTo: stats.windowTo, StartedAt: started,
+		CompletedAt: completed, FailStage: stats.failStage,
+		Metrics: map[string]int{
+			"categories": stats.categories, "requests": stats.requests, "pages": stats.pages,
+			"feed_ids": stats.discovered, "hydrated": stats.hydrated,
+			"inserted": stats.inserted, "updated": stats.updated, "submitted": stats.submitted,
+		},
+	}
+}
+
+func (service *Service) observeSource(ctx context.Context, observation SourceObservation) {
+	if service.observer == nil {
+		return
+	}
+	if err := service.observer.ObserveSource(ctx, observation); err != nil {
+		service.logger.Warn("collector status observation failed", "module", "collector",
+			"event", "collector_status_write_failed", "source_id", observation.SourceID, "error", err)
+	}
 }
 
 func (service *Service) modeFor(checkpoint *time.Time, request SyncRequest) SyncMode {
@@ -368,13 +444,15 @@ func (service *Service) persistAndSubmit(
 	}
 	stats.inserted += upserted.Inserted
 	stats.updated += upserted.Updated
-	for _, stored := range upserted.Papers {
-		if err := service.submitter.Submit(ctx, stored.ID); err != nil {
-			stats.failStage = "matcher_enqueue"
-			return fmt.Errorf("submit paper %d: %w", stored.ID, err)
-		}
-		stats.submitted++
+	ids := make([]uint64, len(upserted.Papers))
+	for index, stored := range upserted.Papers {
+		ids[index] = stored.ID
 	}
+	if err := service.submitter.SubmitBatch(ctx, ids); err != nil {
+		stats.failStage = "matcher_batch"
+		return fmt.Errorf("match paper batch: %w", err)
+	}
+	stats.submitted += len(ids)
 	return nil
 }
 
@@ -400,26 +478,31 @@ func (stats *syncStats) add(other syncStats) {
 func (service *Service) logSource(
 	active ActiveSource,
 	mode SyncMode,
+	attemptID string,
+	startedAt time.Time,
 	oldCheckpoint *time.Time,
 	newCheckpoint *time.Time,
 	stats syncStats,
 	err error,
 ) {
 	arguments := []any{
-		"module", "collector", "mode", mode, "source_id", active.Source.ID,
+		"module", "collector", "task", "collector", "mode", mode,
+		"attempt_id", attemptID, "source_id", active.Source.ID,
 		"allowed_categories", active.Categories, "categories_attempted", stats.categories,
 		"requests", stats.requests, "pages", stats.pages,
 		"feed_ids", stats.discovered, "hydrated", stats.hydrated,
 		"inserted", stats.inserted, "updated", stats.updated, "submitted", stats.submitted,
 		"window_from", stats.windowFrom, "window_to", stats.windowTo,
-		"failure_stage", stats.failStage,
+		"error_stage", stats.failStage, "duration_ms", max(service.now().UTC().Sub(startedAt).Milliseconds(), int64(0)),
 		"old_checkpoint", oldCheckpoint, "new_checkpoint", newCheckpoint,
 	}
 	if err != nil {
-		service.logger.Error("arxiv source sync failed", append(arguments, "error", err)...)
+		service.logger.Error("arxiv source sync failed", append(arguments,
+			"event", "collector_source_sync", "state", "failed", "error", err)...)
 		return
 	}
-	service.logger.Info("arxiv source sync finished", arguments...)
+	service.logger.Info("arxiv source sync finished", append(arguments,
+		"event", "collector_source_sync", "state", "succeeded")...)
 }
 
 func (service *Service) release(release ReleaseFunc) {

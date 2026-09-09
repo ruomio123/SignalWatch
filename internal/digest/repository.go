@@ -35,7 +35,7 @@ func (repository *repository) ListActiveSchedules(ctx context.Context) ([]Schedu
 		Model(&userpkg.User{}).
 		Select(`id AS user_id, email, timezone, TIME_FORMAT(digest_time, '%H:%i:%s') AS digest_time,
 			max_items_per_digest`).
-		Where("status = ?", userpkg.StatusActive).
+		Where("status = ? AND role = ?", userpkg.StatusActive, userpkg.RoleUser).
 		Order("id ASC").
 		Scan(&schedules).Error
 	if err != nil {
@@ -53,7 +53,7 @@ func (repository *repository) FindActiveUser(ctx context.Context, userID uint64)
 	}
 	err := repository.db.WithContext(ctx).Model(&userpkg.User{}).
 		Select("id, email, timezone, max_items_per_digest").
-		Where("id = ? AND status = ?", userID, userpkg.StatusActive).
+		Where("id = ? AND status = ? AND role = ?", userID, userpkg.StatusActive, userpkg.RoleUser).
 		Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return User{}, ErrUserNotFound

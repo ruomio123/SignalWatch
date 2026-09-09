@@ -46,6 +46,7 @@ type Config struct {
 	ArXivHTTPTimeout       time.Duration
 	MatcherWorkers         int
 	MatcherQueueCapacity   int
+	OpsStatusRetention     time.Duration
 
 	DigestInterval      time.Duration
 	DigestLockTTL       time.Duration
@@ -90,6 +91,7 @@ const (
 	envArXivHTTPTimeout       = "ARXIV_HTTP_TIMEOUT"
 	envMatcherWorkers         = "MATCHER_WORKERS"
 	envMatcherQueueCapacity   = "MATCHER_QUEUE_CAPACITY"
+	envOpsStatusRetention     = "OPS_STATUS_RETENTION"
 	envDigestInterval         = "DIGEST_INTERVAL"
 	envDigestLockTTL          = "DIGEST_LOCK_TTL"
 	envDigestCompletionTTL    = "DIGEST_COMPLETION_TTL"
@@ -207,6 +209,7 @@ func Load() (Config, error) {
 		ArXivHTTPTimeout:       durationEnvOrDefault(envArXivHTTPTimeout, 30*time.Second),
 		MatcherWorkers:         intEnvOrDefault(envMatcherWorkers, 4),
 		MatcherQueueCapacity:   intEnvOrDefault(envMatcherQueueCapacity, 256),
+		OpsStatusRetention:     durationEnvOrDefault(envOpsStatusRetention, 168*time.Hour),
 		DigestInterval:         durationEnvOrDefault(envDigestInterval, time.Minute),
 		DigestLockTTL:          durationEnvOrDefault(envDigestLockTTL, 10*time.Minute),
 		DigestCompletionTTL:    durationEnvOrDefault(envDigestCompletionTTL, 72*time.Hour),
@@ -316,6 +319,9 @@ func validate(cfg Config) error {
 	}
 	if cfg.MatcherWorkers < 1 || cfg.MatcherQueueCapacity < 1 {
 		return fmt.Errorf("invalid matcher configuration")
+	}
+	if cfg.OpsStatusRetention < time.Hour {
+		return fmt.Errorf("invalid OPS_STATUS_RETENTION: must be at least 1h")
 	}
 	if cfg.DigestInterval <= 0 || cfg.DigestLockTTL <= 0 || cfg.DigestCompletionTTL <= 0 ||
 		cfg.MailWorkers < 1 || cfg.MailQueueCapacity < 1 || cfg.SMTPTimeout <= 0 {

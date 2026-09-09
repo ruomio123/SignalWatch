@@ -13,17 +13,21 @@ import (
 const (
 	contextKeyRequestID     = "httpx.request_id"
 	contextKeyCurrentUserID = "httpx.current_user_id"
+	contextKeyCurrentRole   = "httpx.current_role"
 )
 
 // 这些是 HTTP 基座可以直接识别的通用错误码。
 // HTTP 状态码用于描述协议层结果，例如 400、404、500；
 // 后续用户、订阅等业务模块可以再定义自己的业务错误码。
 const (
-	CodeValidationError  = "VALIDATION_ERROR"
-	CodeNotFound         = "NOT_FOUND"
-	CodeMethodNotAllowed = "METHOD_NOT_ALLOWED"
-	CodeInternalError    = "INTERNAL_ERROR"
-	CodeUnauthorized     = "AUTH_UNAUTHORIZED"
+	CodeValidationError          = "VALIDATION_ERROR"
+	CodeNotFound                 = "NOT_FOUND"
+	CodeMethodNotAllowed         = "METHOD_NOT_ALLOWED"
+	CodeInternalError            = "INTERNAL_ERROR"
+	CodeUnauthorized             = "AUTH_UNAUTHORIZED"
+	CodeForbidden                = "AUTH_FORBIDDEN"
+	CodeAuthorizationUnavailable = "AUTHORIZATION_UNAVAILABLE"
+	CodeServiceUnavailable       = "SERVICE_UNAVAILABLE"
 )
 
 /*
@@ -123,6 +127,19 @@ func CurrentUserID(c *gin.Context) (userID UserID, ok bool) {
 
 	userID, ok = value.(UserID)
 	return userID, ok
+}
+
+func SetCurrentRole(c *gin.Context, role string) {
+	c.Set(contextKeyCurrentRole, role)
+}
+
+func CurrentRole(c *gin.Context) (string, bool) {
+	value, exists := c.Get(contextKeyCurrentRole)
+	if !exists {
+		return "", false
+	}
+	role, ok := value.(string)
+	return role, ok
 }
 
 /*

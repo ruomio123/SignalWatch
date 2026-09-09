@@ -2,6 +2,7 @@ package matcher
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -108,5 +109,103 @@ func TestPoolUsesFixedConcurrencyAndStopsOnCancellation(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("pool did not stop after cancellation")
+	}
+}
+
+type matcherFunc func(context.Context, uint64) (Result, error)
+
+func (f matcherFunc) Match(ctx context.Context, id uint64) (Result, error) { return f(ctx, id) }
+
+func TestBatchWaitsForMatchingAndPropagatesFailure(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	failure := errors.New("temporary database failure")
+	pool, err := NewPool(matcherFunc(func(ctx context.Context, id uint64) (Result, error) {
+		if id == 1 {
+			close(started)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return Result{}, ctx.Err()
+			}
+			return Result{}, failure
+		}
+		return Result{}, nil
+	}), discardLogger(), PoolConfig{Workers: 2, QueueCapacity: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	workerDone := make(chan struct{})
+	go func() { defer close(workerDone); pool.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-workerDone })
+	done := make(chan error, 1)
+	go func() { done <- pool.SubmitBatch(ctx, []uint64{1, 2, 3}) }()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("batch never started")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("batch returned before matching finished: %v", err)
+	default:
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if !errors.Is(err, failure) {
+			t.Fatalf("lost match error: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("batch did not finish")
+	}
+	if err := pool.SubmitBatch(ctx, []uint64{2, 3}); err != nil {
+		t.Fatalf("next batch retained old failure: %v", err)
+	}
+}
+
+func TestBatchCancellationDoesNotBlockConsumers(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	pool, _ := NewPool(matcherFunc(func(ctx context.Context, _ uint64) (Result, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-release:
+			return Result{}, nil
+		case <-ctx.Done():
+			return Result{}, ctx.Err()
+		}
+	}), discardLogger(), PoolConfig{Workers: 1, QueueCapacity: 2})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	workerDone := make(chan struct{})
+	go func() { defer close(workerDone); pool.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-workerDone })
+	batchCtx, cancelBatch := context.WithCancel(ctx)
+	defer cancelBatch()
+	done := make(chan error, 1)
+	go func() { done <- pool.SubmitBatch(batchCtx, []uint64{1, 2}) }()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("batch never started")
+	}
+	cancelBatch()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("batch cancellation blocked")
+	}
+	close(release)
+	if err := pool.SubmitBatch(ctx, []uint64{3}); err != nil {
+		t.Fatalf("abandoned batch blocked worker: %v", err)
 	}
 }
