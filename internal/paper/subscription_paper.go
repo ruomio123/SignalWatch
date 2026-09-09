@@ -6,7 +6,7 @@ import (
 )
 
 // SubscriptionPaper is the durable, idempotent result of matching one paper
-// to one subscription. Matching and delivery services are implemented later.
+// to one subscription and records successful Digest delivery.
 type SubscriptionPaper struct {
 	ID                  uint64          `gorm:"column:id;primaryKey;autoIncrement"`
 	SubscriptionID      uint64          `gorm:"column:subscription_id"`

@@ -2,7 +2,7 @@
 
 SignalWatch 提供内嵌 Web 前端、API、Worker，以及本地开发所需的 MySQL、Redis 和 Mailpit 服务。
 
-## 当前功能（M3）
+## 当前功能（M4）
 
 - Web 欢迎页、注册、登录、工作台与偏好设置页面
 - 邮箱注册和密码登录
@@ -24,12 +24,27 @@ SignalWatch 提供内嵌 Web 前端、API、Worker，以及本地开发所需的
 - subscription_papers 唯一约束幂等，并保留首次匹配原因与时间
 - 当前用户匹配论文列表与详情 API，按论文去重并支持订阅筛选
 - 匹配论文工作区、完整摘要详情和多订阅命中原因展示
-- OpenAPI 3.1 接口契约和可重复的 M1/M2/M3 集成验收
+- 按用户 IANA 时区和当地 digest_time 调度每日摘要
+- 用户级候选聚合、跨订阅论文去重、已投递排除和条数上限
+- Redis 用户日期处理锁与每日完成标记，失败保留同日重试能力
+- 有界 Mail Queue、固定 Mail Worker Pool 和队列满时的生产者背压
+- UTF-8 纯文本/HTML 邮件，包含论文、订阅和关键词命中原因
+- SMTP 成功后事务更新 delivered_at，失败不写完成标记
+- OpenAPI 3.1 接口契约和可重复的 M1/M2/M3/M4 集成验收
 
-M3 已打通后台的
-`active categories -> arXiv updated 倒序分页 -> 本地 48h 截断 -> 每页 papers UPSERT -> 有界队列 -> subscription_papers`
-链路，并提供只读的匹配论文查询体验。当前**尚未实现**邮件投递、用户反馈、LLM 或自然语言订阅助手；这些能力
-不得视为已交付功能。
+M4 已打通完整 V1 闭环：
+
+~~~text
+创建订阅
+→ arXiv updated 倒序分页与本地窗口截断
+→ papers UPSERT
+→ subscription_papers 本地匹配
+→ 用户当地时间的每日 Digest
+→ SMTP 邮件
+→ delivered_at
+~~~
+
+当前**尚未实现**用户反馈、LLM 或自然语言订阅助手；这些能力不得视为已交付功能。
 
 Worker 不会全量轮询全部 arXiv 分类。它在每轮开始时直接查询启用且未删除的订阅，
 汇总并去重其分类；没有活跃分类时不请求 arXiv。关键词始终留在本地，M2 不把
@@ -90,6 +105,31 @@ UPSERT。每页 UPSERT 返回的全部论文 ID 都会进入 Matcher 队列，�
 由 `MATCHER_QUEUE_CAPACITY` 限制，`MATCHER_WORKERS` 个 Worker 并发消费。队列满时
 Collector 会等待，从而形成背压。进程退出时未完成的内存任务由下一轮 48 小时重抓恢复。
 Redis 不可用时不会绕过全局锁和限速继续访问 arXiv。
+
+同一个 Worker 启动时也会立即执行一次 Digest 调度，此后按 `DIGEST_INTERVAL` 检查。
+用户当地时间达到 `digest_time` 后会进入有界邮件队列；失败任务会在当天后续调度中重试，
+成功或当天没有候选时写入 Redis 日期完成标记。单封邮件按最早发现顺序选择最多
+`max_items_per_digest` 篇，剩余论文保留到下一天。开发环境邮件默认投递到 Mailpit，访问
+[http://127.0.0.1:8025](http://127.0.0.1:8025) 查看。
+
+SMTP 默认配置适用于本地 Mailpit：
+
+```dotenv
+DIGEST_INTERVAL=1m
+DIGEST_LOCK_TTL=10m
+DIGEST_COMPLETION_TTL=72h
+MAIL_WORKERS=2
+MAIL_QUEUE_CAPACITY=128
+SMTP_ADDR=127.0.0.1:1025
+SMTP_FROM=SignalWatch <digest@signalwatch.local>
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_STARTTLS=false
+SMTP_TIMEOUT=10s
+```
+
+生产环境应使用真实 SMTP 地址和发件人，并根据服务商设置认证与 STARTTLS。密码只保存在
+本地环境变量中，不提交到版本库。
 
 API 启动后访问 [http://127.0.0.1:8080](http://127.0.0.1:8080) 即可使用 Web 前端。前端资源通过 Go `embed` 打包在 API 二进制中，无需安装 Node.js 或启动额外的开发服务器。
 修改 `web/static` 后需要重新编译或重启 API，浏览器才能加载新嵌入的资源。
@@ -175,7 +215,7 @@ curl -i -X DELETE http://127.0.0.1:8080/api/v1/subscriptions/$SUBSCRIPTION_ID \
   -H 'If-Match: "2"'
 ```
 
-## M1/M2/M3 集成验收数据库
+## M1/M2/M3/M4 集成验收数据库
 
 集成测试使用真实 Router、JWT、Service、Repository 和 MySQL。为防止误删开发数据，
 它只接受数据库名以 `_test` 结尾的 `M1_TEST_MYSQL_DSN`，不会回退读取
@@ -184,6 +224,7 @@ curl -i -X DELETE http://127.0.0.1:8080/api/v1/subscriptions/$SUBSCRIPTION_ID \
 
 ```dotenv
 M1_TEST_MYSQL_DSN=signalwatch:replace-me@tcp(127.0.0.1:3306)/signalwatch_test?charset=utf8mb4&parseTime=true&loc=UTC
+M4_TEST_SMTP_ADDR=127.0.0.1:1025
 ```
 
 不要把真实密码或本地 `.env` 提交到版本库。对独立测试库执行迁移和验收：
@@ -199,6 +240,8 @@ make test-integration
 无需求时停止抓取、papers 幂等、arXiv 更新覆盖语义，以及 M3 匹配规则、from-now、
 禁用/删除过滤、首次原因保留和并发幂等。
 匹配论文 API 的验收还覆盖分页、按订阅筛选、同一论文跨订阅去重，以及严格的用户数据隔离。
+M4 验收使用本地 Mailpit，覆盖用户级聚合、跨订阅去重、已投递排除、数量上限、SMTP
+失败重试、事务投递标记和同日幂等。运行验收前确保 `make deps-up` 中的 Mailpit 健康。
 
 ## 常用检查
 
@@ -210,8 +253,8 @@ make test-race
 make openapi-check
 ```
 
-配置好独立测试数据库后，可以运行当前 M3 全量封板检查：
+配置好独立测试数据库后，可以运行当前 M4 全量封板检查：
 
 ```bash
-make m3-verify
+make m4-verify
 ```

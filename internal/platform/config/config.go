@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/mail"
 	"os"
 	"strconv"
 	"strings"
@@ -41,6 +42,18 @@ type Config struct {
 	ArXivHTTPTimeout      time.Duration
 	MatcherWorkers        int
 	MatcherQueueCapacity  int
+
+	DigestInterval      time.Duration
+	DigestLockTTL       time.Duration
+	DigestCompletionTTL time.Duration
+	MailWorkers         int
+	MailQueueCapacity   int
+	SMTPAddr            string
+	SMTPFrom            string
+	SMTPUsername        string
+	SMTPPassword        string
+	SMTPStartTLS        bool
+	SMTPTimeout         time.Duration
 }
 
 // 把环境变量的名字集中管理，避免项目中到处直接写字符串
@@ -70,6 +83,17 @@ const (
 	envArXivHTTPTimeout      = "ARXIV_HTTP_TIMEOUT"
 	envMatcherWorkers        = "MATCHER_WORKERS"
 	envMatcherQueueCapacity  = "MATCHER_QUEUE_CAPACITY"
+	envDigestInterval        = "DIGEST_INTERVAL"
+	envDigestLockTTL         = "DIGEST_LOCK_TTL"
+	envDigestCompletionTTL   = "DIGEST_COMPLETION_TTL"
+	envMailWorkers           = "MAIL_WORKERS"
+	envMailQueueCapacity     = "MAIL_QUEUE_CAPACITY"
+	envSMTPAddr              = "SMTP_ADDR"
+	envSMTPFrom              = "SMTP_FROM"
+	envSMTPUsername          = "SMTP_USERNAME"
+	envSMTPPassword          = "SMTP_PASSWORD"
+	envSMTPStartTLS          = "SMTP_STARTTLS"
+	envSMTPTimeout           = "SMTP_TIMEOUT"
 )
 
 /*
@@ -143,6 +167,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	smtpStartTLS, err := boolEnvOrDefault(envSMTPStartTLS, false)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		AppEnv:                appEnv,
 		HTTPAddr:              httpAddr,
@@ -169,6 +197,17 @@ func Load() (Config, error) {
 		ArXivHTTPTimeout:      durationEnvOrDefault(envArXivHTTPTimeout, 30*time.Second),
 		MatcherWorkers:        intEnvOrDefault(envMatcherWorkers, 4),
 		MatcherQueueCapacity:  intEnvOrDefault(envMatcherQueueCapacity, 256),
+		DigestInterval:        durationEnvOrDefault(envDigestInterval, time.Minute),
+		DigestLockTTL:         durationEnvOrDefault(envDigestLockTTL, 10*time.Minute),
+		DigestCompletionTTL:   durationEnvOrDefault(envDigestCompletionTTL, 72*time.Hour),
+		MailWorkers:           intEnvOrDefault(envMailWorkers, 2),
+		MailQueueCapacity:     intEnvOrDefault(envMailQueueCapacity, 128),
+		SMTPAddr:              stringEnvOrDefault(envSMTPAddr, "127.0.0.1:1025"),
+		SMTPFrom:              stringEnvOrDefault(envSMTPFrom, "SignalWatch <digest@signalwatch.local>"),
+		SMTPUsername:          strings.TrimSpace(os.Getenv(envSMTPUsername)),
+		SMTPPassword:          os.Getenv(envSMTPPassword),
+		SMTPStartTLS:          smtpStartTLS,
+		SMTPTimeout:           durationEnvOrDefault(envSMTPTimeout, 10*time.Second),
 	}
 
 	if err := validate(cfg); err != nil {
@@ -260,6 +299,19 @@ func validate(cfg Config) error {
 	if cfg.MatcherWorkers < 1 || cfg.MatcherQueueCapacity < 1 {
 		return fmt.Errorf("invalid matcher configuration")
 	}
+	if cfg.DigestInterval <= 0 || cfg.DigestLockTTL <= 0 || cfg.DigestCompletionTTL <= 0 ||
+		cfg.MailWorkers < 1 || cfg.MailQueueCapacity < 1 || cfg.SMTPTimeout <= 0 {
+		return fmt.Errorf("invalid digest configuration")
+	}
+	if _, _, err := net.SplitHostPort(cfg.SMTPAddr); err != nil {
+		return fmt.Errorf("invalid SMTP_ADDR: must include host and port")
+	}
+	if _, err := mail.ParseAddress(cfg.SMTPFrom); err != nil {
+		return fmt.Errorf("invalid SMTP_FROM")
+	}
+	if (cfg.SMTPUsername == "") != (cfg.SMTPPassword == "") {
+		return fmt.Errorf("invalid SMTP authentication configuration")
+	}
 
 	return nil
 }
@@ -316,4 +368,24 @@ func int64EnvOrDefault(key string, fallback int64) int64 {
 		return 0
 	}
 	return value
+}
+
+func stringEnvOrDefault(key, fallback string) string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func boolEnvOrDefault(key string, fallback bool) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s: must be a boolean", key)
+	}
+	return value, nil
 }

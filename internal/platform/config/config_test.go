@@ -32,6 +32,13 @@ func TestLoadReadsJWTConfiguration(t *testing.T) {
 		t.Fatalf("unexpected matcher defaults: workers=%d queue=%d",
 			cfg.MatcherWorkers, cfg.MatcherQueueCapacity)
 	}
+	if cfg.DigestInterval != time.Minute || cfg.DigestLockTTL != 10*time.Minute ||
+		cfg.DigestCompletionTTL != 72*time.Hour || cfg.MailWorkers != 2 ||
+		cfg.MailQueueCapacity != 128 || cfg.SMTPAddr != "127.0.0.1:1025" ||
+		cfg.SMTPFrom != "SignalWatch <digest@signalwatch.local>" || cfg.SMTPStartTLS ||
+		cfg.SMTPTimeout != 10*time.Second {
+		t.Fatalf("unexpected M4 defaults: %+v", cfg)
+	}
 }
 
 func TestLoadRequiresJWTConfiguration(t *testing.T) {
@@ -157,6 +164,31 @@ func TestLoadRejectsInvalidMatcherConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidDigestConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "scheduler interval", key: envDigestInterval, value: "0s"},
+		{name: "lock TTL", key: envDigestLockTTL, value: "invalid"},
+		{name: "mail workers", key: envMailWorkers, value: "0"},
+		{name: "queue capacity", key: envMailQueueCapacity, value: "many"},
+		{name: "SMTP address", key: envSMTPAddr, value: "missing-port"},
+		{name: "SMTP sender", key: envSMTPFrom, value: "not-an-address"},
+		{name: "STARTTLS", key: envSMTPStartTLS, value: "sometimes"},
+		{name: "SMTP timeout", key: envSMTPTimeout, value: "0s"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			setValidEnvironment(t)
+			t.Setenv(test.key, test.value)
+			if _, err := Load(); err == nil {
+				t.Fatal("expected M4 configuration validation error")
+			}
+		})
+	}
+}
+
 func setValidEnvironment(t *testing.T) {
 	t.Helper()
 	values := map[string]string{
@@ -203,5 +235,13 @@ func validConfig() Config {
 		ArXivHTTPTimeout:      30 * time.Second,
 		MatcherWorkers:        4,
 		MatcherQueueCapacity:  256,
+		DigestInterval:        time.Minute,
+		DigestLockTTL:         10 * time.Minute,
+		DigestCompletionTTL:   72 * time.Hour,
+		MailWorkers:           2,
+		MailQueueCapacity:     128,
+		SMTPAddr:              "127.0.0.1:1025",
+		SMTPFrom:              "SignalWatch <digest@signalwatch.local>",
+		SMTPTimeout:           10 * time.Second,
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"signalwatch/internal/collector"
+	"signalwatch/internal/digest"
 	"signalwatch/internal/matcher"
 	"signalwatch/internal/paper"
 	"signalwatch/internal/platform/config"
@@ -36,7 +37,7 @@ func main() {
 		slog.Error("initialize logger failed", "service", serviceName, "error", err)
 		os.Exit(1)
 	}
-	// Worker 未来会读写任务、论文和匹配记录，因此启动前也必须确认 MySQL 可用
+	// Worker 会读写论文、匹配和投递记录，因此启动前必须确认 MySQL 可用。
 	database, err := db.Open(cfg)
 	if err != nil {
 		logger.Error(
@@ -136,6 +137,43 @@ func main() {
 		logger.Error("initialize collector service failed", "module", "collector", "error", err)
 		os.Exit(1)
 	}
+	digestRepository := digest.NewRepository(database)
+	digestCoordinator, err := digest.NewRedisCoordinator(
+		redisClient, "signalwatch:digest", cfg.DigestLockTTL, cfg.DigestCompletionTTL,
+	)
+	if err != nil {
+		logger.Error("initialize digest coordinator failed", "module", "digest", "error", err)
+		os.Exit(1)
+	}
+	smtpSender, err := digest.NewSMTPSender(digest.SMTPConfig{
+		Addr: cfg.SMTPAddr, From: cfg.SMTPFrom, Username: cfg.SMTPUsername,
+		Password: cfg.SMTPPassword, StartTLS: cfg.SMTPStartTLS, Timeout: cfg.SMTPTimeout,
+	}, func() time.Time { return time.Now().UTC() })
+	if err != nil {
+		logger.Error("initialize SMTP sender failed", "module", "digest", "error", err)
+		os.Exit(1)
+	}
+	digestProcessor, err := digest.NewProcessor(
+		digestRepository, digestCoordinator, smtpSender, func() time.Time { return time.Now().UTC() },
+	)
+	if err != nil {
+		logger.Error("initialize digest processor failed", "module", "digest", "error", err)
+		os.Exit(1)
+	}
+	mailPool, err := digest.NewPool(digestProcessor, logger, digest.PoolConfig{
+		Workers: cfg.MailWorkers, QueueCapacity: cfg.MailQueueCapacity,
+	})
+	if err != nil {
+		logger.Error("initialize mail pool failed", "module", "digest", "error", err)
+		os.Exit(1)
+	}
+	digestScheduler, err := digest.NewScheduler(
+		digestRepository, mailPool, logger, func() time.Time { return time.Now().UTC() },
+	)
+	if err != nil {
+		logger.Error("initialize digest scheduler failed", "module", "digest", "error", err)
+		os.Exit(1)
+	}
 	// 记录 Worker 启动日志。
 	logger.Info(
 		"worker starting",
@@ -143,6 +181,9 @@ func main() {
 		"heartbeat", cfg.WorkerHeartbeat,
 		"matcher_workers", cfg.MatcherWorkers,
 		"matcher_queue_capacity", cfg.MatcherQueueCapacity,
+		"digest_interval", cfg.DigestInterval,
+		"mail_workers", cfg.MailWorkers,
+		"mail_queue_capacity", cfg.MailQueueCapacity,
 		"env", cfg.AppEnv,
 	)
 	matcherDone := make(chan struct{})
@@ -150,9 +191,18 @@ func main() {
 		defer close(matcherDone)
 		matcherPool.Run(ctx)
 	}()
+	mailDone := make(chan struct{})
+	go func() {
+		defer close(mailDone)
+		mailPool.Run(ctx)
+	}()
 	// 调用 run，启动 Worker 的长期运行循环。
-	run(ctx, logger, cfg.WorkerHeartbeat, cfg.CollectorInterval, collectorService.Run)
+	run(
+		ctx, logger, cfg.WorkerHeartbeat, cfg.CollectorInterval, cfg.DigestInterval,
+		collectorService.Run, digestScheduler.Run,
+	)
 	<-matcherDone
+	<-mailDone
 	// run 返回后，记录 Worker 已停止的日志。
 	logger.Info("worker stopped", "module", "worker")
 }
@@ -162,14 +212,19 @@ func run(
 	logger *slog.Logger,
 	heartbeatInterval time.Duration,
 	collectorInterval time.Duration,
+	digestInterval time.Duration,
 	collect func(context.Context) error,
+	scheduleDigests func(context.Context) (digest.ScheduleResult, error),
 ) {
 	// 按照 interval 创建 Ticker(定时器)，并确保函数退出时停止它。
 	heartbeat := time.NewTicker(heartbeatInterval)
 	defer heartbeat.Stop()
 	collectorTicker := time.NewTicker(collectorInterval)
 	defer collectorTicker.Stop()
+	digestTicker := time.NewTicker(digestInterval)
+	defer digestTicker.Stop()
 	runCollectorCycle(ctx, logger, collect)
+	runDigestCycle(ctx, logger, scheduleDigests)
 	// 使用循环和 select，同时等待退出信号与心跳事件。
 	// 收到退出信号时记录日志并返回。
 	// 收到心跳事件时记录心跳日志。
@@ -186,8 +241,28 @@ func run(
 			)
 		case <-collectorTicker.C:
 			runCollectorCycle(ctx, logger, collect)
+		case <-digestTicker.C:
+			runDigestCycle(ctx, logger, scheduleDigests)
 		}
 	}
+}
+
+func runDigestCycle(
+	ctx context.Context,
+	logger *slog.Logger,
+	schedule func(context.Context) (digest.ScheduleResult, error),
+) {
+	result, err := schedule(ctx)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			logger.Error("digest schedule cycle failed", "module", "digest", "error", err)
+		}
+		return
+	}
+	logger.Info(
+		"digest schedule cycle finished", "module", "digest", "users", result.Users,
+		"due", result.Due, "submitted", result.Submitted, "invalid", result.Invalid,
+	)
 }
 
 func runCollectorCycle(ctx context.Context, logger *slog.Logger, collect func(context.Context) error) {

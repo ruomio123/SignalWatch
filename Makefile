@@ -29,12 +29,15 @@ export ARXIV_PAGE_SIZE ARXIV_MAX_PAGES ARXIV_MAX_RESPONSE_BYTES
 export ARXIV_REQUEST_ATTEMPTS ARXIV_REQUEST_BACKOFF ARXIV_REQUEST_INTERVAL
 export ARXIV_HTTP_TIMEOUT
 export MATCHER_WORKERS MATCHER_QUEUE_CAPACITY
-export M1_TEST_MYSQL_DSN
+export DIGEST_INTERVAL DIGEST_LOCK_TTL DIGEST_COMPLETION_TTL
+export MAIL_WORKERS MAIL_QUEUE_CAPACITY
+export SMTP_ADDR SMTP_FROM SMTP_USERNAME SMTP_PASSWORD SMTP_STARTTLS SMTP_TIMEOUT
+export M1_TEST_MYSQL_DSN M4_TEST_SMTP_ADDR
 
 # 这些名称代表操作，不代表同名文件。
 # 即使目录中出现名为 test、api 的文件，Make 仍然会执行对应命令。
 .PHONY: deps-up deps-down api worker fmt vet test test-race openapi-check \
-	test-integration m1-verify m2-verify m3-verify require-env require-test-dsn migrate-up \
+	test-integration m1-verify m2-verify m3-verify m4-verify require-env require-test-dsn migrate-up \
 	migrate-down migrate-status migrate-test-up migrate-test-status
 # 检查本地环境变量文件是否存在。
 # api 和 worker 缺少 .env 时，会在真正启动之前停止并显示处理方法。
@@ -130,3 +133,6 @@ m2-verify: m1-verify
 
 # M3 沿用五表结构；全量验收额外由 matcher 单元/竞态/真实 MySQL 测试覆盖。
 m3-verify: m2-verify
+
+# M4 沿用五表结构；全量验收额外覆盖 Digest、邮件并发与 Mailpit。
+m4-verify: m3-verify

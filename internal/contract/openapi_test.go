@@ -167,7 +167,7 @@ func TestOpenAPISecurityVersionHeadersAndDeleteResponseMatchHandlers(t *testing.
 	}
 }
 
-func TestOpenAPIContainsNoDeploymentSecretsAndStatesM3Boundary(t *testing.T) {
+func TestOpenAPIContainsNoDeploymentSecretsAndStatesM4Boundary(t *testing.T) {
 	content, err := os.ReadFile(projectFile(t, "api", "openapi.yaml"))
 	if err != nil {
 		t.Fatalf("read OpenAPI contract: %v", err)
@@ -187,12 +187,14 @@ func TestOpenAPIContainsNoDeploymentSecretsAndStatesM3Boundary(t *testing.T) {
 	}
 	if !strings.Contains(lower, "background local matching") ||
 		!strings.Contains(lower, "explainable match reasons") ||
-		!strings.Contains(lower, "matched arxiv papers") {
-		t.Error("OpenAPI contract must describe the M3 matching and paper-query boundary")
+		!strings.Contains(lower, "matched arxiv papers") ||
+		!strings.Contains(lower, "daily digest") ||
+		!strings.Contains(lower, "email delivery worker") {
+		t.Error("OpenAPI contract must describe the M4 matching, paper-query, and Digest boundary")
 	}
-	for _, boundary := range []string{"email", "delivery", "llms", "agents"} {
+	for _, boundary := range []string{"not exposed as public endpoints", "llms", "agents"} {
 		if !strings.Contains(lower, boundary) {
-			t.Errorf("OpenAPI contract must state that %q is outside the M3 public API", boundary)
+			t.Errorf("OpenAPI contract must state the M4 public API boundary %q", boundary)
 		}
 	}
 }
