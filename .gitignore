@@ -24,3 +24,7 @@ docs/*
 web/node_modules/
 web/test-results/
 web/playwright-report/
+
+# Local scripts and GitHub configuration (kept locally, not tracked)
+/scripts/
+/.github/
