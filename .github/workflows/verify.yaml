@@ -31,6 +31,11 @@ jobs:
       - run: scripts/test-migrations.sh
       - run: bash scripts/test-ai-call-migration.sh
       - run: git diff --exit-code -- web/static
+      - name: Show test service diagnostics on failure
+        if: failure()
+        run: |
+          docker compose -p signalwatch-refactor-test -f deploy/compose.test.yaml ps -a
+          docker compose -p signalwatch-refactor-test -f deploy/compose.test.yaml logs --no-color --tail=200
       - if: always()
         uses: actions/upload-artifact@v4
         with:
