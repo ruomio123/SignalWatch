@@ -8,6 +8,8 @@ import (
 )
 
 type repositoryStub struct {
+	remaining    int64
+	countErr     error
 	user         User
 	items        []Item
 	findErr      error
@@ -19,18 +21,22 @@ type repositoryStub struct {
 	events       *[]string
 }
 
+func (stub *repositoryStub) CountRemaining(context.Context, uint64, uint64, []uint64) (int64, error) {
+	return stub.remaining, stub.countErr
+}
+
 func (stub *repositoryStub) ListActiveSchedules(context.Context) ([]Schedule, error) {
 	return nil, nil
 }
-func (stub *repositoryStub) FindActiveUser(context.Context, uint64) (User, error) {
+func (stub *repositoryStub) FindActiveUser(context.Context, uint64, uint64) (User, error) {
 	return stub.user, stub.findErr
 }
-func (stub *repositoryStub) ListCandidates(_ context.Context, _ uint64, limit int) ([]Item, error) {
+func (stub *repositoryStub) ListCandidates(_ context.Context, _ uint64, _ uint64, limit int) ([]Item, error) {
 	stub.requestedMax = limit
 	return stub.items, stub.listErr
 }
 func (stub *repositoryStub) MarkDelivered(
-	_ context.Context, _ uint64, ids []uint64, at time.Time,
+	_ context.Context, _ uint64, _ uint64, ids []uint64, at time.Time,
 ) (int64, error) {
 	if stub.events != nil {
 		*stub.events = append(*stub.events, "mark-delivered")
@@ -81,7 +87,7 @@ func (stub *senderStub) Send(_ context.Context, message Message) error {
 
 func digestFixture() (Job, User, []Item, time.Time) {
 	now := time.Date(2026, 9, 8, 8, 30, 0, 0, time.UTC)
-	return Job{UserID: 9, LocalDate: "2026-09-08"}, User{
+	return Job{SubscriptionID: 3, UserID: 9, LocalDate: "2026-09-08"}, User{
 			ID: 9, Email: "reader@example.test", Timezone: "UTC", MaxItemsPerDigest: 2,
 		}, []Item{{
 			PaperID: 11, ArXivID: "2609.00011", Title: "Agent Systems", Abstract: "An abstract.",
@@ -97,7 +103,7 @@ func TestProcessorSendsThenMarksAllRelationsThenCompletes(t *testing.T) {
 	repository := &repositoryStub{user: user, items: items, events: &events}
 	coordinator := &coordinatorStub{acquired: true, events: &events}
 	sender := &senderStub{events: &events}
-	processor, err := NewProcessor(repository, coordinator, sender, func() time.Time { return now })
+	processor, err := newTestProcessor(repository, coordinator, sender, func() time.Time { return now })
 	if err != nil {
 		t.Fatalf("new processor: %v", err)
 	}
@@ -131,7 +137,7 @@ func TestProcessorMarksEmptyDayCompleteWithoutSending(t *testing.T) {
 	repository := &repositoryStub{user: user, items: []Item{}}
 	coordinator := &coordinatorStub{acquired: true}
 	sender := &senderStub{}
-	processor, _ := NewProcessor(repository, coordinator, sender, func() time.Time { return now })
+	processor, _ := newTestProcessor(repository, coordinator, sender, func() time.Time { return now })
 	result, err := processor.Process(t.Context(), job)
 	if err != nil || !result.Empty || !coordinator.marked || sender.message.To != "" {
 		t.Fatalf("unexpected empty result=%+v marked=%v message=%+v err=%v",
@@ -155,7 +161,7 @@ func TestProcessorFailureNeverWritesCompletionMarker(t *testing.T) {
 			repository := &repositoryStub{user: user, items: items, markErr: test.markErr}
 			coordinator := &coordinatorStub{acquired: true}
 			sender := &senderStub{err: test.sendErr}
-			processor, _ := NewProcessor(repository, coordinator, sender, func() time.Time { return now })
+			processor, _ := newTestProcessor(repository, coordinator, sender, func() time.Time { return now })
 			if _, err := processor.Process(t.Context(), job); err == nil {
 				t.Fatal("expected processing failure")
 			}
@@ -181,7 +187,7 @@ func TestProcessorSkipsLockContentionAndCompletedDay(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository := &repositoryStub{user: user, items: items}
-			processor, _ := NewProcessor(repository, test.coordinator, &senderStub{}, func() time.Time { return now })
+			processor, _ := newTestProcessor(repository, test.coordinator, &senderStub{}, func() time.Time { return now })
 			result, err := processor.Process(t.Context(), job)
 			if err != nil || !test.assert(result) || repository.requestedMax != 0 {
 				t.Fatalf("unexpected skip result=%+v queried=%d err=%v", result, repository.requestedMax, err)
@@ -189,3 +195,52 @@ func TestProcessorSkipsLockContentionAndCompletedDay(t *testing.T) {
 		})
 	}
 }
+
+func TestRemainingCountFailureDoesNotBlockDelivery(t *testing.T) {
+	job, u, items, now := digestFixture()
+	repo := &repositoryStub{user: u, items: items, countErr: errors.New("count unavailable")}
+	sender := &senderStub{}
+	coord := &coordinatorStub{acquired: true}
+	p, _ := newTestProcessor(repo, coord, sender, func() time.Time { return now })
+	result, err := p.Process(t.Context(), job)
+	if err != nil || result.Items != 1 || !coord.marked {
+		t.Fatalf("footer blocked mail: %+v %v", result, err)
+	}
+}
+
+type deliveryStub struct {
+	coordinator *coordinatorStub
+	repo        *repositoryStub
+}
+
+func newTestProcessor(repo *repositoryStub, c *coordinatorStub, sender Sender, now func() time.Time) (*Processor, error) {
+	return NewProcessor(repo, &deliveryStub{c, repo}, sender, now)
+}
+func (s *deliveryStub) Claim(ctx context.Context, j Job) (Delivery, bool, error) {
+	d := Delivery{ID: 1, Job: j}
+	if s.coordinator.complete {
+		d.State = "sent"
+	}
+	return d, s.coordinator.acquired, s.coordinator.acquireErr
+}
+func (s *deliveryStub) Freeze(context.Context, Delivery, Snapshot) error { return nil }
+func (s *deliveryStub) Finish(ctx context.Context, d Delivery, snap Snapshot, now time.Time) (int64, error) {
+	var n int64
+	var err error
+	if len(snap.PaperIDs) > 0 {
+		n, err = s.repo.MarkDelivered(ctx, d.UserID, d.SubscriptionID, snap.PaperIDs, now)
+		if err != nil {
+			return 0, err
+		}
+	}
+	s.coordinator.released = true
+	return n, s.coordinator.MarkComplete(ctx, d.Job)
+}
+func (s *deliveryStub) Fail(context.Context, Delivery) error {
+	s.coordinator.released = true
+	return nil
+}
+
+func (s *deliveryStub) Cancel(context.Context, Delivery) error { return nil }
+
+type ReleaseFunc func(context.Context) error

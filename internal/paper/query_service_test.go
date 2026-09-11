@@ -52,7 +52,7 @@ func TestQueryServiceListsDeduplicatedPublicPapers(t *testing.T) {
 		rows: []QueryResult{{
 			Paper: Paper{
 				ID: 7, SourceID: 3, ArXivID: "2609.00007", Title: "Paper",
-				Abstract: "Abstract", AuthorsJSON: json.RawMessage(`["Ada"]`),
+				Abstract: "Abstract", Comments: "12 pages", AuthorsJSON: json.RawMessage(`["Ada"]`),
 				CategoriesJSON: json.RawMessage(`["cs.AI","cs.LG"]`),
 			},
 			Matches: []MatchRow{{
@@ -73,7 +73,7 @@ func TestQueryServiceListsDeduplicatedPublicPapers(t *testing.T) {
 		repository.filter.SubscriptionID == nil || *repository.filter.SubscriptionID != 9 {
 		t.Fatalf("unexpected query result=%+v repository=%+v", result, repository)
 	}
-	if len(result.Items) != 1 || !reflect.DeepEqual(result.Items[0].Authors, []string{"Ada"}) ||
+	if len(result.Items) != 1 || result.Items[0].Comments != "12 pages" || !reflect.DeepEqual(result.Items[0].Authors, []string{"Ada"}) ||
 		!reflect.DeepEqual(result.Items[0].Categories, []string{"cs.AI", "cs.LG"}) ||
 		len(result.Items[0].Matches) != 1 ||
 		!reflect.DeepEqual(result.Items[0].Matches[0].MatchedKeywords, []string{"agent"}) ||

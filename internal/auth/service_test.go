@@ -313,6 +313,7 @@ type tokenIssuerStub struct {
 	issue func(uint64) (IssuedToken, error)
 }
 
-func (stub tokenIssuerStub) Issue(userID uint64) (IssuedToken, error) {
-	return stub.issue(userID)
+func (stub tokenIssuerStub) IssueSession(_ context.Context, userID uint64) (LoginResult, error) {
+	token, err := stub.issue(userID)
+	return LoginResult{AccessToken: token.AccessToken, ExpiresIn: token.ExpiresIn}, err
 }

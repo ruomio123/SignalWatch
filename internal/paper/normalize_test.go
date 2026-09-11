@@ -2,6 +2,7 @@ package paper
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -10,7 +11,7 @@ func TestNormalizeRecordProducesStableSinglePaperFields(t *testing.T) {
 	published := time.Date(2026, 8, 1, 2, 3, 4, 0, time.FixedZone("test", 8*60*60))
 	record, err := NormalizeRecord(Record{
 		ArXivID: " 2608.00001 ",
-		Title:   " A\n useful paper ", Abstract: " Useful\tabstract ",
+		Title:   " A\n useful paper ", Abstract: " Useful\tabstract ", Comments: " 12 pages,\n 4 figures ",
 		Authors:     []string{" Jane  Doe ", "Jane Doe"},
 		Categories:  []string{" cs.AI ", "cs.AI", "cs.LG"},
 		PublishedAt: published, ArXivUpdatedAt: published.Add(time.Hour),
@@ -21,7 +22,7 @@ func TestNormalizeRecordProducesStableSinglePaperFields(t *testing.T) {
 		t.Fatalf("normalize record: %v", err)
 	}
 	if record.ArXivID != "2608.00001" || record.Title != "A useful paper" ||
-		record.Abstract != "Useful abstract" {
+		record.Abstract != "Useful abstract" || record.Comments != "12 pages, 4 figures" {
 		t.Fatalf("unexpected normalized fields: %+v", record)
 	}
 	if len(record.Authors) != 1 || len(record.Categories) != 2 {
@@ -47,6 +48,7 @@ func TestNormalizeRecordRejectsInvalidFields(t *testing.T) {
 	}{
 		{name: "missing abstract", mutate: func(record *Record) { record.Abstract = "" }},
 		{name: "missing author", mutate: func(record *Record) { record.Authors = nil }},
+		{name: "oversized comments", mutate: func(record *Record) { record.Comments = strings.Repeat("x", 65536) }},
 		{name: "foreign URL", mutate: func(record *Record) { record.ArXivURL = "https://example.test/abs/2608.00001" }},
 		{name: "insecure PDF URL", mutate: func(record *Record) { record.PDFURL = "http://arxiv.org/pdf/2608.00001" }},
 	}

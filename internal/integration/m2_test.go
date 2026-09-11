@@ -49,8 +49,8 @@ func (m2ClientFactory) CreateFeed() (collector.FeedClient, error) {
 
 type m2Lock struct{}
 
-func (m2Lock) Acquire(context.Context, time.Duration) (collector.ReleaseFunc, bool, error) {
-	return func(context.Context) error { return nil }, true, nil
+func (m2Lock) Acquire(ctx context.Context, _ time.Duration) (context.Context, collector.ReleaseFunc, bool, error) {
+	return ctx, func(context.Context) error { return nil }, true, nil
 }
 
 type m2Submitter struct{}

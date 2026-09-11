@@ -26,10 +26,10 @@ func (stub *submitterStub) Submit(_ context.Context, job Job) error {
 
 func TestSchedulerUsesEachUsersLocalDateAndRetriesAfterDueTime(t *testing.T) {
 	repository := &scheduleRepositoryStub{schedules: []Schedule{
-		{UserID: 1, Timezone: "UTC", DigestTime: "08:00:00"},
-		{UserID: 2, Timezone: "Asia/Shanghai", DigestTime: "16:30:00"},
-		{UserID: 3, Timezone: "America/Los_Angeles", DigestTime: "02:00:00"},
-		{UserID: 4, Timezone: "invalid/zone", DigestTime: "08:00:00"},
+		{SubscriptionID: 3, UserID: 1, Timezone: "UTC", DigestTime: "08:00:00"},
+		{SubscriptionID: 4, UserID: 2, Timezone: "Asia/Shanghai", DigestTime: "16:30:00"},
+		{SubscriptionID: 5, UserID: 3, Timezone: "America/Los_Angeles", DigestTime: "02:00:00"},
+		{SubscriptionID: 6, UserID: 4, Timezone: "invalid/zone", DigestTime: "08:00:00"},
 	}}
 	submitter := &submitterStub{}
 	now := time.Date(2026, 9, 8, 8, 15, 0, 0, time.UTC)
@@ -46,7 +46,7 @@ func TestSchedulerUsesEachUsersLocalDateAndRetriesAfterDueTime(t *testing.T) {
 	if result.Users != 4 || result.Due != 1 || result.Submitted != 1 || result.Invalid != 1 {
 		t.Fatalf("unexpected schedule result: %+v", result)
 	}
-	if len(submitter.jobs) != 1 || submitter.jobs[0] != (Job{UserID: 1, LocalDate: "2026-09-08"}) {
+	if len(submitter.jobs) != 1 || submitter.jobs[0] != (Job{SubscriptionID: 3, UserID: 1, LocalDate: "2026-09-08"}) {
 		t.Fatalf("unexpected jobs: %+v", submitter.jobs)
 	}
 
@@ -64,7 +64,7 @@ func TestSchedulerUsesEachUsersLocalDateAndRetriesAfterDueTime(t *testing.T) {
 
 func TestDueJobUsesLocalCalendarDateAcrossUTCDateBoundary(t *testing.T) {
 	job, due, err := dueJob(Schedule{
-		UserID: 7, Timezone: "Asia/Shanghai", DigestTime: "00:05:00",
+		SubscriptionID: 7, UserID: 7, Timezone: "Asia/Shanghai", DigestTime: "00:05:00",
 	}, time.Date(2026, 9, 7, 16, 6, 0, 0, time.UTC))
 	if err != nil || !due {
 		t.Fatalf("expected due local schedule: job=%+v due=%v err=%v", job, due, err)

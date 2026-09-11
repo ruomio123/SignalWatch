@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -88,7 +89,10 @@ func TestNewRouterServesEmbeddedFrontend(t *testing.T) {
 		})
 	}
 
-	assetRequest := httptest.NewRequest(http.MethodGet, "/assets/app.css", nil)
+	shell := httptest.NewRecorder()
+	router.ServeHTTP(shell, httptest.NewRequest(http.MethodGet, "/", nil))
+	css := regexp.MustCompile(`/assets/[^" ]+\.css`).FindString(shell.Body.String())
+	assetRequest := httptest.NewRequest(http.MethodGet, css, nil)
 	assetRecorder := httptest.NewRecorder()
 	router.ServeHTTP(assetRecorder, assetRequest)
 	if assetRecorder.Code != http.StatusOK {
@@ -152,7 +156,7 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 	dependencies := validTestDependencies()
 
 	calls := 0
-	dependencies.RegisterHandler = func(c *gin.Context) {
+	dependencies.Accounts.RegisterHandler = func(c *gin.Context) {
 		calls++
 		c.Status(http.StatusCreated)
 	}
@@ -164,7 +168,7 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 
 	request := httptest.NewRequest(
 		http.MethodPost,
-		"/api/v1/auth/register",
+		"/api/v2/auth/register",
 		nil,
 	)
 	recorder := httptest.NewRecorder()
@@ -189,13 +193,13 @@ func TestNewRouterKeepsUserAndOperatorRoutesMutuallyExclusive(t *testing.T) {
 	loader := roleLoaderFunc(func(_ context.Context, id uint64) (user.User, error) {
 		return user.User{ID: id, Status: user.StatusActive, Role: role}, nil
 	})
-	dependencies.AuthMiddleware = func(c *gin.Context) {
+	dependencies.Authorization.AuthMiddleware = func(c *gin.Context) {
 		httpx.SetCurrentUserID(c, 42)
 		c.Next()
 	}
-	dependencies.ActiveRoleMiddleware = auth.RequireRoles(loader, dependencies.Logger, user.RoleUser, user.RoleOperator)
-	dependencies.UserRoleMiddleware = auth.RequireRoles(loader, dependencies.Logger, user.RoleUser)
-	dependencies.OperatorRoleMiddleware = auth.RequireRoles(loader, dependencies.Logger, user.RoleOperator)
+	dependencies.Authorization.ActiveRoleMiddleware = auth.RequireRoles(loader, dependencies.Logger, user.RoleUser, user.RoleOperator)
+	dependencies.Authorization.UserRoleMiddleware = auth.RequireRoles(loader, dependencies.Logger, user.RoleUser)
+	dependencies.Authorization.OperatorRoleMiddleware = auth.RequireRoles(loader, dependencies.Logger, user.RoleOperator)
 	router, err := NewRouter(dependencies)
 	if err != nil {
 		t.Fatalf("create router: %v", err)
@@ -207,18 +211,18 @@ func TestNewRouterKeepsUserAndOperatorRoutesMutuallyExclusive(t *testing.T) {
 		router.ServeHTTP(response, request)
 		return response.Code
 	}
-	if status := requestStatus("/api/v1/me"); status != http.StatusOK {
+	if status := requestStatus("/api/v2/me"); status != http.StatusOK {
 		t.Fatalf("expected user to access product route, got %d", status)
 	}
-	if status := requestStatus("/api/v1/ops/status"); status != http.StatusForbidden {
+	if status := requestStatus("/api/v2/ops/status"); status != http.StatusForbidden {
 		t.Fatalf("expected user to be forbidden from operations route, got %d", status)
 	}
 
 	role = user.RoleOperator
-	if status := requestStatus("/api/v1/ops/status"); status != http.StatusOK {
+	if status := requestStatus("/api/v2/ops/status"); status != http.StatusOK {
 		t.Fatalf("expected operator to access operations route, got %d", status)
 	}
-	if status := requestStatus("/api/v1/me"); status != http.StatusForbidden {
+	if status := requestStatus("/api/v2/me"); status != http.StatusForbidden {
 		t.Fatalf("expected operator to be forbidden from product route, got %d", status)
 	}
 }
@@ -226,11 +230,11 @@ func TestNewRouterKeepsUserAndOperatorRoutesMutuallyExclusive(t *testing.T) {
 func TestNewRouterKeepsPublicRoutesPublicAndProtectsProbe(t *testing.T) {
 	dependencies := validTestDependencies()
 	loginCalls := 0
-	dependencies.LoginHandler = func(c *gin.Context) {
+	dependencies.Accounts.LoginHandler = func(c *gin.Context) {
 		loginCalls++
 		c.Status(http.StatusOK)
 	}
-	dependencies.AuthMiddleware = func(c *gin.Context) {
+	dependencies.Authorization.AuthMiddleware = func(c *gin.Context) {
 		if c.GetHeader("Authorization") != "Bearer valid-token" {
 			httpx.WriteError(
 				c,
@@ -249,14 +253,14 @@ func TestNewRouterKeepsPublicRoutesPublicAndProtectsProbe(t *testing.T) {
 		t.Fatalf("create router: %v", err)
 	}
 
-	loginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+	loginRequest := httptest.NewRequest(http.MethodPost, "/api/v2/auth/login", nil)
 	loginRecorder := httptest.NewRecorder()
 	router.ServeHTTP(loginRecorder, loginRequest)
 	if loginRecorder.Code != http.StatusOK || loginCalls != 1 {
 		t.Fatalf("expected public login route, got status %d and %d calls", loginRecorder.Code, loginCalls)
 	}
 
-	unauthorizedRequest := httptest.NewRequest(http.MethodGet, "/api/v1/auth/probe", nil)
+	unauthorizedRequest := httptest.NewRequest(http.MethodGet, "/api/v2/auth/probe", nil)
 	unauthorizedRecorder := httptest.NewRecorder()
 	router.ServeHTTP(unauthorizedRecorder, unauthorizedRequest)
 	assertErrorResponse(
@@ -267,7 +271,7 @@ func TestNewRouterKeepsPublicRoutesPublicAndProtectsProbe(t *testing.T) {
 		"unauthorized",
 	)
 
-	authorizedRequest := httptest.NewRequest(http.MethodGet, "/api/v1/auth/probe", nil)
+	authorizedRequest := httptest.NewRequest(http.MethodGet, "/api/v2/auth/probe", nil)
 	authorizedRequest.Header.Set("Authorization", "Bearer valid-token")
 	authorizedRecorder := httptest.NewRecorder()
 	router.ServeHTTP(authorizedRecorder, authorizedRequest)
@@ -279,7 +283,7 @@ func TestNewRouterKeepsPublicRoutesPublicAndProtectsProbe(t *testing.T) {
 
 func TestNewRouterProtectsAndDispatchesProfileRoutes(t *testing.T) {
 	dependencies := validTestDependencies()
-	dependencies.AuthMiddleware = func(c *gin.Context) {
+	dependencies.Authorization.AuthMiddleware = func(c *gin.Context) {
 		if c.GetHeader("Authorization") != "Bearer valid-token" {
 			httpx.WriteError(c, http.StatusUnauthorized, "AUTH_UNAUTHORIZED", "unauthorized")
 			return
@@ -289,13 +293,13 @@ func TestNewRouterProtectsAndDispatchesProfileRoutes(t *testing.T) {
 	}
 
 	getCalls := 0
-	dependencies.GetProfileHandler = func(c *gin.Context) {
+	dependencies.Accounts.GetProfileHandler = func(c *gin.Context) {
 		getCalls++
 		userID, _ := httpx.CurrentUserID(c)
 		c.JSON(http.StatusOK, gin.H{"user_id": userID})
 	}
 	patchCalls := 0
-	dependencies.UpdateProfileHandler = func(c *gin.Context) {
+	dependencies.Accounts.UpdateProfileHandler = func(c *gin.Context) {
 		patchCalls++
 		c.Status(http.StatusOK)
 	}
@@ -305,12 +309,12 @@ func TestNewRouterProtectsAndDispatchesProfileRoutes(t *testing.T) {
 		t.Fatalf("create router: %v", err)
 	}
 
-	unauthorizedRequest := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	unauthorizedRequest := httptest.NewRequest(http.MethodGet, "/api/v2/me", nil)
 	unauthorizedRecorder := httptest.NewRecorder()
 	router.ServeHTTP(unauthorizedRecorder, unauthorizedRequest)
 	assertErrorResponse(t, unauthorizedRecorder, http.StatusUnauthorized, "AUTH_UNAUTHORIZED", "unauthorized")
 
-	getRequest := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	getRequest := httptest.NewRequest(http.MethodGet, "/api/v2/me", nil)
 	getRequest.Header.Set("Authorization", "Bearer valid-token")
 	getRecorder := httptest.NewRecorder()
 	router.ServeHTTP(getRecorder, getRequest)
@@ -319,7 +323,7 @@ func TestNewRouterProtectsAndDispatchesProfileRoutes(t *testing.T) {
 	}
 	assertJSONEqual(t, getRecorder.Body.Bytes(), []byte(`{"user_id":42}`))
 
-	patchRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/me", strings.NewReader(`{"timezone":"UTC"}`))
+	patchRequest := httptest.NewRequest(http.MethodPatch, "/api/v2/me", strings.NewReader(`{"timezone":"UTC"}`))
 	patchRequest.Header.Set("Authorization", "Bearer valid-token")
 	patchRecorder := httptest.NewRecorder()
 	router.ServeHTTP(patchRecorder, patchRequest)
@@ -330,7 +334,7 @@ func TestNewRouterProtectsAndDispatchesProfileRoutes(t *testing.T) {
 
 func TestNewRouterProtectsAndDispatchesSourceAndSubscriptionRoutes(t *testing.T) {
 	dependencies := validTestDependencies()
-	dependencies.AuthMiddleware = func(c *gin.Context) {
+	dependencies.Authorization.AuthMiddleware = func(c *gin.Context) {
 		if c.GetHeader("Authorization") != "Bearer valid-token" {
 			httpx.WriteError(c, http.StatusUnauthorized, httpx.CodeUnauthorized, "unauthorized")
 			return
@@ -343,45 +347,45 @@ func TestNewRouterProtectsAndDispatchesSourceAndSubscriptionRoutes(t *testing.T)
 	listSubscriptionCalls, getSubscriptionCalls := 0, 0
 	updateSubscriptionCalls, deleteSubscriptionCalls := 0, 0
 	listPaperCalls, getPaperCalls := 0, 0
-	dependencies.ListSourcesHandler = func(c *gin.Context) {
+	dependencies.Sources.ListSourcesHandler = func(c *gin.Context) {
 		listCalls++
 		c.Status(http.StatusOK)
 	}
-	dependencies.GetSourceHandler = func(c *gin.Context) {
+	dependencies.Sources.GetSourceHandler = func(c *gin.Context) {
 		getCalls++
 		if c.Param("id") != "7" {
 			t.Fatalf("expected source ID path parameter 7, got %q", c.Param("id"))
 		}
 		c.Status(http.StatusOK)
 	}
-	dependencies.CreateSubscriptionHandler = func(c *gin.Context) {
+	dependencies.Subscriptions.CreateSubscriptionHandler = func(c *gin.Context) {
 		createCalls++
 		c.Status(http.StatusCreated)
 	}
-	dependencies.ListSubscriptionsHandler = func(c *gin.Context) {
+	dependencies.Subscriptions.ListSubscriptionsHandler = func(c *gin.Context) {
 		listSubscriptionCalls++
 		c.Status(http.StatusOK)
 	}
-	dependencies.GetSubscriptionHandler = func(c *gin.Context) {
+	dependencies.Subscriptions.GetSubscriptionHandler = func(c *gin.Context) {
 		getSubscriptionCalls++
 		if c.Param("id") != "9" {
 			t.Fatalf("expected subscription ID path parameter 9, got %q", c.Param("id"))
 		}
 		c.Status(http.StatusOK)
 	}
-	dependencies.UpdateSubscriptionHandler = func(c *gin.Context) {
+	dependencies.Subscriptions.UpdateSubscriptionHandler = func(c *gin.Context) {
 		updateSubscriptionCalls++
 		c.Status(http.StatusOK)
 	}
-	dependencies.DeleteSubscriptionHandler = func(c *gin.Context) {
+	dependencies.Subscriptions.DeleteSubscriptionHandler = func(c *gin.Context) {
 		deleteSubscriptionCalls++
 		c.Status(http.StatusNoContent)
 	}
-	dependencies.ListPapersHandler = func(c *gin.Context) {
+	dependencies.Papers.ListPapersHandler = func(c *gin.Context) {
 		listPaperCalls++
 		c.Status(http.StatusOK)
 	}
-	dependencies.GetPaperHandler = func(c *gin.Context) {
+	dependencies.Papers.GetPaperHandler = func(c *gin.Context) {
 		getPaperCalls++
 		if c.Param("id") != "11" {
 			t.Fatalf("expected paper ID path parameter 11, got %q", c.Param("id"))
@@ -395,7 +399,7 @@ func TestNewRouterProtectsAndDispatchesSourceAndSubscriptionRoutes(t *testing.T)
 	}
 
 	unauthorized := httptest.NewRecorder()
-	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/sources", nil))
+	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v2/sources", nil))
 	assertErrorResponse(t, unauthorized, http.StatusUnauthorized, httpx.CodeUnauthorized, "unauthorized")
 
 	requests := []struct {
@@ -403,15 +407,15 @@ func TestNewRouterProtectsAndDispatchesSourceAndSubscriptionRoutes(t *testing.T)
 		path   string
 		want   int
 	}{
-		{http.MethodGet, "/api/v1/sources", http.StatusOK},
-		{http.MethodGet, "/api/v1/sources/7", http.StatusOK},
-		{http.MethodPost, "/api/v1/subscriptions", http.StatusCreated},
-		{http.MethodGet, "/api/v1/subscriptions", http.StatusOK},
-		{http.MethodGet, "/api/v1/subscriptions/9", http.StatusOK},
-		{http.MethodPatch, "/api/v1/subscriptions/9", http.StatusOK},
-		{http.MethodDelete, "/api/v1/subscriptions/9", http.StatusNoContent},
-		{http.MethodGet, "/api/v1/papers", http.StatusOK},
-		{http.MethodGet, "/api/v1/papers/11", http.StatusOK},
+		{http.MethodGet, "/api/v2/sources", http.StatusOK},
+		{http.MethodGet, "/api/v2/sources/7", http.StatusOK},
+		{http.MethodPost, "/api/v2/subscriptions", http.StatusCreated},
+		{http.MethodGet, "/api/v2/subscriptions", http.StatusOK},
+		{http.MethodGet, "/api/v2/subscriptions/9", http.StatusOK},
+		{http.MethodPatch, "/api/v2/subscriptions/9", http.StatusOK},
+		{http.MethodDelete, "/api/v2/subscriptions/9", http.StatusNoContent},
+		{http.MethodGet, "/api/v2/papers", http.StatusOK},
+		{http.MethodGet, "/api/v2/papers/11", http.StatusOK},
 	}
 	for _, requestCase := range requests {
 		request := httptest.NewRequest(requestCase.method, requestCase.path, nil)
@@ -441,7 +445,7 @@ func TestNewRouterUsesStrictJSONBinding(t *testing.T) {
 		Name string `json:"name"`
 	}
 
-	router.POST("/api/v1/test-json", func(c *gin.Context) {
+	router.POST("/api/v2/test-json", func(c *gin.Context) {
 		var body input
 		if !httpx.BindJSON(c, &body) {
 			return
@@ -481,7 +485,7 @@ func TestNewRouterUsesStrictJSONBinding(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(
 				http.MethodPost,
-				"/api/v1/test-json",
+				"/api/v2/test-json",
 				strings.NewReader(test.body),
 			)
 			request.Header.Set("Content-Type", "application/json")
@@ -599,85 +603,85 @@ func TestNewRouterValidatesDependencies(t *testing.T) {
 		{
 			name: "missing register handler",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.RegisterHandler = nil
+				dependencies.Accounts.RegisterHandler = nil
 			},
 		},
 		{
 			name: "missing login handler",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.LoginHandler = nil
+				dependencies.Accounts.LoginHandler = nil
 			},
 		},
 		{
 			name: "missing auth middleware",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.AuthMiddleware = nil
+				dependencies.Authorization.AuthMiddleware = nil
 			},
 		},
 		{
 			name: "missing get profile handler",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.GetProfileHandler = nil
+				dependencies.Accounts.GetProfileHandler = nil
 			},
 		},
 		{
 			name: "missing update profile handler",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.UpdateProfileHandler = nil
+				dependencies.Accounts.UpdateProfileHandler = nil
 			},
 		},
 		{
 			name: "missing list sources handler",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.ListSourcesHandler = nil
+				dependencies.Sources.ListSourcesHandler = nil
 			},
 		},
 		{
 			name: "missing get source handler",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.GetSourceHandler = nil
+				dependencies.Sources.GetSourceHandler = nil
 			},
 		},
 		{
 			name: "missing create subscription handler",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.CreateSubscriptionHandler = nil
+				dependencies.Subscriptions.CreateSubscriptionHandler = nil
 			},
 		},
 		{
 			name: "missing list subscriptions handler",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.ListSubscriptionsHandler = nil
+				dependencies.Subscriptions.ListSubscriptionsHandler = nil
 			},
 		},
 		{
 			name: "missing get subscription handler",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.GetSubscriptionHandler = nil
+				dependencies.Subscriptions.GetSubscriptionHandler = nil
 			},
 		},
 		{
 			name: "missing update subscription handler",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.UpdateSubscriptionHandler = nil
+				dependencies.Subscriptions.UpdateSubscriptionHandler = nil
 			},
 		},
 		{
 			name: "missing delete subscription handler",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.DeleteSubscriptionHandler = nil
+				dependencies.Subscriptions.DeleteSubscriptionHandler = nil
 			},
 		},
 		{
 			name: "missing list papers handler",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.ListPapersHandler = nil
+				dependencies.Papers.ListPapersHandler = nil
 			},
 		},
 		{
 			name: "missing get paper handler",
 			mutate: func(dependencies *Dependencies) {
-				dependencies.GetPaperHandler = nil
+				dependencies.Papers.GetPaperHandler = nil
 			},
 		},
 	}
@@ -717,67 +721,62 @@ func validTestDependencies() Dependencies {
 		},
 		RedisCheck: func(context.Context) error {
 			return nil
-		},
-		RegisterHandler: func(c *gin.Context) {
+		}, Accounts: AccountsRoutes{RefreshHandler: func(c *gin.Context) { c.Status(200) }, LogoutHandler: func(c *gin.Context) { c.Status(204) }, RegisterHandler: func(c *gin.Context) {
 			c.Status(http.StatusCreated)
 		},
-		LoginHandler: func(c *gin.Context) {
-			c.Status(http.StatusOK)
-		},
-		AuthMiddleware: func(c *gin.Context) {
+			LoginHandler: func(c *gin.Context) {
+				c.Status(http.StatusOK)
+			},
+
+			GetProfileHandler: func(c *gin.Context) {
+				c.Status(http.StatusOK)
+			},
+			UpdateProfileHandler: func(c *gin.Context) {
+				c.Status(http.StatusOK)
+			}}, Authorization: AuthorizationRoutes{AuthMiddleware: func(c *gin.Context) {
 			c.Next()
 		},
-		ActiveRoleMiddleware: func(c *gin.Context) {
-			c.Next()
-		},
-		UserRoleMiddleware: func(c *gin.Context) {
-			c.Next()
-		},
-		OperatorRoleMiddleware: func(c *gin.Context) {
-			c.Next()
-		},
-		OperationsAuditMiddleware: func(c *gin.Context) {
-			c.Next()
-		},
-		GetProfileHandler: func(c *gin.Context) {
+			ActiveRoleMiddleware: func(c *gin.Context) {
+				c.Next()
+			},
+			UserRoleMiddleware: func(c *gin.Context) {
+				c.Next()
+			},
+			OperatorRoleMiddleware: func(c *gin.Context) {
+				c.Next()
+			},
+			OperationsAuditMiddleware: func(c *gin.Context) {
+				c.Next()
+			}}, Sources: SourcesRoutes{ListSourcesHandler: func(c *gin.Context) {
 			c.Status(http.StatusOK)
 		},
-		UpdateProfileHandler: func(c *gin.Context) {
-			c.Status(http.StatusOK)
-		},
-		ListSourcesHandler: func(c *gin.Context) {
-			c.Status(http.StatusOK)
-		},
-		GetSourceHandler: func(c *gin.Context) {
-			c.Status(http.StatusOK)
-		},
-		CreateSubscriptionHandler: func(c *gin.Context) {
+			GetSourceHandler: func(c *gin.Context) {
+				c.Status(http.StatusOK)
+			}}, Subscriptions: SubscriptionsRoutes{CreateSubscriptionHandler: func(c *gin.Context) {
 			c.Status(http.StatusCreated)
 		},
-		ListSubscriptionsHandler: func(c *gin.Context) {
+			ListSubscriptionsHandler: func(c *gin.Context) {
+				c.Status(http.StatusOK)
+			},
+			GetSubscriptionHandler: func(c *gin.Context) {
+				c.Status(http.StatusOK)
+			},
+			UpdateSubscriptionHandler: func(c *gin.Context) {
+				c.Status(http.StatusOK)
+			},
+			DeleteSubscriptionHandler: func(c *gin.Context) {
+				c.Status(http.StatusNoContent)
+			}}, Papers: PapersRoutes{ListPapersHandler: func(c *gin.Context) {
 			c.Status(http.StatusOK)
 		},
-		GetSubscriptionHandler: func(c *gin.Context) {
+			GetPaperHandler: func(c *gin.Context) {
+				c.Status(http.StatusOK)
+			}}, Operations: OperationsRoutes{OperationsStatusHandler: func(c *gin.Context) {
 			c.Status(http.StatusOK)
 		},
-		UpdateSubscriptionHandler: func(c *gin.Context) {
-			c.Status(http.StatusOK)
-		},
-		DeleteSubscriptionHandler: func(c *gin.Context) {
-			c.Status(http.StatusNoContent)
-		},
-		ListPapersHandler: func(c *gin.Context) {
-			c.Status(http.StatusOK)
-		},
-		GetPaperHandler: func(c *gin.Context) {
-			c.Status(http.StatusOK)
-		},
-		OperationsStatusHandler: func(c *gin.Context) {
-			c.Status(http.StatusOK)
-		},
-		OperationsSourcesHandler: func(c *gin.Context) {
-			c.Status(http.StatusOK)
-		},
+			OperationsSourcesHandler: func(c *gin.Context) {
+				c.Status(http.StatusOK)
+			}},
 	}
 }
 

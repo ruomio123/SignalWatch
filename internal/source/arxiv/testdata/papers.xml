@@ -9,6 +9,7 @@
     <published>2026-08-02T03:04:05Z</published>
     <title>A useful VLM paper</title>
     <summary>We study test-time adaptation.</summary>
+    <arxiv:comment>12 pages, 4 figures; accepted at ExampleConf</arxiv:comment>
     <author><name>Jane Doe</name></author>
     <author><name>John Roe</name></author>
     <arxiv:primary_category term="cs.CV"/>

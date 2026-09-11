@@ -78,6 +78,17 @@ func (repository *gormRepository) UpdateProfile(
 			Error; err != nil {
 			return mapFindError(err)
 		}
+		// Configuration mutations use the same user lock. This storage
+		// precondition closes the race between API validation and deletion.
+		if changes.AIEnabled != nil && *changes.AIEnabled {
+			var active int64
+			if err := tx.Table("user_ai_configurations").Where("user_id=? AND status='active'", userID).Count(&active).Error; err != nil {
+				return err
+			}
+			if active == 0 {
+				return ErrAIConfigurationRequired
+			}
+		}
 		if !profileNeedsUpdate(current, changes) {
 			updated = current
 			return nil
@@ -105,14 +116,20 @@ func (repository *gormRepository) UpdateProfile(
 }
 
 func profileNeedsUpdate(current User, changes ProfileChanges) bool {
-	return changes.Timezone != nil && current.Timezone != *changes.Timezone ||
+	return (changes.AIEnabled != nil && current.AIEnabled != *changes.AIEnabled) || (changes.AILanguage != nil && current.AILanguage != *changes.AILanguage) || changes.Timezone != nil && current.Timezone != *changes.Timezone ||
 		changes.DigestTime != nil && current.DigestTime != *changes.DigestTime ||
 		changes.MaxItemsPerDigest != nil &&
 			current.MaxItemsPerDigest != *changes.MaxItemsPerDigest
 }
 
 func profileUpdateColumns(changes ProfileChanges) map[string]any {
-	updates := make(map[string]any, 3)
+	updates := make(map[string]any, 6)
+	if changes.AIEnabled != nil {
+		updates["ai_enabled"] = *changes.AIEnabled
+	}
+	if changes.AILanguage != nil {
+		updates["ai_language"] = *changes.AILanguage
+	}
 	if changes.Timezone != nil {
 		updates["timezone"] = *changes.Timezone
 	}

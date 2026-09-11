@@ -67,8 +67,8 @@ func (stub *submitterStub) SubmitBatch(_ context.Context, ids []uint64) error {
 
 type lockStub struct{ acquired bool }
 
-func (stub lockStub) Acquire(context.Context, time.Duration) (ReleaseFunc, bool, error) {
-	return func(context.Context) error { return nil }, stub.acquired, nil
+func (stub lockStub) Acquire(ctx context.Context, _ time.Duration) (context.Context, ReleaseFunc, bool, error) {
+	return ctx, func(context.Context) error { return nil }, stub.acquired, nil
 }
 
 type searchStub struct {

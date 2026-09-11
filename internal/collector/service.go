@@ -129,7 +129,7 @@ func (service *Service) Sync(ctx context.Context, request SyncRequest) (SyncResu
 		(request.Trigger == TriggerDaily && request.PreviousDueAt.IsZero()) {
 		return SyncResult{}, errors.New("invalid sync request")
 	}
-	release, acquired, err := service.lock.Acquire(ctx, service.config.LockTTL)
+	ctx, release, acquired, err := service.lock.Acquire(ctx, service.config.LockTTL)
 	if err != nil {
 		return SyncResult{}, fmt.Errorf("acquire collector lock: %w", err)
 	}

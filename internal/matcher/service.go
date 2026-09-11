@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"signalwatch/internal/paper"
+	"signalwatch/internal/rules"
 )
 
 var (
@@ -108,11 +109,8 @@ func Evaluate(stored paper.Paper, candidate Candidate) ([]string, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	matchedKeywords := matchKeywords(normalizeSearchText(stored.Title+" "+stored.Abstract), keywords)
-	if len(keywords) > 0 && len(matchedKeywords) == 0 {
-		return nil, false, nil
-	}
-	return matchedKeywords, true, nil
+	matchedKeywords, matched := rules.Match(rules.Paper{Title: stored.Title, Abstract: stored.Abstract, Categories: categories}, rules.Rule{Category: candidate.Category, Keywords: keywords})
+	return matchedKeywords, matched, nil
 }
 
 func decodeStoredStrings(raw []byte, field string, allowEmpty bool) ([]string, error) {

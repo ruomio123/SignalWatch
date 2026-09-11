@@ -32,7 +32,7 @@ func TestServiceGetProfileUsesAuthenticatedUserID(t *testing.T) {
 func TestServiceUpdateProfileNormalizesAllFields(t *testing.T) {
 	timezone := "Asia/Shanghai"
 	digestTime := "08:30"
-	maxItems := uint16(30)
+	maxItems := uint16(20)
 	want := profileTestUser()
 	want.Timezone = timezone
 	want.DigestTime = "08:30:00"
@@ -197,5 +197,18 @@ func profileTestUser() User {
 		Status:            StatusActive,
 		CreatedAt:         createdAt,
 		UpdatedAt:         createdAt,
+	}
+}
+
+func TestAIProfileExplicitFalseAndLanguages(t *testing.T) {
+	off := false
+	lang := "en"
+	changes, err := validateProfileUpdate(UpdateProfileInput{AIEnabled: &off, AILanguage: &lang})
+	if err != nil || changes.AIEnabled == nil || *changes.AIEnabled || *changes.AILanguage != "en" {
+		t.Fatalf("lost explicit preferences: %+v %v", changes, err)
+	}
+	lang = "de"
+	if _, err := validateProfileUpdate(UpdateProfileInput{AILanguage: &lang}); !errors.Is(err, ErrInvalidAILanguage) {
+		t.Fatal("accepted unsupported language")
 	}
 }

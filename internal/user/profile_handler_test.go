@@ -15,7 +15,7 @@ import (
 	"signalwatch/internal/platform/httpx"
 )
 
-const profilePath = "/api/v1/me"
+const profilePath = "/api/v2/me"
 
 func TestHandlerGetProfileReturnsDefaultPublicProfile(t *testing.T) {
 	want := profileTestUser()

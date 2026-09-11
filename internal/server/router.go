@@ -15,31 +15,65 @@ import (
 
 // Dependencies 包含创建 HTTP Router 所需的全部依赖。
 type Dependencies struct {
-	AppEnv                    string
-	ServiceName               string
-	Logger                    *slog.Logger
-	MySQLCheck                DependencyCheck
-	RedisCheck                DependencyCheck
-	RegisterHandler           gin.HandlerFunc
-	LoginHandler              gin.HandlerFunc
-	AuthMiddleware            gin.HandlerFunc
-	ActiveRoleMiddleware      gin.HandlerFunc
-	UserRoleMiddleware        gin.HandlerFunc
-	OperatorRoleMiddleware    gin.HandlerFunc
-	OperationsAuditMiddleware gin.HandlerFunc
-	GetProfileHandler         gin.HandlerFunc
-	UpdateProfileHandler      gin.HandlerFunc
-	ListSourcesHandler        gin.HandlerFunc
-	GetSourceHandler          gin.HandlerFunc
+	AppEnv        string
+	ServiceName   string
+	Logger        *slog.Logger
+	MySQLCheck    DependencyCheck
+	RedisCheck    DependencyCheck
+	AI            AIRoutes
+	Accounts      AccountsRoutes
+	Sources       SourcesRoutes
+	Subscriptions SubscriptionsRoutes
+	Papers        PapersRoutes
+	Operations    OperationsRoutes
+	Authorization AuthorizationRoutes
+}
+type AIRoutes struct {
+	GetAISummaryHandler          gin.HandlerFunc
+	RequestAISummaryHandler      gin.HandlerFunc
+	ListAIProvidersHandler       gin.HandlerFunc
+	GetAIConfigurationHandler    gin.HandlerFunc
+	PutAIConfigurationHandler    gin.HandlerFunc
+	PatchAIConfigurationHandler  gin.HandlerFunc
+	RotateAISecretHandler        gin.HandlerFunc
+	TestAIConfigurationHandler   gin.HandlerFunc
+	DeleteAIConfigurationHandler gin.HandlerFunc
+	GetAIUsageHandler            gin.HandlerFunc
+	ListAICallsHandler           gin.HandlerFunc
+}
+type AccountsRoutes struct {
+	RegisterHandler      gin.HandlerFunc
+	LoginHandler         gin.HandlerFunc
+	RefreshHandler       gin.HandlerFunc
+	LogoutHandler        gin.HandlerFunc
+	GetProfileHandler    gin.HandlerFunc
+	UpdateProfileHandler gin.HandlerFunc
+}
+type SourcesRoutes struct {
+	ListSourcesHandler gin.HandlerFunc
+	GetSourceHandler   gin.HandlerFunc
+}
+type SubscriptionsRoutes struct {
 	CreateSubscriptionHandler gin.HandlerFunc
 	ListSubscriptionsHandler  gin.HandlerFunc
 	GetSubscriptionHandler    gin.HandlerFunc
 	UpdateSubscriptionHandler gin.HandlerFunc
 	DeleteSubscriptionHandler gin.HandlerFunc
-	ListPapersHandler         gin.HandlerFunc
-	GetPaperHandler           gin.HandlerFunc
-	OperationsStatusHandler   gin.HandlerFunc
-	OperationsSourcesHandler  gin.HandlerFunc
+}
+type PapersRoutes struct {
+	ListPapersHandler gin.HandlerFunc
+	GetPaperHandler   gin.HandlerFunc
+}
+type OperationsRoutes struct {
+	OperationsStatusHandler  gin.HandlerFunc
+	OperationsSourcesHandler gin.HandlerFunc
+}
+type AuthorizationRoutes struct {
+	AuthMiddleware            gin.HandlerFunc
+	ActiveRoleMiddleware      gin.HandlerFunc
+	UserRoleMiddleware        gin.HandlerFunc
+	OperatorRoleMiddleware    gin.HandlerFunc
+	OperationsAuditMiddleware gin.HandlerFunc
 }
 
 // NewRouter 创建并配置 SignalWatch API 的 Gin Router。
@@ -70,6 +104,7 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 	// 注册顺序就是请求的执行顺序。
 	router.Use(
 		httpx.RequestIDMiddleware(),
+		requestBudget(),
 		httpx.RecoveryMiddleware(dependencies.Logger),
 		httpx.AccessLogMiddleware(dependencies.Logger),
 	)
@@ -106,31 +141,36 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 		),
 	)
 
-	apiV1 := router.Group("/api/v1")
-	registerAPIV1Routes(
-		apiV1,
-		dependencies.RegisterHandler,
-		dependencies.LoginHandler,
-		dependencies.AuthMiddleware,
-		dependencies.ActiveRoleMiddleware,
-		dependencies.UserRoleMiddleware,
-		dependencies.OperatorRoleMiddleware,
-		dependencies.OperationsAuditMiddleware,
-		dependencies.GetProfileHandler,
-		dependencies.UpdateProfileHandler,
-		dependencies.ListSourcesHandler,
-		dependencies.GetSourceHandler,
-		dependencies.CreateSubscriptionHandler,
-		dependencies.ListSubscriptionsHandler,
-		dependencies.GetSubscriptionHandler,
-		dependencies.UpdateSubscriptionHandler,
-		dependencies.DeleteSubscriptionHandler,
-		dependencies.ListPapersHandler,
-		dependencies.GetPaperHandler,
-		dependencies.OperationsStatusHandler,
-		dependencies.OperationsSourcesHandler,
-	)
+	apiV2 := router.Group("/api/v2")
+	registerAPIV2Routes(apiV2, dependencies)
 
+	aiRoutes := apiV2.Group("")
+	aiRoutes.Use(dependencies.Authorization.AuthMiddleware, dependencies.Authorization.ActiveRoleMiddleware, dependencies.Authorization.UserRoleMiddleware)
+	disabled := func(c *gin.Context) { httpx.WriteError(c, 503, "AI_DISABLED", "AI enrichment is disabled") }
+	getAI, requestAI := dependencies.AI.GetAISummaryHandler, dependencies.AI.RequestAISummaryHandler
+	if getAI == nil {
+		getAI = disabled
+	}
+	if requestAI == nil {
+		requestAI = disabled
+	}
+	aiRoutes.GET("/papers/:id/ai-summary", getAI)
+	aiRoutes.POST("/papers/:id/ai-summary", requestAI)
+	orDisabled := func(handler gin.HandlerFunc) gin.HandlerFunc {
+		if handler == nil {
+			return disabled
+		}
+		return handler
+	}
+	aiRoutes.GET("/ai/providers", orDisabled(dependencies.AI.ListAIProvidersHandler))
+	aiRoutes.GET("/ai/configuration", orDisabled(dependencies.AI.GetAIConfigurationHandler))
+	aiRoutes.PUT("/ai/configuration", orDisabled(dependencies.AI.PutAIConfigurationHandler))
+	aiRoutes.PATCH("/ai/configuration", orDisabled(dependencies.AI.PatchAIConfigurationHandler))
+	aiRoutes.PUT("/ai/configuration/secret", orDisabled(dependencies.AI.RotateAISecretHandler))
+	aiRoutes.POST("/ai/configuration/test", orDisabled(dependencies.AI.TestAIConfigurationHandler))
+	aiRoutes.DELETE("/ai/configuration", orDisabled(dependencies.AI.DeleteAIConfigurationHandler))
+	aiRoutes.GET("/ai/calls", orDisabled(dependencies.AI.ListAICallsHandler))
+	aiRoutes.GET("/ai/usage", orDisabled(dependencies.AI.GetAIUsageHandler))
 	web.RegisterRoutes(router)
 
 	return router, nil
@@ -173,110 +213,93 @@ func validateDependencies(dependencies Dependencies) error {
 		return errors.New("redis dependency check is required")
 	}
 
-	if dependencies.RegisterHandler == nil {
+	if dependencies.Accounts.RegisterHandler == nil {
 		return errors.New("register handler is required")
 	}
-	if dependencies.LoginHandler == nil {
+	if dependencies.Accounts.LoginHandler == nil {
 		return errors.New("login handler is required")
 	}
-	if dependencies.AuthMiddleware == nil {
+	if dependencies.Accounts.RefreshHandler == nil || dependencies.Accounts.LogoutHandler == nil {
+		return errors.New("session handlers are required")
+	}
+	if dependencies.Authorization.AuthMiddleware == nil {
 		return errors.New("auth middleware is required")
 	}
-	if dependencies.ActiveRoleMiddleware == nil || dependencies.UserRoleMiddleware == nil ||
-		dependencies.OperatorRoleMiddleware == nil || dependencies.OperationsAuditMiddleware == nil {
+	if dependencies.Authorization.ActiveRoleMiddleware == nil || dependencies.Authorization.UserRoleMiddleware == nil ||
+		dependencies.Authorization.OperatorRoleMiddleware == nil || dependencies.Authorization.OperationsAuditMiddleware == nil {
 		return errors.New("role and operations middleware are required")
 	}
-	if dependencies.GetProfileHandler == nil {
+	if dependencies.Accounts.GetProfileHandler == nil {
 		return errors.New("get profile handler is required")
 	}
-	if dependencies.UpdateProfileHandler == nil {
+	if dependencies.Accounts.UpdateProfileHandler == nil {
 		return errors.New("update profile handler is required")
 	}
-	if dependencies.ListSourcesHandler == nil {
+	if dependencies.Sources.ListSourcesHandler == nil {
 		return errors.New("list sources handler is required")
 	}
-	if dependencies.GetSourceHandler == nil {
+	if dependencies.Sources.GetSourceHandler == nil {
 		return errors.New("get source handler is required")
 	}
-	if dependencies.CreateSubscriptionHandler == nil {
+	if dependencies.Subscriptions.CreateSubscriptionHandler == nil {
 		return errors.New("create subscription handler is required")
 	}
-	if dependencies.ListSubscriptionsHandler == nil {
+	if dependencies.Subscriptions.ListSubscriptionsHandler == nil {
 		return errors.New("list subscriptions handler is required")
 	}
-	if dependencies.GetSubscriptionHandler == nil {
+	if dependencies.Subscriptions.GetSubscriptionHandler == nil {
 		return errors.New("get subscription handler is required")
 	}
-	if dependencies.UpdateSubscriptionHandler == nil {
+	if dependencies.Subscriptions.UpdateSubscriptionHandler == nil {
 		return errors.New("update subscription handler is required")
 	}
-	if dependencies.DeleteSubscriptionHandler == nil {
+	if dependencies.Subscriptions.DeleteSubscriptionHandler == nil {
 		return errors.New("delete subscription handler is required")
 	}
-	if dependencies.ListPapersHandler == nil {
+	if dependencies.Papers.ListPapersHandler == nil {
 		return errors.New("list papers handler is required")
 	}
-	if dependencies.GetPaperHandler == nil {
+	if dependencies.Papers.GetPaperHandler == nil {
 		return errors.New("get paper handler is required")
 	}
-	if dependencies.OperationsStatusHandler == nil || dependencies.OperationsSourcesHandler == nil {
+	if dependencies.Operations.OperationsStatusHandler == nil || dependencies.Operations.OperationsSourcesHandler == nil {
 		return errors.New("operations handlers are required")
 	}
 
 	return nil
 }
 
-// registerAPIV1Routes 是后续 M1 业务接口的统一注册位置。
-func registerAPIV1Routes(
-	apiV1 *gin.RouterGroup,
-	registerHandler gin.HandlerFunc,
-	loginHandler gin.HandlerFunc,
-	authMiddleware gin.HandlerFunc,
-	activeRoleMiddleware gin.HandlerFunc,
-	userRoleMiddleware gin.HandlerFunc,
-	operatorRoleMiddleware gin.HandlerFunc,
-	operationsAuditMiddleware gin.HandlerFunc,
-	getProfileHandler gin.HandlerFunc,
-	updateProfileHandler gin.HandlerFunc,
-	listSourcesHandler gin.HandlerFunc,
-	getSourceHandler gin.HandlerFunc,
-	createSubscriptionHandler gin.HandlerFunc,
-	listSubscriptionsHandler gin.HandlerFunc,
-	getSubscriptionHandler gin.HandlerFunc,
-	updateSubscriptionHandler gin.HandlerFunc,
-	deleteSubscriptionHandler gin.HandlerFunc,
-	listPapersHandler gin.HandlerFunc,
-	getPaperHandler gin.HandlerFunc,
-	operationsStatusHandler gin.HandlerFunc,
-	operationsSourcesHandler gin.HandlerFunc,
-) {
-	auth := apiV1.Group("/auth")
-	auth.POST("/register", registerHandler)
-	auth.POST("/login", loginHandler)
+// registerAPIV2Routes groups module routes behind their authorization boundary.
+func registerAPIV2Routes(apiV2 *gin.RouterGroup, d Dependencies) {
+	auth := apiV2.Group("/auth")
+	auth.POST("/register", d.Accounts.RegisterHandler)
+	auth.POST("/login", d.Accounts.LoginHandler)
+	auth.POST("/refresh", d.Accounts.RefreshHandler)
+	auth.POST("/logout", d.Accounts.LogoutHandler)
 
 	protectedAuth := auth.Group("")
-	protectedAuth.Use(authMiddleware, activeRoleMiddleware)
+	protectedAuth.Use(d.Authorization.AuthMiddleware, d.Authorization.ActiveRoleMiddleware)
 	protectedAuth.GET("/probe", func(c *gin.Context) {
 		userID, _ := httpx.CurrentUserID(c)
 		c.JSON(http.StatusOK, gin.H{"user_id": userID})
 	})
 
-	protected := apiV1.Group("")
-	protected.Use(authMiddleware, userRoleMiddleware)
-	protected.GET("/me", getProfileHandler)
-	protected.PATCH("/me", updateProfileHandler)
-	protected.GET("/sources", listSourcesHandler)
-	protected.GET("/sources/:id", getSourceHandler)
-	protected.POST("/subscriptions", createSubscriptionHandler)
-	protected.GET("/subscriptions", listSubscriptionsHandler)
-	protected.GET("/subscriptions/:id", getSubscriptionHandler)
-	protected.PATCH("/subscriptions/:id", updateSubscriptionHandler)
-	protected.DELETE("/subscriptions/:id", deleteSubscriptionHandler)
-	protected.GET("/papers", listPapersHandler)
-	protected.GET("/papers/:id", getPaperHandler)
+	protected := apiV2.Group("")
+	protected.Use(d.Authorization.AuthMiddleware, d.Authorization.UserRoleMiddleware)
+	protected.GET("/me", d.Accounts.GetProfileHandler)
+	protected.PATCH("/me", d.Accounts.UpdateProfileHandler)
+	protected.GET("/sources", d.Sources.ListSourcesHandler)
+	protected.GET("/sources/:id", d.Sources.GetSourceHandler)
+	protected.POST("/subscriptions", d.Subscriptions.CreateSubscriptionHandler)
+	protected.GET("/subscriptions", d.Subscriptions.ListSubscriptionsHandler)
+	protected.GET("/subscriptions/:id", d.Subscriptions.GetSubscriptionHandler)
+	protected.PATCH("/subscriptions/:id", d.Subscriptions.UpdateSubscriptionHandler)
+	protected.DELETE("/subscriptions/:id", d.Subscriptions.DeleteSubscriptionHandler)
+	protected.GET("/papers", d.Papers.ListPapersHandler)
+	protected.GET("/papers/:id", d.Papers.GetPaperHandler)
 
-	operations := apiV1.Group("/ops")
-	operations.Use(authMiddleware, operatorRoleMiddleware, operationsAuditMiddleware)
-	operations.GET("/status", operationsStatusHandler)
-	operations.GET("/sources", operationsSourcesHandler)
+	operations := apiV2.Group("/ops")
+	operations.Use(d.Authorization.AuthMiddleware, d.Authorization.OperatorRoleMiddleware, d.Authorization.OperationsAuditMiddleware)
+	operations.GET("/status", d.Operations.OperationsStatusHandler)
+	operations.GET("/sources", d.Operations.OperationsSourcesHandler)
 }

@@ -51,6 +51,7 @@ type PublicPaper struct {
 	ArXivID        string        `json:"arxiv_id"`
 	Title          string        `json:"title"`
 	Abstract       string        `json:"abstract"`
+	Comments       string        `json:"comments"`
 	Authors        []string      `json:"authors"`
 	Categories     []string      `json:"categories"`
 	PublishedAt    time.Time     `json:"published_at"`

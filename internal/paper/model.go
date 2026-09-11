@@ -13,6 +13,7 @@ type Paper struct {
 	ArXivID        string          `gorm:"column:arxiv_id"`
 	Title          string          `gorm:"column:title"`
 	Abstract       string          `gorm:"column:abstract"`
+	Comments       string          `gorm:"column:comments"`
 	AuthorsJSON    json.RawMessage `gorm:"column:authors_json"`
 	CategoriesJSON json.RawMessage `gorm:"column:categories_json"`
 	PublishedAt    time.Time       `gorm:"column:published_at"`
@@ -32,6 +33,7 @@ type Record struct {
 	ArXivID        string
 	Title          string
 	Abstract       string
+	Comments       string
 	Authors        []string
 	Categories     []string
 	PublishedAt    time.Time

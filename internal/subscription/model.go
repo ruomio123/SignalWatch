@@ -9,67 +9,72 @@ import (
 
 const InitialVersion uint32 = 1
 
+type BackfillStatus struct {
+	State     string `json:"state"`
+	Processed uint64 `json:"processed"`
+	Matched   uint64 `json:"matched"`
+}
+
 type Subscription struct {
-	ID           uint64          `gorm:"column:id;primaryKey;autoIncrement"`
-	UserID       uint64          `gorm:"column:user_id"`
-	SourceID     uint64          `gorm:"column:source_id"`
-	Name         string          `gorm:"column:name"`
-	Objective    *string         `gorm:"column:objective"`
-	Category     string          `gorm:"column:category"`
-	KeywordsJSON json.RawMessage `gorm:"column:keywords_json"`
-	Enabled      bool            `gorm:"column:enabled"`
-	Version      uint32          `gorm:"column:version"`
-	CreatedAt    time.Time       `gorm:"column:created_at"`
-	UpdatedAt    time.Time       `gorm:"column:updated_at"`
-	DeletedAt    *time.Time      `gorm:"column:deleted_at"`
+	Backfill          BackfillStatus  `gorm:"-"`
+	MaxItemsPerDigest uint16          `gorm:"column:max_items_per_digest;default:20"`
+	DigestAIEnabled   bool            `gorm:"column:digest_ai_enabled;default:false"`
+	DigestAILanguage  string          `gorm:"column:digest_ai_language;default:zh"`
+	ID                uint64          `gorm:"column:id;primaryKey;autoIncrement"`
+	UserID            uint64          `gorm:"column:user_id"`
+	SourceID          uint64          `gorm:"column:source_id"`
+	Name              string          `gorm:"column:name"`
+	Objective         *string         `gorm:"column:objective"`
+	Category          string          `gorm:"column:category"`
+	KeywordsJSON      json.RawMessage `gorm:"column:keywords_json"`
+	Enabled           bool            `gorm:"column:enabled"`
+	Version           uint32          `gorm:"column:version"`
+	CreatedAt         time.Time       `gorm:"column:created_at"`
+	UpdatedAt         time.Time       `gorm:"column:updated_at"`
+	DeletedAt         *time.Time      `gorm:"column:deleted_at"`
 }
 
 func (Subscription) TableName() string { return "subscriptions" }
 
-// Rule is the compatibility DTO used by the existing M1 service contract.
-// It is reconstructed from Subscription.Category and KeywordsJSON and is not
-// backed by a database table in the five-table schema.
-type Rule struct {
-	ID              uint64    `gorm:"column:id;primaryKey;autoIncrement"`
-	SubscriptionID  uint64    `gorm:"column:subscription_id"`
-	RuleType        string    `gorm:"column:rule_type"`
-	RuleValue       string    `gorm:"column:rule_value"`
-	NormalizedValue string    `gorm:"column:normalized_value"`
-	CreatedAt       time.Time `gorm:"column:created_at"`
-}
-
 type RulesInput struct {
-	Categories      []string
-	Authors         []string
-	IncludeKeywords []string
-	ExcludeKeywords []string
+	Category string   `json:"category"`
+	Keywords []string `json:"keywords"`
 }
 
 type CreateInput struct {
-	SourceID  uint64
-	Name      string
-	Objective *string
-	Enabled   *bool
-	Rules     RulesInput
+	MaxItemsPerDigest *uint16
+	DigestAIEnabled   *bool
+	DigestAILanguage  *string
+	SourceID          uint64
+	Name              string
+	Objective         *string
+	Enabled           *bool
+	Rules             RulesInput
 }
 
 // UpdateInput keeps field presence separate from field values. In particular,
 // ObjectiveSet distinguishes an omitted objective from an explicit clear.
 type UpdateInput struct {
-	Name         *string
-	ObjectiveSet bool
-	Objective    *string
-	Enabled      *bool
-	Rules        *RulesInput
+	MaxItemsPerDigest *uint16
+	DigestAIEnabled   *bool
+	DigestAILanguage  *string
+	Name              *string
+	ObjectiveSet      bool
+	Objective         *string
+	Enabled           *bool
+	Rules             *RulesInput
 }
 
 type SubscriptionPatch struct {
-	Name         *string
-	ObjectiveSet bool
-	Objective    *string
-	Enabled      *bool
-	Category     *string
-	KeywordsJSON *json.RawMessage
+	MaxItemsPerDigest *uint16
+	DigestAIEnabled   *bool
+	DigestAILanguage  *string
+	Name              *string
+	ObjectiveSet      bool
+	Objective         *string
+	Enabled           *bool
+	Category          *string
+	KeywordsJSON      *json.RawMessage
 }
 
 type ListFilter struct {
@@ -86,26 +91,24 @@ type ListInput struct {
 type QueryResult struct {
 	Subscription Subscription
 	Source       source.Source
-	Rules        []Rule
 }
 
-type PublicRules struct {
-	Categories      []string `json:"categories"`
-	Authors         []string `json:"authors"`
-	IncludeKeywords []string `json:"include_keywords"`
-	ExcludeKeywords []string `json:"exclude_keywords"`
-}
+type PublicRules = RulesInput
 
 type PublicSubscription struct {
-	ID        uint64              `json:"id"`
-	Source    source.PublicSource `json:"source"`
-	Name      string              `json:"name"`
-	Objective *string             `json:"objective"`
-	Enabled   bool                `json:"enabled"`
-	Version   uint32              `json:"version"`
-	Rules     PublicRules         `json:"rules"`
-	CreatedAt time.Time           `json:"created_at"`
-	UpdatedAt time.Time           `json:"updated_at"`
+	Backfill          BackfillStatus      `json:"backfill"`
+	MaxItemsPerDigest uint16              `json:"max_items_per_digest"`
+	DigestAIEnabled   bool                `json:"digest_ai_enabled"`
+	DigestAILanguage  string              `json:"digest_ai_language"`
+	ID                uint64              `json:"id"`
+	Source            source.PublicSource `json:"source"`
+	Name              string              `json:"name"`
+	Objective         *string             `json:"objective"`
+	Enabled           bool                `json:"enabled"`
+	Version           uint32              `json:"version"`
+	Rules             PublicRules         `json:"rules"`
+	CreatedAt         time.Time           `json:"created_at"`
+	UpdatedAt         time.Time           `json:"updated_at"`
 }
 
 type ListResult struct {

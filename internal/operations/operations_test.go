@@ -147,8 +147,8 @@ func TestSafeFailureAndAuditDoNotExposeAuthorization(t *testing.T) {
 		httpx.SetCurrentUserID(c, 88)
 		c.Next()
 	}, AuditMiddleware(logger))
-	router.GET("/api/v1/ops/status", func(c *gin.Context) { c.Status(http.StatusOK) })
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/ops/status", nil)
+	router.GET("/api/v2/ops/status", func(c *gin.Context) { c.Status(http.StatusOK) })
+	request := httptest.NewRequest(http.MethodGet, "/api/v2/ops/status", nil)
 	request.Header.Set("Authorization", "Bearer SECRET_TOKEN_MUST_NOT_LEAK")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
@@ -183,9 +183,9 @@ func TestStatusHandlerReturnsComponentOutageAsHTTP200(t *testing.T) {
 	}
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/api/v1/ops/status", handler.Status)
+	router.GET("/api/v2/ops/status", handler.Status)
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/ops/status", nil))
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v2/ops/status", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected component outage status 200, got %d: %s", response.Code, response.Body.String())
 	}

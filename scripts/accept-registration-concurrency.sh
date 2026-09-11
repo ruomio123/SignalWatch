@@ -7,7 +7,7 @@ readonly PROJECT_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 readonly ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env}"
 readonly COMPOSE_FILE="${COMPOSE_FILE:-$PROJECT_ROOT/deploy/compose.yaml}"
 readonly API_BASE_URL="${API_BASE_URL:-http://127.0.0.1:8080}"
-readonly REGISTER_URL="${API_BASE_URL%/}/api/v1/auth/register"
+readonly REGISTER_URL="${API_BASE_URL%/}/api/v2/auth/register"
 readonly TEST_PASSWORD="correct-horse-123"
 readonly TEST_EMAIL="race-$(date +%s%N)-$$@example.com"
 

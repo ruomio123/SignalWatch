@@ -27,8 +27,8 @@ func TestOpenAPIContractIsValidAndCoversCurrentRoutes(t *testing.T) {
 	if err := document.Validate(context.Background()); err != nil {
 		t.Fatalf("validate OpenAPI contract: %v", err)
 	}
-	if document.OpenAPI != "3.1.0" {
-		t.Fatalf("expected OpenAPI 3.1.0, got %q", document.OpenAPI)
+	if document.OpenAPI != "3.0.3" {
+		t.Fatalf("expected OpenAPI 3.0.3, got %q", document.OpenAPI)
 	}
 
 	expected := currentOperations()
@@ -80,31 +80,27 @@ func TestOpenAPIContractMatchesRegisteredRouterOperations(t *testing.T) {
 
 	noop := func(c *gin.Context) { c.Status(200) }
 	router, err := server.NewRouter(server.Dependencies{
-		AppEnv:                    "test",
-		ServiceName:               "signalwatch-api",
-		Logger:                    slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		MySQLCheck:                func(context.Context) error { return nil },
-		RedisCheck:                func(context.Context) error { return nil },
-		RegisterHandler:           noop,
-		LoginHandler:              noop,
-		AuthMiddleware:            noop,
-		ActiveRoleMiddleware:      noop,
-		UserRoleMiddleware:        noop,
-		OperatorRoleMiddleware:    noop,
-		OperationsAuditMiddleware: noop,
-		GetProfileHandler:         noop,
-		UpdateProfileHandler:      noop,
-		ListSourcesHandler:        noop,
-		GetSourceHandler:          noop,
-		CreateSubscriptionHandler: noop,
-		ListSubscriptionsHandler:  noop,
-		GetSubscriptionHandler:    noop,
-		UpdateSubscriptionHandler: noop,
-		DeleteSubscriptionHandler: noop,
-		ListPapersHandler:         noop,
-		GetPaperHandler:           noop,
-		OperationsStatusHandler:   noop,
-		OperationsSourcesHandler:  noop,
+		AppEnv:      "test",
+		ServiceName: "signalwatch-api",
+		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		MySQLCheck:  func(context.Context) error { return nil },
+		RedisCheck:  func(context.Context) error { return nil }, Accounts: server.AccountsRoutes{RegisterHandler: noop,
+			LoginHandler:   noop,
+			RefreshHandler: noop, LogoutHandler: noop,
+
+			GetProfileHandler:    noop,
+			UpdateProfileHandler: noop}, Authorization: server.AuthorizationRoutes{AuthMiddleware: noop,
+			ActiveRoleMiddleware:      noop,
+			UserRoleMiddleware:        noop,
+			OperatorRoleMiddleware:    noop,
+			OperationsAuditMiddleware: noop}, Sources: server.SourcesRoutes{ListSourcesHandler: noop,
+			GetSourceHandler: noop}, Subscriptions: server.SubscriptionsRoutes{CreateSubscriptionHandler: noop,
+			ListSubscriptionsHandler:  noop,
+			GetSubscriptionHandler:    noop,
+			UpdateSubscriptionHandler: noop,
+			DeleteSubscriptionHandler: noop}, Papers: server.PapersRoutes{ListPapersHandler: noop,
+			GetPaperHandler: noop}, Operations: server.OperationsRoutes{OperationsStatusHandler: noop,
+			OperationsSourcesHandler: noop},
 	})
 	if err != nil {
 		t.Fatalf("create router for contract comparison: %v", err)
@@ -139,8 +135,8 @@ func TestOpenAPISecurityVersionHeadersAndDeleteResponseMatchHandlers(t *testing.
 	}{
 		{path: "/healthz", method: "GET"},
 		{path: "/readyz", method: "GET"},
-		{path: "/api/v1/auth/register", method: "POST"},
-		{path: "/api/v1/auth/login", method: "POST"},
+		{path: "/api/v2/auth/register", method: "POST"},
+		{path: "/api/v2/auth/login", method: "POST"},
 	} {
 		operation := document.Paths.Find(route.path).Operations()[route.method]
 		if operation.Security == nil || len(*operation.Security) != 0 {
@@ -148,7 +144,7 @@ func TestOpenAPISecurityVersionHeadersAndDeleteResponseMatchHandlers(t *testing.
 		}
 	}
 
-	item := document.Paths.Find("/api/v1/subscriptions/{id}")
+	item := document.Paths.Find("/api/v2/subscriptions/{id}")
 	for _, operation := range []*openapi3.Operation{item.Patch, item.Delete} {
 		found := false
 		for _, parameter := range operation.Parameters {
@@ -198,7 +194,7 @@ func TestOpenAPIContainsNoDeploymentSecretsAndStatesM4Boundary(t *testing.T) {
 		!strings.Contains(lower, "email delivery worker") {
 		t.Error("OpenAPI contract must describe the M4 matching, paper-query, and Digest boundary")
 	}
-	for _, boundary := range []string{"not exposed as public endpoints", "llms", "agents"} {
+	for _, boundary := range []string{"not exposed as public endpoints", "user-supplied provider credentials", "agents"} {
 		if !strings.Contains(lower, boundary) {
 			t.Errorf("OpenAPI contract must state the M4 public API boundary %q", boundary)
 		}
@@ -239,18 +235,27 @@ func mapKeys[V any](values map[string]V) []string {
 
 func currentOperations() map[string][]string {
 	return map[string][]string{
-		"/healthz":                   {"GET"},
-		"/readyz":                    {"GET"},
-		"/api/v1/auth/register":      {"POST"},
-		"/api/v1/auth/login":         {"POST"},
-		"/api/v1/me":                 {"GET", "PATCH"},
-		"/api/v1/sources":            {"GET"},
-		"/api/v1/sources/{id}":       {"GET"},
-		"/api/v1/subscriptions":      {"GET", "POST"},
-		"/api/v1/subscriptions/{id}": {"GET", "PATCH", "DELETE"},
-		"/api/v1/papers":             {"GET"},
-		"/api/v1/papers/{id}":        {"GET"},
-		"/api/v1/ops/status":         {"GET"},
-		"/api/v1/ops/sources":        {"GET"},
+		"/healthz":                        {"GET"},
+		"/readyz":                         {"GET"},
+		"/api/v2/auth/register":           {"POST"},
+		"/api/v2/auth/refresh":            {"POST"},
+		"/api/v2/auth/logout":             {"POST"},
+		"/api/v2/auth/login":              {"POST"},
+		"/api/v2/me":                      {"GET", "PATCH"},
+		"/api/v2/sources":                 {"GET"},
+		"/api/v2/sources/{id}":            {"GET"},
+		"/api/v2/subscriptions":           {"GET", "POST"},
+		"/api/v2/subscriptions/{id}":      {"GET", "PATCH", "DELETE"},
+		"/api/v2/papers":                  {"GET"},
+		"/api/v2/papers/{id}/ai-summary":  {"GET", "POST"},
+		"/api/v2/papers/{id}":             {"GET"},
+		"/api/v2/ai/providers":            {"GET"},
+		"/api/v2/ai/configuration":        {"GET", "PUT", "PATCH", "DELETE"},
+		"/api/v2/ai/configuration/secret": {"PUT"},
+		"/api/v2/ai/configuration/test":   {"POST"},
+		"/api/v2/ai/calls":                {"GET"},
+		"/api/v2/ai/usage":                {"GET"},
+		"/api/v2/ops/status":              {"GET"},
+		"/api/v2/ops/sources":             {"GET"},
 	}
 }

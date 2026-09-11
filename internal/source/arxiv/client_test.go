@@ -56,7 +56,8 @@ func TestClientFetchPageUsesCategoryOnlyDescendingQueryAndParsesStableIDs(t *tes
 	}
 	if result.Records[0].ArXivID != "2608.00001" ||
 		result.Records[0].ArXivURL != "https://arxiv.org/abs/2608.00001" ||
-		result.Records[0].PDFURL != "https://arxiv.org/pdf/2608.00001" {
+		result.Records[0].PDFURL != "https://arxiv.org/pdf/2608.00001" ||
+		result.Records[0].Comments != "12 pages, 4 figures; accepted at ExampleConf" {
 		t.Fatalf("unexpected v1 record: %+v", result.Records[0])
 	}
 	if result.Records[1].ArXivID != "2608.00002" ||

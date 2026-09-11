@@ -9,12 +9,27 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"signalwatch/internal/platform/secret"
 )
 
 const developmentJWTSecret = "development-only-change-me-32-bytes"
 
 type Config struct {
+	AIEnabled                    bool
+	AIConfigTestMinInterval      time.Duration
+	AIGenerationMinInterval      time.Duration
+	AIConfigTestDailyLimit       int
+	AIPaperDailyLimit            int
+	AIDigestDailyLimit           int
+	AICredentialKeys             string
+	AICredentialActiveKeyVersion string
+	AIEnabledProviders           []string
+	AIWorkers                    int
+	AIQueueCapacity              int
+
 	AppEnv          string        // 应用运行环境，例如 dev、test、prod
+	PublicBaseURL   string        // Optional public origin for email links
 	HTTPAddr        string        // HTTP 服务监听地址，例如 ":8080"
 	LogLevel        string        // 日志级别，例如 DEBUG、INFO、WARN、ERROR
 	WorkerHeartbeat time.Duration // Worker 心跳间隔，例如 10s、30s
@@ -27,9 +42,10 @@ type Config struct {
 	RedisPassword string // Redis 连接密码
 	RedisDB       int    // 使用的 Redis 数据库编号，例如 0、1、2
 
-	JWTSecret string
-	JWTTTL    time.Duration
-	JWTIssuer string
+	JWTSecret      string
+	JWTTTL         time.Duration
+	AuthSessionTTL time.Duration
+	JWTIssuer      string
 
 	CollectorLockTTL       time.Duration
 	ArXivBootstrapLookback time.Duration
@@ -48,17 +64,15 @@ type Config struct {
 	MatcherQueueCapacity   int
 	OpsStatusRetention     time.Duration
 
-	DigestInterval      time.Duration
-	DigestLockTTL       time.Duration
-	DigestCompletionTTL time.Duration
-	MailWorkers         int
-	MailQueueCapacity   int
-	SMTPAddr            string
-	SMTPFrom            string
-	SMTPUsername        string
-	SMTPPassword        string
-	SMTPStartTLS        bool
-	SMTPTimeout         time.Duration
+	DigestInterval    time.Duration
+	MailWorkers       int
+	MailQueueCapacity int
+	SMTPAddr          string
+	SMTPFrom          string
+	SMTPUsername      string
+	SMTPPassword      string
+	SMTPStartTLS      bool
+	SMTPTimeout       time.Duration
 }
 
 // 把环境变量的名字集中管理，避免项目中到处直接写字符串
@@ -93,8 +107,6 @@ const (
 	envMatcherQueueCapacity   = "MATCHER_QUEUE_CAPACITY"
 	envOpsStatusRetention     = "OPS_STATUS_RETENTION"
 	envDigestInterval         = "DIGEST_INTERVAL"
-	envDigestLockTTL          = "DIGEST_LOCK_TTL"
-	envDigestCompletionTTL    = "DIGEST_COMPLETION_TTL"
 	envMailWorkers            = "MAIL_WORKERS"
 	envMailQueueCapacity      = "MAIL_QUEUE_CAPACITY"
 	envSMTPAddr               = "SMTP_ADDR"
@@ -172,6 +184,11 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("invalid %s: must be a duration", envJWTTTL)
 	}
+	rawSessionTTL := stringEnvOrDefault("AUTH_SESSION_TTL", "168h")
+	sessionTTL, err := time.ParseDuration(rawSessionTTL)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid AUTH_SESSION_TTL: must be a duration")
+	}
 	jwtIssuer, err := requiredEnv(envJWTIssuer)
 	if err != nil {
 		return Config{}, err
@@ -180,9 +197,20 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	aiEnabled, err := boolEnvOrDefault("AI_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
+		AIEnabled:               aiEnabled,
+		AIConfigTestMinInterval: 10 * time.Second, AIGenerationMinInterval: 2 * time.Second,
+		AICredentialKeys:             os.Getenv("AI_CREDENTIAL_KEYS"),
+		AICredentialActiveKeyVersion: strings.TrimSpace(os.Getenv("AI_CREDENTIAL_ACTIVE_KEY_VERSION")),
+		AIEnabledProviders:           splitCSV(os.Getenv("AI_ENABLED_PROVIDERS")),
+		AIWorkers:                    intEnvOrDefault("AI_WORKERS", 2), AIQueueCapacity: intEnvOrDefault("AI_QUEUE_CAPACITY", 128),
 		AppEnv:                 appEnv,
 		HTTPAddr:               httpAddr,
+		PublicBaseURL:          strings.TrimRight(strings.TrimSpace(os.Getenv("APP_PUBLIC_URL")), "/"),
 		LogLevel:               logLevel,
 		WorkerHeartbeat:        heartbeat,
 		MySQLDSN:               mysqlDSN,
@@ -193,6 +221,7 @@ func Load() (Config, error) {
 		RedisDB:                redisDB,
 		JWTSecret:              jwtSecret,
 		JWTTTL:                 jwtTTL,
+		AuthSessionTTL:         sessionTTL,
 		JWTIssuer:              jwtIssuer,
 		CollectorLockTTL:       durationEnvOrDefault(envCollectorLockTTL, 55*time.Minute),
 		ArXivBootstrapLookback: durationEnvOrDefault(envArXivBootstrapLookback, 7*24*time.Hour),
@@ -211,8 +240,6 @@ func Load() (Config, error) {
 		MatcherQueueCapacity:   intEnvOrDefault(envMatcherQueueCapacity, 256),
 		OpsStatusRetention:     durationEnvOrDefault(envOpsStatusRetention, 168*time.Hour),
 		DigestInterval:         durationEnvOrDefault(envDigestInterval, time.Minute),
-		DigestLockTTL:          durationEnvOrDefault(envDigestLockTTL, 10*time.Minute),
-		DigestCompletionTTL:    durationEnvOrDefault(envDigestCompletionTTL, 72*time.Hour),
 		MailWorkers:            intEnvOrDefault(envMailWorkers, 2),
 		MailQueueCapacity:      intEnvOrDefault(envMailQueueCapacity, 128),
 		SMTPAddr:               stringEnvOrDefault(envSMTPAddr, "127.0.0.1:1025"),
@@ -223,6 +250,30 @@ func Load() (Config, error) {
 		SMTPTimeout:            durationEnvOrDefault(envSMTPTimeout, 10*time.Second),
 	}
 
+	for _, option := range []struct {
+		name   string
+		target *time.Duration
+	}{{"AI_CONFIG_TEST_MIN_INTERVAL", &cfg.AIConfigTestMinInterval}, {"AI_GENERATION_MIN_INTERVAL", &cfg.AIGenerationMinInterval}} {
+		if raw, ok := os.LookupEnv(option.name); ok {
+			v, e := time.ParseDuration(raw)
+			if e != nil || v < time.Second || v > time.Hour {
+				return cfg, fmt.Errorf("invalid %s", option.name)
+			}
+			*option.target = v
+		}
+	}
+	for _, option := range []struct {
+		name   string
+		target *int
+	}{{"AI_CONFIG_TEST_DAILY_LIMIT", &cfg.AIConfigTestDailyLimit}, {"AI_PAPER_DAILY_LIMIT", &cfg.AIPaperDailyLimit}, {"AI_DIGEST_DAILY_LIMIT", &cfg.AIDigestDailyLimit}} {
+		if raw, ok := os.LookupEnv(option.name); ok {
+			v, e := strconv.Atoi(raw)
+			if e != nil || v < 0 || v > 1000000 {
+				return cfg, fmt.Errorf("invalid %s", option.name)
+			}
+			*option.target = v
+		}
+	}
 	if err := validate(cfg); err != nil {
 		return Config{}, err
 	}
@@ -249,6 +300,28 @@ func requiredEnv(key string) (string, error) {
 返回值：配置合法时返回 nil；否则返回不包含秘密值的错误。
 */
 func validate(cfg Config) error {
+	if cfg.AIEnabled {
+		if strings.TrimSpace(cfg.AICredentialKeys) == "" || cfg.AICredentialActiveKeyVersion == "" {
+			return fmt.Errorf("AI_ENABLED requires AI_CREDENTIAL_KEYS and AI_CREDENTIAL_ACTIVE_KEY_VERSION")
+		}
+		if _, err := secret.Parse(cfg.AICredentialKeys, cfg.AICredentialActiveKeyVersion); err != nil {
+			return err
+		}
+		if len(cfg.AIEnabledProviders) == 0 {
+			return fmt.Errorf("AI_ENABLED requires at least one AI_ENABLED_PROVIDERS entry")
+		}
+		seen := map[string]bool{}
+		for _, provider := range cfg.AIEnabledProviders {
+			if seen[provider] || (provider != "glm" && provider != "qwen" && provider != "deepseek" && provider != "openai" && provider != "kimi") {
+				return fmt.Errorf("invalid AI_ENABLED_PROVIDERS")
+			}
+			seen[provider] = true
+		}
+		if cfg.AIWorkers < 1 || cfg.AIWorkers > 16 || cfg.AIQueueCapacity < 1 || cfg.AIQueueCapacity > 4096 {
+			return fmt.Errorf("invalid AI capacity configuration")
+		}
+	}
+
 	// 校验 cfg.AppEnv
 	switch cfg.AppEnv {
 	case "development", "test", "production":
@@ -261,6 +334,12 @@ func validate(cfg Config) error {
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("invalid LOG_LEVEL: %s", cfg.LogLevel)
+	}
+	if cfg.PublicBaseURL != "" {
+		u, err := url.Parse(cfg.PublicBaseURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" {
+			return fmt.Errorf("invalid APP_PUBLIC_URL: use an http(s) origin without credentials, path, query or fragment")
+		}
 	}
 	// 校验 cfg.HTTPAddr，检查 host 和 port 都不为空。
 	host, post, err := net.SplitHostPort(cfg.HTTPAddr)
@@ -297,10 +376,13 @@ func validate(cfg Config) error {
 	if cfg.JWTTTL <= 0 || cfg.JWTTTL > 24*time.Hour {
 		return fmt.Errorf("invalid JWT_TTL: must be greater than 0 and at most 24h")
 	}
+	if cfg.AuthSessionTTL < time.Hour || cfg.AuthSessionTTL > 30*24*time.Hour || cfg.AuthSessionTTL < cfg.JWTTTL {
+		return fmt.Errorf("invalid AUTH_SESSION_TTL: must be between 1h and 720h and at least JWT_TTL")
+	}
 	if strings.TrimSpace(cfg.JWTIssuer) == "" {
 		return fmt.Errorf("invalid JWT_ISSUER: must not be blank")
 	}
-	if cfg.CollectorLockTTL <= 0 || cfg.ArXivBootstrapLookback <= 0 ||
+	if cfg.CollectorLockTTL < 3*time.Second || cfg.ArXivBootstrapLookback <= 0 ||
 		cfg.ArXivRecoveryOverlap <= 0 || cfg.ArXivSyncRetryInterval <= 0 {
 		return fmt.Errorf("invalid collector scheduling configuration")
 	}
@@ -323,7 +405,7 @@ func validate(cfg Config) error {
 	if cfg.OpsStatusRetention < time.Hour {
 		return fmt.Errorf("invalid OPS_STATUS_RETENTION: must be at least 1h")
 	}
-	if cfg.DigestInterval <= 0 || cfg.DigestLockTTL <= 0 || cfg.DigestCompletionTTL <= 0 ||
+	if cfg.DigestInterval <= 0 ||
 		cfg.MailWorkers < 1 || cfg.MailQueueCapacity < 1 || cfg.SMTPTimeout <= 0 {
 		return fmt.Errorf("invalid digest configuration")
 	}
@@ -338,6 +420,16 @@ func validate(cfg Config) error {
 	}
 
 	return nil
+}
+
+func splitCSV(raw string) []string {
+	result := make([]string, 0)
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.ToLower(strings.TrimSpace(value)); value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 /*

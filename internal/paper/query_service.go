@@ -110,7 +110,7 @@ func publicPaper(row QueryResult) (PublicPaper, error) {
 	}
 	return PublicPaper{
 		ID: row.Paper.ID, SourceID: row.Paper.SourceID, ArXivID: row.Paper.ArXivID,
-		Title: row.Paper.Title, Abstract: row.Paper.Abstract,
+		Title: row.Paper.Title, Abstract: row.Paper.Abstract, Comments: row.Paper.Comments,
 		Authors: authors, Categories: categories,
 		PublishedAt: row.Paper.PublishedAt, ArXivUpdatedAt: row.Paper.ArXivUpdatedAt,
 		ArXivURL: row.Paper.ArXivURL, PDFURL: row.Paper.PDFURL,

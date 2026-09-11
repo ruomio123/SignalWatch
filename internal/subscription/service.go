@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -21,19 +22,26 @@ const (
 )
 
 var (
-	ErrInvalidSourceID   = errors.New("invalid source id")
-	ErrInvalidName       = errors.New("invalid subscription name")
-	ErrInvalidObjective  = errors.New("invalid subscription objective")
-	ErrInvalidPagination = errors.New("invalid subscription pagination")
-	ErrInvalidFilter     = errors.New("invalid subscription filter")
-	ErrInvalidID         = errors.New("invalid subscription id")
-	ErrInvalidVersion    = errors.New("invalid subscription version")
-	ErrEmptyUpdate       = errors.New("subscription update is empty")
-	ErrInvalidStoredRule = errors.New("invalid stored subscription rule")
+	ErrInvalidDigestLimit      = errors.New("subscription digest limit must be between 1 and 20")
+	ErrInvalidAILanguage       = errors.New("subscription AI language must be zh or en")
+	ErrAIConfigurationRequired = errors.New("AI_CONFIGURATION_REQUIRED")
+	ErrInvalidSourceID         = errors.New("invalid source id")
+	ErrInvalidName             = errors.New("invalid subscription name")
+	ErrInvalidObjective        = errors.New("invalid subscription objective")
+	ErrInvalidPagination       = errors.New("invalid subscription pagination")
+	ErrInvalidFilter           = errors.New("invalid subscription filter")
+	ErrInvalidID               = errors.New("invalid subscription id")
+	ErrInvalidVersion          = errors.New("invalid subscription version")
+	ErrEmptyUpdate             = errors.New("subscription update is empty")
+	ErrInvalidStoredRule       = errors.New("invalid stored subscription rule")
 )
 
 type SourceCatalog interface {
 	Get(ctx context.Context, id uint64) (source.PublicSource, error)
+}
+
+type AIConfigurationChecker interface {
+	Active(context.Context, uint64) (bool, error)
 }
 
 func (service *Service) List(
@@ -103,20 +111,24 @@ func (service *Service) Get(
 }
 
 type Service struct {
-	repository Repository
-	sources    SourceCatalog
-	now        func() time.Time
+	repository      Repository
+	sources         SourceCatalog
+	now             func() time.Time
+	aiConfiguration AIConfigurationChecker
 }
 
-func NewService(repository Repository, sources SourceCatalog) *Service {
-	return &Service{repository: repository, sources: sources, now: time.Now}
+func NewService(repository Repository, sources SourceCatalog, checkers ...AIConfigurationChecker) *Service {
+	return NewServiceWithClock(repository, sources, time.Now, checkers...)
 }
-
-func NewServiceWithClock(repository Repository, sources SourceCatalog, now func() time.Time) *Service {
+func NewServiceWithClock(repository Repository, sources SourceCatalog, now func() time.Time, checkers ...AIConfigurationChecker) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{repository: repository, sources: sources, now: now}
+	service := &Service{repository: repository, sources: sources, now: now}
+	if len(checkers) > 0 {
+		service.aiConfiguration = checkers[0]
+	}
+	return service
 }
 
 func (service *Service) Create(
@@ -153,32 +165,69 @@ func (service *Service) Create(
 	if input.Enabled != nil {
 		enabled = *input.Enabled
 	}
-	subscription := Subscription{
-		UserID:    userID,
-		SourceID:  catalog.ID,
-		Name:      name,
-		Objective: objective,
-		Enabled:   enabled,
-		Version:   InitialVersion,
+	if input.MaxItemsPerDigest != nil && (*input.MaxItemsPerDigest < 1 || *input.MaxItemsPerDigest > 20) {
+		return PublicSubscription{}, ErrInvalidDigestLimit
 	}
-	rules := persistenceRules(normalizedRules)
+	language := "zh"
+	if input.DigestAILanguage != nil {
+		language = *input.DigestAILanguage
+	}
+	if language != "zh" && language != "en" {
+		return PublicSubscription{}, ErrInvalidAILanguage
+	}
+	aiEnabled := input.DigestAIEnabled != nil && *input.DigestAIEnabled
+	if aiEnabled {
+		if service.aiConfiguration == nil {
+			return PublicSubscription{}, ErrAIConfigurationRequired
+		}
+		active, err := service.aiConfiguration.Active(ctx, userID)
+		if err != nil {
+			return PublicSubscription{}, err
+		}
+		if !active {
+			return PublicSubscription{}, ErrAIConfigurationRequired
+		}
+	}
+	subscription := Subscription{
+		UserID:           userID,
+		SourceID:         catalog.ID,
+		Name:             name,
+		Objective:        objective,
+		Enabled:          enabled,
+		Version:          InitialVersion,
+		DigestAIEnabled:  aiEnabled,
+		DigestAILanguage: language,
+	}
+	if input.MaxItemsPerDigest != nil {
+		subscription.MaxItemsPerDigest = *input.MaxItemsPerDigest
+	}
+	subscription.Category = normalizedRules.Category
+	subscription.KeywordsJSON, _ = json.Marshal(normalizedRules.Keywords)
 	commandTime := service.now().UTC()
-	if err := service.repository.CreateAtomic(ctx, &subscription, rules, BackfillWindow{
+	if err := service.createAtomic(ctx, &subscription, BackfillWindow{
 		From: commandTime.Add(-7 * 24 * time.Hour), To: commandTime, MatchedAt: commandTime,
 	}); err != nil {
 		return PublicSubscription{}, fmt.Errorf("create subscription atomically: %w", err)
 	}
 
+	state := "complete"
+	if enabled {
+		state = "pending"
+	}
 	return PublicSubscription{
-		ID:        subscription.ID,
-		Source:    catalog,
-		Name:      subscription.Name,
-		Objective: subscription.Objective,
-		Enabled:   subscription.Enabled,
-		Version:   subscription.Version,
-		Rules:     publicRules(normalizedRules),
-		CreatedAt: subscription.CreatedAt,
-		UpdatedAt: subscription.UpdatedAt,
+		Backfill:          BackfillStatus{State: state},
+		MaxItemsPerDigest: subscription.MaxItemsPerDigest,
+		DigestAIEnabled:   subscription.DigestAIEnabled,
+		DigestAILanguage:  subscription.DigestAILanguage,
+		ID:                subscription.ID,
+		Source:            catalog,
+		Name:              subscription.Name,
+		Objective:         subscription.Objective,
+		Enabled:           subscription.Enabled,
+		Version:           subscription.Version,
+		Rules:             normalizedRules,
+		CreatedAt:         subscription.CreatedAt,
+		UpdatedAt:         subscription.UpdatedAt,
 	}, nil
 }
 
@@ -198,11 +247,17 @@ func (service *Service) Update(
 	if expectedVersion == 0 {
 		return PublicSubscription{}, ErrInvalidVersion
 	}
-	if input.Name == nil && !input.ObjectiveSet && input.Enabled == nil && input.Rules == nil {
+	if input.MaxItemsPerDigest == nil && input.DigestAIEnabled == nil && input.DigestAILanguage == nil && input.Name == nil && !input.ObjectiveSet && input.Enabled == nil && input.Rules == nil {
 		return PublicSubscription{}, ErrEmptyUpdate
 	}
 
-	patch := SubscriptionPatch{Enabled: input.Enabled}
+	if input.MaxItemsPerDigest != nil && (*input.MaxItemsPerDigest < 1 || *input.MaxItemsPerDigest > 20) {
+		return PublicSubscription{}, ErrInvalidDigestLimit
+	}
+	if input.DigestAILanguage != nil && *input.DigestAILanguage != "zh" && *input.DigestAILanguage != "en" {
+		return PublicSubscription{}, ErrInvalidAILanguage
+	}
+	patch := SubscriptionPatch{Enabled: input.Enabled, MaxItemsPerDigest: input.MaxItemsPerDigest, DigestAIEnabled: input.DigestAIEnabled, DigestAILanguage: input.DigestAILanguage}
 	if input.Name != nil {
 		name := strings.TrimSpace(*input.Name)
 		if name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > maxNameRunes {
@@ -223,8 +278,20 @@ func (service *Service) Update(
 	if err != nil {
 		return PublicSubscription{}, fmt.Errorf("get subscription for update: %w", err)
 	}
+	if input.DigestAIEnabled != nil && *input.DigestAIEnabled && !existing.Subscription.DigestAIEnabled {
+		if service.aiConfiguration == nil {
+			return PublicSubscription{}, ErrAIConfigurationRequired
+		}
+		active, err := service.aiConfiguration.Active(ctx, userID)
+		if err != nil {
+			return PublicSubscription{}, err
+		}
+		if !active {
+			return PublicSubscription{}, ErrAIConfigurationRequired
+		}
+	}
 
-	var replacementRules *[]Rule
+	var replacementRules *RulesInput
 	if input.Rules != nil {
 		catalog, err := existing.Source.Public()
 		if err != nil {
@@ -234,11 +301,10 @@ func (service *Service) Update(
 		if err != nil {
 			return PublicSubscription{}, err
 		}
-		rules := persistenceRules(normalized)
-		replacementRules = &rules
+		replacementRules = &normalized
 	}
 
-	updated, rules, err := service.repository.UpdateAtomic(
+	updated, err := service.updateAtomic(
 		ctx,
 		userID,
 		id,
@@ -249,10 +315,10 @@ func (service *Service) Update(
 	if err != nil {
 		return PublicSubscription{}, fmt.Errorf("update subscription atomically: %w", err)
 	}
+	updated.Backfill = existing.Subscription.Backfill
 	result, err := publicSubscription(QueryResult{
 		Subscription: updated,
 		Source:       existing.Source,
-		Rules:        rules,
 	})
 	if err != nil {
 		return PublicSubscription{}, fmt.Errorf("build updated subscription: %w", err)
@@ -295,72 +361,21 @@ func normalizeObjective(value *string) (*string, error) {
 	return &trimmed, nil
 }
 
-func persistenceRules(rules NormalizedRules) []Rule {
-	total := len(rules.Categories) + len(rules.Authors) +
-		len(rules.IncludeKeywords) + len(rules.ExcludeKeywords)
-	result := make([]Rule, 0, total)
-	appendGroup := func(ruleType string, group []NormalizedRule) {
-		for _, normalized := range group {
-			result = append(result, Rule{
-				RuleType:        ruleType,
-				RuleValue:       normalized.RuleValue,
-				NormalizedValue: normalized.NormalizedValue,
-			})
-		}
-	}
-	appendGroup(source.RuleTypeCategory, rules.Categories)
-	appendGroup(source.RuleTypeAuthor, rules.Authors)
-	appendGroup(source.RuleTypeIncludeKeyword, rules.IncludeKeywords)
-	appendGroup(source.RuleTypeExcludeKeyword, rules.ExcludeKeywords)
-	return result
-}
-
-func publicRules(rules NormalizedRules) PublicRules {
-	values := func(group []NormalizedRule) []string {
-		result := make([]string, 0, len(group))
-		for _, item := range group {
-			result = append(result, item.RuleValue)
-		}
-		return result
-	}
-	return PublicRules{
-		Categories:      values(rules.Categories),
-		Authors:         values(rules.Authors),
-		IncludeKeywords: values(rules.IncludeKeywords),
-		ExcludeKeywords: values(rules.ExcludeKeywords),
-	}
-}
-
 func publicSubscription(row QueryResult) (PublicSubscription, error) {
-	publicSource, err := row.Source.Public()
+	source, err := row.Source.Public()
 	if err != nil {
 		return PublicSubscription{}, err
 	}
-	rules := PublicRules{
-		Categories:      make([]string, 0),
-		Authors:         make([]string, 0),
-		IncludeKeywords: make([]string, 0),
-		ExcludeKeywords: make([]string, 0),
-	}
-	for _, rule := range row.Rules {
-		switch rule.RuleType {
-		case source.RuleTypeCategory:
-			rules.Categories = append(rules.Categories, rule.RuleValue)
-		case source.RuleTypeAuthor:
-			rules.Authors = append(rules.Authors, rule.RuleValue)
-		case source.RuleTypeIncludeKeyword:
-			rules.IncludeKeywords = append(rules.IncludeKeywords, rule.RuleValue)
-		case source.RuleTypeExcludeKeyword:
-			rules.ExcludeKeywords = append(rules.ExcludeKeywords, rule.RuleValue)
-		default:
-			return PublicSubscription{}, fmt.Errorf("%w: %q", ErrInvalidStoredRule, rule.RuleType)
-		}
-	}
-
 	item := row.Subscription
-	return PublicSubscription{
-		ID: item.ID, Source: publicSource, Name: item.Name, Objective: item.Objective,
-		Enabled: item.Enabled, Version: item.Version, Rules: rules,
-		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
-	}, nil
+	var keywords []string
+	if err := json.Unmarshal(item.KeywordsJSON, &keywords); err != nil {
+		return PublicSubscription{}, ErrInvalidStoredRule
+	}
+	if keywords == nil {
+		keywords = []string{}
+	}
+	if item.Backfill.State == "" {
+		item.Backfill.State = "complete"
+	}
+	return PublicSubscription{ID: item.ID, Source: source, Name: item.Name, Objective: item.Objective, Enabled: item.Enabled, Version: item.Version, MaxItemsPerDigest: item.MaxItemsPerDigest, DigestAIEnabled: item.DigestAIEnabled, DigestAILanguage: item.DigestAILanguage, Backfill: item.Backfill, Rules: RulesInput{Category: item.Category, Keywords: keywords}, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}, nil
 }

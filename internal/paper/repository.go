@@ -9,6 +9,7 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"signalwatch/internal/platform/fence"
 )
 
 type Repository interface {
@@ -43,6 +44,9 @@ func (repository *repository) Upsert(
 
 	result := UpsertResult{Papers: make([]Paper, 0, len(prepared))}
 	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := fence.Guard(ctx, tx); err != nil {
+			return err
+		}
 		for _, record := range prepared {
 			stored, inserted, err := upsertRecord(tx, sourceID, record, observedAt.UTC())
 			if err != nil {
@@ -87,19 +91,17 @@ func upsertRecord(
 
 	candidate := Paper{
 		SourceID: sourceID, ArXivID: record.ArXivID,
-		Title: record.Title, Abstract: record.Abstract,
+		Title: record.Title, Abstract: record.Abstract, Comments: record.Comments,
 		AuthorsJSON: authorsJSON, CategoriesJSON: categoriesJSON,
 		PublishedAt: record.PublishedAt, ArXivUpdatedAt: record.ArXivUpdatedAt,
 		ArXivURL: record.ArXivURL, PDFURL: record.PDFURL,
 		FirstSeenAt: observedAt, CreatedAt: observedAt, UpdatedAt: observedAt,
 	}
-	if err := tx.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "source_id"}, {Name: "arxiv_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"title", "abstract", "authors_json", "categories_json",
-			"published_at", "arxiv_updated_at", "arxiv_url", "pdf_url", "updated_at",
-		}),
-	}).Create(&candidate).Error; err != nil {
+	updates := clause.Set{}
+	for _, column := range []string{"title", "abstract", "comments", "authors_json", "categories_json", "published_at", "arxiv_url", "pdf_url", "updated_at", "arxiv_updated_at"} {
+		updates = append(updates, clause.Assignment{Column: clause.Column{Name: column}, Value: gorm.Expr("IF(VALUES(arxiv_updated_at)>=arxiv_updated_at,VALUES(" + column + ")," + column + ")")})
+	}
+	if err := tx.Clauses(clause.OnConflict{DoUpdates: updates}).Create(&candidate).Error; err != nil {
 		return Paper{}, false, err
 	}
 

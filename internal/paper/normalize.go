@@ -13,6 +13,7 @@ func NormalizeRecord(record Record) (Record, error) {
 	record.ArXivID = strings.TrimSpace(record.ArXivID)
 	record.Title = normalizeWhitespace(record.Title)
 	record.Abstract = normalizeWhitespace(record.Abstract)
+	record.Comments = normalizeWhitespace(record.Comments)
 	record.Authors = normalizeList(record.Authors)
 	record.Categories = normalizeList(record.Categories)
 	record.ArXivURL = strings.TrimSpace(record.ArXivURL)
@@ -20,6 +21,7 @@ func NormalizeRecord(record Record) (Record, error) {
 
 	if record.ArXivID == "" || len(record.ArXivID) > 64 || !utf8.ValidString(record.ArXivID) ||
 		record.Title == "" || record.Abstract == "" ||
+		len(record.Comments) > 65535 || !utf8.ValidString(record.Comments) ||
 		len(record.Authors) == 0 || len(record.Categories) == 0 ||
 		record.PublishedAt.IsZero() || record.ArXivUpdatedAt.IsZero() ||
 		!validArXivURL(record.ArXivURL, "/abs/") ||

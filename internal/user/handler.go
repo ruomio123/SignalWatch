@@ -35,6 +35,8 @@ type registerRequest struct {
 }
 
 type updateProfileRequest struct {
+	AIEnabled         *bool   `json:"ai_enabled"`
+	AILanguage        *string `json:"ai_language"`
 	Timezone          *string `json:"timezone"`
 	DigestTime        *string `json:"digest_time"`
 	MaxItemsPerDigest *uint16 `json:"max_items_per_digest"`
@@ -81,7 +83,7 @@ func (handler *Handler) UpdateProfile(c *gin.Context) {
 	profile, err := handler.service.UpdateProfile(
 		c.Request.Context(),
 		userID,
-		UpdateProfileInput{
+		UpdateProfileInput{AIEnabled: request.AIEnabled, AILanguage: request.AILanguage,
 			Timezone:          request.Timezone,
 			DigestTime:        request.DigestTime,
 			MaxItemsPerDigest: request.MaxItemsPerDigest,
@@ -109,12 +111,16 @@ func (handler *Handler) writeProfileError(c *gin.Context, message string, err er
 		writeProfileUnauthorized(c)
 	case errors.Is(err, ErrEmptyProfileUpdate):
 		httpx.WriteError(c, http.StatusBadRequest, httpx.CodeValidationError, "profile update is empty")
+	case errors.Is(err, ErrInvalidAILanguage):
+		httpx.WriteError(c, http.StatusBadRequest, httpx.CodeValidationError, "ai_language is invalid")
 	case errors.Is(err, ErrInvalidTimezone):
 		httpx.WriteError(c, http.StatusBadRequest, httpx.CodeValidationError, "timezone is invalid")
 	case errors.Is(err, ErrInvalidDigestTime):
 		httpx.WriteError(c, http.StatusBadRequest, httpx.CodeValidationError, "digest_time is invalid")
 	case errors.Is(err, ErrInvalidMaxItemsPerDigest):
 		httpx.WriteError(c, http.StatusBadRequest, httpx.CodeValidationError, "max_items_per_digest is invalid")
+	case errors.Is(err, ErrAIConfigurationRequired):
+		httpx.WriteError(c, http.StatusConflict, "AI_CONFIGURATION_REQUIRED", "configure an AI provider first")
 	default:
 		handler.logger.Error(
 			message,

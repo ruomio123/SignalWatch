@@ -18,7 +18,7 @@ import (
 	"signalwatch/internal/platform/httpx"
 )
 
-const registerPath = "/api/v1/auth/register"
+const registerPath = "/api/v2/auth/register"
 
 func TestHandlerRegisterReturnsCreatedPublicUser(t *testing.T) {
 	createdAt := time.Date(2026, time.September, 3, 8, 0, 0, 0, time.UTC)

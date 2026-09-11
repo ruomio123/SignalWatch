@@ -18,3 +18,9 @@ coverage.out
 .idea/
 .DS_Store
 document/
+docs/*
+!docs/architecture-v2.md
+!docs/refactor-progress.md
+web/node_modules/
+web/test-results/
+web/playwright-report/

@@ -90,6 +90,14 @@ func (service *Service) Status(ctx context.Context) (StatusResponse, error) {
 		result.Sources.Stale > 0 || result.Sources.NeverSynced > 0) {
 		result.Status = "degraded"
 	}
+	result.AI = map[string]any{"instances": []TaskSnapshot{}}
+	instances := []TaskSnapshot{}
+	for _, task := range result.Tasks {
+		if task.Task == "ai" {
+			instances = append(instances, task)
+		}
+	}
+	result.AI["instances"] = instances
 	return result, nil
 }
 

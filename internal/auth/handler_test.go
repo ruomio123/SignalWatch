@@ -16,7 +16,7 @@ import (
 	"signalwatch/internal/platform/httpx"
 )
 
-const loginPath = "/api/v1/auth/login"
+const loginPath = "/api/v2/auth/login"
 
 func TestHandlerLoginReturnsBearerToken(t *testing.T) {
 	var captured LoginInput
@@ -170,7 +170,7 @@ func newAuthHandlerTestRouter(service LoginService, logger *slog.Logger) *gin.En
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Use(httpx.RequestIDMiddleware())
-	router.POST(loginPath, NewHandler(service, logger).Login)
+	router.POST(loginPath, NewHandler(service, browserSessionsStub{}, false, logger).Login)
 	return router
 }
 

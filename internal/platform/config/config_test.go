@@ -36,8 +36,7 @@ func TestLoadReadsJWTConfiguration(t *testing.T) {
 	if cfg.OpsStatusRetention != 168*time.Hour {
 		t.Fatalf("unexpected operations status retention: %s", cfg.OpsStatusRetention)
 	}
-	if cfg.DigestInterval != time.Minute || cfg.DigestLockTTL != 10*time.Minute ||
-		cfg.DigestCompletionTTL != 72*time.Hour || cfg.MailWorkers != 2 ||
+	if cfg.DigestInterval != time.Minute || cfg.MailWorkers != 2 ||
 		cfg.MailQueueCapacity != 128 || cfg.SMTPAddr != "127.0.0.1:1025" ||
 		cfg.SMTPFrom != "SignalWatch <digest@signalwatch.local>" || cfg.SMTPStartTLS ||
 		cfg.SMTPTimeout != 10*time.Second {
@@ -186,7 +185,6 @@ func TestLoadRejectsInvalidDigestConfiguration(t *testing.T) {
 		value string
 	}{
 		{name: "scheduler interval", key: envDigestInterval, value: "0s"},
-		{name: "lock TTL", key: envDigestLockTTL, value: "invalid"},
 		{name: "mail workers", key: envMailWorkers, value: "0"},
 		{name: "queue capacity", key: envMailQueueCapacity, value: "many"},
 		{name: "SMTP address", key: envSMTPAddr, value: "missing-port"},
@@ -237,6 +235,7 @@ func validConfig() Config {
 		RedisDB:                0,
 		JWTSecret:              "a-strong-random-production-secret-123",
 		JWTTTL:                 15 * time.Minute,
+		AuthSessionTTL:         168 * time.Hour,
 		JWTIssuer:              "signalwatch-api",
 		CollectorLockTTL:       55 * time.Minute,
 		ArXivBootstrapLookback: 7 * 24 * time.Hour,
@@ -255,12 +254,114 @@ func validConfig() Config {
 		MatcherQueueCapacity:   256,
 		OpsStatusRetention:     168 * time.Hour,
 		DigestInterval:         time.Minute,
-		DigestLockTTL:          10 * time.Minute,
-		DigestCompletionTTL:    72 * time.Hour,
 		MailWorkers:            2,
 		MailQueueCapacity:      128,
 		SMTPAddr:               "127.0.0.1:1025",
 		SMTPFrom:               "SignalWatch <digest@signalwatch.local>",
 		SMTPTimeout:            10 * time.Second,
+	}
+}
+
+func TestOptionalAIConfiguration(t *testing.T) {
+	setValidEnvironment(t)
+	for _, name := range []string{"AI_CREDENTIAL_KEYS", "AI_CREDENTIAL_ACTIVE_KEY_VERSION", "AI_ENABLED_PROVIDERS", "AI_WORKERS", "AI_QUEUE_CAPACITY"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("AI_ENABLED", "false")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AIEnabled || cfg.AIWorkers != 2 || cfg.AIQueueCapacity != 128 {
+		t.Fatal("AI defaults changed")
+	}
+	t.Setenv("AI_ENABLED", "true")
+	if _, err = Load(); err == nil {
+		t.Fatal("enabled AI accepted missing configuration")
+	}
+	t.Setenv("AI_CREDENTIAL_KEYS", "v1:MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=")
+	t.Setenv("AI_CREDENTIAL_ACTIVE_KEY_VERSION", "v1")
+	t.Setenv("AI_ENABLED_PROVIDERS", "glm,qwen,deepseek,kimi,openai")
+	if _, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AI_ENABLED_PROVIDERS", "unknown")
+	if _, err = Load(); err == nil {
+		t.Fatal("accepted unknown provider")
+	}
+}
+
+func TestValidatePublicOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		valid bool
+	}{
+		{"", true}, {"https://watch.example.test", true}, {"http://127.0.0.1:8080", true},
+		{"javascript:alert(1)", false}, {"https://user:secret@example.test", false},
+		{"https://example.test/path", false}, {"https://example.test?key=secret", false},
+		{"https://example.test#fragment", false},
+	} {
+		cfg := validConfig()
+		cfg.PublicBaseURL = tc.value
+		err := validate(cfg)
+		if (err == nil) != tc.valid {
+			t.Errorf("public URL validity mismatch: valid=%v err=%v", tc.valid, err)
+		}
+	}
+}
+
+func TestBrowserSessionLifetimeConfiguration(t *testing.T) {
+	setValidEnvironment(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthSessionTTL != 168*time.Hour {
+		t.Fatalf("default session lifetime %s", cfg.AuthSessionTTL)
+	}
+	for _, value := range []string{"bad", "0s", "721h", "30m"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("AUTH_SESSION_TTL", value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("accepted %s", value)
+			}
+		})
+	}
+}
+
+func TestAICallPolicyParsing(t *testing.T) {
+	setValidEnvironment(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AIConfigTestMinInterval != 10*time.Second || cfg.AIGenerationMinInterval != 2*time.Second || cfg.AIPaperDailyLimit != 0 || cfg.AIConfigTestDailyLimit != 0 || cfg.AIDigestDailyLimit != 0 {
+		t.Fatal("unexpected AI policy defaults")
+	}
+	for _, name := range []string{"AI_CONFIG_TEST_DAILY_LIMIT", "AI_PAPER_DAILY_LIMIT", "AI_DIGEST_DAILY_LIMIT"} {
+		for _, bad := range []string{"", "-1", "1.5", "1000001"} {
+			t.Run(name+bad, func(t *testing.T) {
+				t.Setenv(name, bad)
+				if _, e := Load(); e == nil {
+					t.Fatal("invalid limit accepted")
+				}
+			})
+		}
+	}
+	for _, name := range []string{"AI_CONFIG_TEST_MIN_INTERVAL", "AI_GENERATION_MIN_INTERVAL"} {
+		for _, bad := range []string{"", "0s", "-1s", "2h", "bad"} {
+			t.Run(name+bad, func(t *testing.T) {
+				t.Setenv(name, bad)
+				if _, e := Load(); e == nil {
+					t.Fatal("invalid interval accepted")
+				}
+			})
+		}
+	}
+	t.Setenv("AI_CONFIG_TEST_DAILY_LIMIT", "12")
+	t.Setenv("AI_GENERATION_MIN_INTERVAL", "4s")
+	cfg, err = Load()
+	if err != nil || cfg.AIConfigTestDailyLimit != 12 || cfg.AIGenerationMinInterval != 4*time.Second {
+		t.Fatalf("policy override failed: %v", err)
 	}
 }

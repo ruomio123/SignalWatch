@@ -7,6 +7,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"signalwatch/internal/platform/fence"
 	"signalwatch/internal/source"
 )
 
@@ -67,14 +68,10 @@ func (repository *repository) UpdateLastSuccessfulSyncAt(
 	sourceID uint64,
 	syncedAt time.Time,
 ) error {
-	result := repository.db.WithContext(ctx).Model(&source.Source{}).
-		Where("id = ?", sourceID).
-		Update("last_successful_sync_at", syncedAt.UTC())
-	if result.Error != nil {
-		return fmt.Errorf("update source sync checkpoint: %w", result.Error)
-	}
-	if result.RowsAffected != 1 {
-		return fmt.Errorf("update source sync checkpoint: source %d not found", sourceID)
-	}
-	return nil
+	return repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := fence.Guard(ctx, tx); err != nil {
+			return err
+		}
+		return tx.Model(&source.Source{}).Where("id=?", sourceID).Update("last_successful_sync_at", gorm.Expr("GREATEST(COALESCE(last_successful_sync_at,?),?)", syncedAt.UTC(), syncedAt.UTC())).Error
+	})
 }

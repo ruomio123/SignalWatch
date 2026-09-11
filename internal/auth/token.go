@@ -61,12 +61,23 @@ func NewTokenService(
 }
 
 func (service *TokenService) Issue(userID uint64) (IssuedToken, error) {
+	return service.IssueUntil(userID, service.clock().Add(service.ttl))
+}
+
+// IssueUntil prevents the final access token from outliving its login session.
+func (service *TokenService) IssueUntil(userID uint64, sessionExpires time.Time) (IssuedToken, error) {
 	if userID == 0 {
 		return IssuedToken{}, errors.New("user ID must be positive")
 	}
 
 	now := service.clock().UTC()
 	expiresAt := now.Add(service.ttl)
+	if sessionExpires.Before(expiresAt) {
+		expiresAt = sessionExpires
+	}
+	if !expiresAt.Truncate(time.Second).After(now) {
+		return IssuedToken{}, ErrInvalidSession
+	}
 	claims := Claims{RegisteredClaims: jwt.RegisteredClaims{
 		Subject:   strconv.FormatUint(userID, 10),
 		Issuer:    service.issuer,
@@ -82,7 +93,7 @@ func (service *TokenService) Issue(userID uint64) (IssuedToken, error) {
 
 	return IssuedToken{
 		AccessToken: signed,
-		ExpiresIn:   int64(service.ttl / time.Second),
+		ExpiresIn:   int64(expiresAt.Sub(now) / time.Second),
 	}, nil
 }
 

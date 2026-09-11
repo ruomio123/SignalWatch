@@ -9,6 +9,9 @@ type Failure struct {
 }
 
 type QueueSnapshot struct {
+	Skipped    uint64 `json:"skipped"`
+	Locked     uint64 `json:"lease_conflicts"`
+	Retried    uint64 `json:"retried"`
 	Depth      int    `json:"depth"`
 	Capacity   int    `json:"capacity"`
 	Workers    int    `json:"workers"`
@@ -65,6 +68,7 @@ type DependencyStatus struct {
 }
 
 type StatusResponse struct {
+	AI           map[string]any              `json:"ai,omitempty"`
 	GeneratedAt  time.Time                   `json:"generated_at"`
 	Status       string                      `json:"status"`
 	Dependencies map[string]DependencyStatus `json:"dependencies"`

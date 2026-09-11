@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"signalwatch/internal/backfill"
+	"signalwatch/internal/bootstrap"
 	"signalwatch/internal/collector"
 	"signalwatch/internal/digest"
 	"signalwatch/internal/matcher"
@@ -104,7 +106,7 @@ func main() {
 		logger.Error("initialize arxiv limiter failed", "module", "collector", "error", err)
 		os.Exit(1)
 	}
-	lockManager, err := collector.NewRedisLockManager(redisClient, "signalwatch:collector")
+	lockManager, err := collector.NewMySQLLockManager(database, "signalwatch:collector")
 	if err != nil {
 		logger.Error("initialize collector lock failed", "module", "collector", "error", err)
 		os.Exit(1)
@@ -170,13 +172,7 @@ func main() {
 		os.Exit(1)
 	}
 	digestRepository := digest.NewRepository(database)
-	digestCoordinator, err := digest.NewRedisCoordinator(
-		redisClient, "signalwatch:digest", cfg.DigestLockTTL, cfg.DigestCompletionTTL,
-	)
-	if err != nil {
-		logger.Error("initialize digest coordinator failed", "module", "digest", "error", err)
-		os.Exit(1)
-	}
+	digestCoordinator := digest.NewMySQLDeliveryStore(database)
 	smtpSender, err := digest.NewSMTPSender(digest.SMTPConfig{
 		Addr: cfg.SMTPAddr, From: cfg.SMTPFrom, Username: cfg.SMTPUsername,
 		Password: cfg.SMTPPassword, StartTLS: cfg.SMTPStartTLS, Timeout: cfg.SMTPTimeout,
@@ -185,8 +181,14 @@ func main() {
 		logger.Error("initialize SMTP sender failed", "module", "digest", "error", err)
 		os.Exit(1)
 	}
+	aiService, closeAI, err := bootstrap.OpenAI(cfg, logger, digestCoordinator)
+	if err != nil {
+		logger.Error("initialize AI failed", "module", "ai")
+		os.Exit(1)
+	}
+	defer closeAI()
 	digestProcessor, err := digest.NewProcessor(
-		digestRepository, digestCoordinator, smtpSender, func() time.Time { return time.Now().UTC() },
+		digestRepository, digestCoordinator, smtpSender, func() time.Time { return time.Now().UTC() }, digest.Options{PublicBaseURL: cfg.PublicBaseURL, Enricher: aiService},
 	)
 	if err != nil {
 		logger.Error("initialize digest processor failed", "module", "digest", "error", err)
@@ -225,6 +227,10 @@ func main() {
 		"mail_queue_capacity", cfg.MailQueueCapacity,
 		"env", cfg.AppEnv,
 	)
+	backfillDone := make(chan struct{})
+	go func() { defer close(backfillDone); backfill.New(backfill.NewMySQLStore(database), logger).Run(ctx) }()
+	aiDone := make(chan struct{})
+	go func() { defer close(aiDone); aiService.Run(ctx) }()
 	matcherDone := make(chan struct{})
 	go func() {
 		defer close(matcherDone)
@@ -246,6 +252,25 @@ func main() {
 		matcherQueue, mailQueue := matcherQueueSnapshot(matcherStats), mailQueueSnapshot(mailStats)
 		opsReporter.Heartbeat(reportContext, matcherQueue, mailQueue)
 		updatedAt := time.Now().UTC()
+		if cfg.AIEnabled {
+			report, cancel := context.WithTimeout(reportContext, 200*time.Millisecond)
+			values, aiErr := aiService.Stats(report)
+			cancel()
+			state := "running"
+			if aiErr != nil {
+				state = "failed"
+			}
+			metrics := map[string]int{}
+			for key, value := range values {
+				switch number := value.(type) {
+				case int:
+					metrics[key] = number
+				case int64:
+					metrics[key] = int(number)
+				}
+			}
+			opsReporter.RecordTask(reportContext, operations.TaskSnapshot{Task: "ai", State: state, UpdatedAt: updatedAt, Metrics: metrics})
+		}
 		opsReporter.RecordTask(reportContext, queueTaskSnapshot("matcher", updatedAt, matcherQueue, matcherStats.LastSuccessAt, matcherStats.LastFailureAt))
 		opsReporter.RecordTask(reportContext, queueTaskSnapshot("mail", updatedAt, mailQueue, mailStats.LastSuccessAt, mailStats.LastFailureAt))
 	}
@@ -268,6 +293,8 @@ func main() {
 		return result, scheduleErr
 	}
 	run(ctx, logger, cfg.WorkerHeartbeat, cfg.DigestInterval, reportHeartbeat, scheduleDigests)
+	<-backfillDone
+	<-aiDone
 	<-collectorDone
 	<-matcherDone
 	<-mailDone
@@ -338,7 +365,7 @@ func matcherQueueSnapshot(stats matcher.PoolStats) operations.QueueSnapshot {
 
 func mailQueueSnapshot(stats digest.PoolStats) operations.QueueSnapshot {
 	return operations.QueueSnapshot{
-		Depth: stats.Depth, Capacity: stats.Capacity, Workers: stats.Workers,
+		Skipped: stats.Skipped, Locked: stats.Locked, Retried: stats.Retried, Depth: stats.Depth, Capacity: stats.Capacity, Workers: stats.Workers,
 		Processing: stats.Processing, Succeeded: stats.Succeeded, Failed: stats.Failed,
 	}
 }
@@ -388,7 +415,7 @@ func runDigestCycle(
 	logger.Info(
 		"digest schedule cycle finished", "module", "digest", "event", "digest_schedule",
 		"task", "digest", "state", "succeeded", "duration_ms", time.Since(startedAt).Milliseconds(),
-		"users", result.Users,
+		"users", result.Users, "subscriptions", result.Subscriptions,
 		"due", result.Due, "submitted", result.Submitted, "invalid", result.Invalid,
 	)
 }

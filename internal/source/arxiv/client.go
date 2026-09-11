@@ -270,7 +270,7 @@ func normalizeEntry(entry atomEntry) (paper.Record, error) {
 	}
 	record := paper.Record{
 		ArXivID: externalID,
-		Title:   entry.Title, Abstract: entry.Summary, Authors: authors,
+		Title:   entry.Title, Abstract: entry.Summary, Comments: entry.Comment, Authors: authors,
 		Categories: categories, PublishedAt: publishedAt, ArXivUpdatedAt: updatedAt,
 		ArXivURL: "https://arxiv.org/abs/" + externalID,
 		PDFURL:   "https://arxiv.org/pdf/" + externalID,
@@ -340,6 +340,7 @@ type atomEntry struct {
 	Published       string         `xml:"published"`
 	Title           string         `xml:"title"`
 	Summary         string         `xml:"summary"`
+	Comment         string         `xml:"comment"`
 	Authors         []atomAuthor   `xml:"author"`
 	Categories      []atomCategory `xml:"category"`
 	PrimaryCategory atomCategory   `xml:"primary_category"`

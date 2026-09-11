@@ -34,8 +34,8 @@ func RegisterRoutes(router *gin.Engine) {
 
 	assets := http.FileServer(http.FS(appFiles))
 	router.GET("/assets/*filepath", func(c *gin.Context) {
-		// Assets do not have content-hashed file names. Revalidate them so a
-		// restarted embedded binary cannot leave browsers on stale UI code.
+		// Vite emits hashed assets. Revalidation also avoids caching HTML
+		// fallback responses across coordinated API/frontend upgrades.
 		c.Header("Cache-Control", "no-cache")
 		assets.ServeHTTP(c.Writer, c.Request)
 	})

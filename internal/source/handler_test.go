@@ -26,7 +26,7 @@ func TestHandlerListDoesNotLeakSensitiveSourceFields(t *testing.T) {
 	}}
 	router := newSourceTestRouter(service)
 	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/sources", nil))
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v2/sources", nil))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", recorder.Code)
@@ -57,10 +57,10 @@ func TestHandlerGetValidatesIDAndMapsNotFound(t *testing.T) {
 		status int
 		code   string
 	}{
-		{"/api/v1/sources/nope", http.StatusBadRequest, httpx.CodeValidationError},
-		{"/api/v1/sources/0", http.StatusBadRequest, httpx.CodeValidationError},
-		{"/api/v1/sources/9", http.StatusNotFound, CodeSourceNotFound},
-		{"/api/v1/sources/2", http.StatusOK, ""},
+		{"/api/v2/sources/nope", http.StatusBadRequest, httpx.CodeValidationError},
+		{"/api/v2/sources/0", http.StatusBadRequest, httpx.CodeValidationError},
+		{"/api/v2/sources/9", http.StatusNotFound, CodeSourceNotFound},
+		{"/api/v2/sources/2", http.StatusOK, ""},
 	} {
 		recorder := httptest.NewRecorder()
 		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
@@ -84,9 +84,9 @@ func TestHandlerHidesAndLogsInternalErrors(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Use(httpx.RequestIDMiddleware())
-	router.GET("/api/v1/sources", handler.List)
+	router.GET("/api/v2/sources", handler.List)
 	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/sources", nil))
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v2/sources", nil))
 	if recorder.Code != http.StatusInternalServerError || strings.Contains(recorder.Body.String(), "database password") {
 		t.Fatalf("unexpected response %s", recorder.Body.String())
 	}
@@ -117,8 +117,8 @@ func newSourceTestRouter(service CatalogService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Use(httpx.RequestIDMiddleware())
-	router.GET("/api/v1/sources", handler.List)
-	router.GET("/api/v1/sources/:id", handler.Get)
+	router.GET("/api/v2/sources", handler.List)
+	router.GET("/api/v2/sources/:id", handler.Get)
 	return router
 }
 

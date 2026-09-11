@@ -8,6 +8,8 @@ import (
 	"os"
 	"time"
 
+	"signalwatch/internal/backfill"
+	"signalwatch/internal/digest"
 	"signalwatch/internal/operator"
 	"signalwatch/internal/platform/config"
 	"signalwatch/internal/platform/db"
@@ -24,8 +26,8 @@ func main() {
 }
 
 func run(ctx context.Context, arguments []string) error {
-	if len(arguments) < 2 || arguments[0] != "role" {
-		return errors.New("usage: signalwatch-ops role <grant|revoke|list> [--email address]")
+	if len(arguments) < 2 || (arguments[0] != "role" && arguments[0] != "retry") {
+		return errors.New("usage: signalwatch-ops role <grant|revoke|list> [--email address] | retry <digest|backfill> --id ID")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -44,6 +46,31 @@ func run(ctx context.Context, arguments []string) error {
 		return err
 	}
 	defer sqlDB.Close()
+	if arguments[0] == "retry" {
+		flags := flag.NewFlagSet("retry", flag.ContinueOnError)
+		id := flags.Uint64("id", 0, "delivery or subscription ID")
+		if err := flags.Parse(arguments[2:]); err != nil {
+			return err
+		}
+		if *id == 0 {
+			return errors.New("--id is required")
+		}
+		retryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		switch arguments[1] {
+		case "digest":
+			err = digest.NewMySQLDeliveryStore(database).Retry(retryCtx, *id)
+		case "backfill":
+			err = backfill.NewMySQLStore(database).Retry(retryCtx, *id)
+		default:
+			return errors.New("unknown retry task")
+		}
+		if err != nil {
+			return err
+		}
+		logger.Info("failed task scheduled for retry", "task", arguments[1], "id", *id)
+		return nil
+	}
 	service, err := operator.NewService(database, time.Now)
 	if err != nil {
 		return err

@@ -71,10 +71,8 @@ type sourceResponse struct {
 }
 
 type rulesResponse struct {
-	Categories      []string `json:"categories"`
-	Authors         []string `json:"authors"`
-	IncludeKeywords []string `json:"include_keywords"`
-	ExcludeKeywords []string `json:"exclude_keywords"`
+	Category string   `json:"category"`
+	Keywords []string `json:"keywords"`
 }
 
 type subscriptionResponse struct {
@@ -126,7 +124,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	registeredA := decodeResponse[userResponse](t, api.do(
 		t,
 		http.MethodPost,
-		"/api/v1/auth/register",
+		"/api/v2/auth/register",
 		"",
 		"",
 		map[string]any{"email": "  " + strings.ToUpper(emailA) + "  ", "password": testPassword},
@@ -138,7 +136,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	registeredB := decodeResponse[userResponse](t, api.do(
 		t,
 		http.MethodPost,
-		"/api/v1/auth/register",
+		"/api/v2/auth/register",
 		"",
 		"",
 		map[string]any{"email": emailB, "password": testPassword},
@@ -151,7 +149,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	duplicate := api.do(
 		t,
 		http.MethodPost,
-		"/api/v1/auth/register",
+		"/api/v2/auth/register",
 		"",
 		"",
 		map[string]any{"email": strings.ToUpper(emailA), "password": testPassword},
@@ -162,7 +160,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	missingLogin := api.do(
 		t,
 		http.MethodPost,
-		"/api/v1/auth/login",
+		"/api/v2/auth/login",
 		"",
 		"",
 		map[string]any{"email": "missing-" + nonce + "@example.test", "password": testPassword},
@@ -171,7 +169,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	wrongPassword := api.do(
 		t,
 		http.MethodPost,
-		"/api/v1/auth/login",
+		"/api/v2/auth/login",
 		"",
 		"",
 		map[string]any{"email": emailA, "password": "wrong-password"},
@@ -184,11 +182,11 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	}
 
 	loginA := decodeResponse[loginResponse](t, api.do(
-		t, http.MethodPost, "/api/v1/auth/login", "", "",
+		t, http.MethodPost, "/api/v2/auth/login", "", "",
 		map[string]any{"email": emailA, "password": testPassword}, http.StatusOK,
 	))
 	loginB := decodeResponse[loginResponse](t, api.do(
-		t, http.MethodPost, "/api/v1/auth/login", "", "",
+		t, http.MethodPost, "/api/v2/auth/login", "", "",
 		map[string]any{"email": emailB, "password": testPassword}, http.StatusOK,
 	))
 	if loginA.AccessToken == "" || loginB.AccessToken == "" ||
@@ -196,30 +194,30 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 		t.Fatal("login: expected non-empty Bearer access tokens")
 	}
 	unauthorized := api.do(
-		t, http.MethodGet, "/api/v1/me", loginA.AccessToken+"tampered", "", nil, http.StatusUnauthorized,
+		t, http.MethodGet, "/api/v2/me", loginA.AccessToken+"tampered", "", nil, http.StatusUnauthorized,
 	)
 	assertAPIError(t, unauthorized, httpx.CodeUnauthorized, "unauthorized")
 
 	profileA := decodeResponse[userResponse](t, api.do(
 		t,
 		http.MethodPatch,
-		"/api/v1/me",
+		"/api/v2/me",
 		loginA.AccessToken,
 		"",
 		map[string]any{
 			"timezone":             "Asia/Shanghai",
 			"digest_time":          "09:30",
-			"max_items_per_digest": 25,
+			"max_items_per_digest": 15,
 		},
 		http.StatusOK,
 	))
 	if profileA.Timezone != "Asia/Shanghai" || profileA.DigestTime != "09:30" ||
-		profileA.MaxItemsPerDigest != 25 {
+		profileA.MaxItemsPerDigest != 15 {
 		t.Fatalf("profile update: unexpected public values %+v", profileA)
 	}
 
 	sourcesResult := api.do(
-		t, http.MethodGet, "/api/v1/sources", loginA.AccessToken, "", nil, http.StatusOK,
+		t, http.MethodGet, "/api/v2/sources", loginA.AccessToken, "", nil, http.StatusOK,
 	)
 	if strings.Contains(string(sourcesResult.body), "endpoint") ||
 		strings.Contains(string(sourcesResult.body), "config_json") ||
@@ -253,7 +251,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	disabledCreate := api.do(
 		t,
 		http.MethodPost,
-		"/api/v1/subscriptions",
+		"/api/v2/subscriptions",
 		loginA.AccessToken,
 		"",
 		createSubscriptionBody(disabledSource.ID, "disabled source", true, []string{"cs.AI"}),
@@ -266,7 +264,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	duplicateRules := api.do(
 		t,
 		http.MethodPost,
-		"/api/v1/subscriptions",
+		"/api/v2/subscriptions",
 		loginA.AccessToken,
 		"",
 		duplicateRulesBody,
@@ -277,7 +275,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	createdA := decodeResponse[subscriptionResponse](t, api.do(
 		t,
 		http.MethodPost,
-		"/api/v1/subscriptions",
+		"/api/v2/subscriptions",
 		loginA.AccessToken,
 		"",
 		map[string]any{
@@ -286,20 +284,20 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 			"objective": "Track useful agent systems",
 			"enabled":   true,
 			"rules": map[string]any{
-				"categories":       []string{"cs.ai"},
-				"include_keywords": []string{"Tool Use"},
+				"category": "cs.ai",
+				"keywords": []string{"Tool Use"},
 			},
 		},
 		http.StatusCreated,
 	))
 	if createdA.ID == 0 || createdA.Version != 1 || createdA.Source.ID != arXiv.ID ||
-		createdA.Objective == nil || createdA.Rules.Categories[0] != "cs.AI" ||
-		createdA.Rules.IncludeKeywords[0] != "Tool Use" || len(createdA.Rules.Authors) != 0 {
+		createdA.Objective == nil || createdA.Rules.Category != "cs.AI" ||
+		createdA.Rules.Keywords[0] != "Tool Use" {
 		t.Fatalf("create subscription A: normalization or persistence response is incorrect")
 	}
 
 	getAResponse := api.do(
-		t, http.MethodGet, fmt.Sprintf("/api/v1/subscriptions/%d", createdA.ID),
+		t, http.MethodGet, fmt.Sprintf("/api/v2/subscriptions/%d", createdA.ID),
 		loginA.AccessToken, "", nil, http.StatusOK,
 	)
 	getA := decodeResponse[subscriptionResponse](t, getAResponse)
@@ -310,13 +308,13 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	createdB := decodeResponse[subscriptionResponse](t, api.do(
 		t,
 		http.MethodPost,
-		"/api/v1/subscriptions",
+		"/api/v2/subscriptions",
 		loginB.AccessToken,
 		"",
 		createSubscriptionBody(arXiv.ID, "B subscription 1", true, []string{"cs.AI"}),
 		http.StatusCreated,
 	))
-	foreignPath := fmt.Sprintf("/api/v1/subscriptions/%d", createdB.ID)
+	foreignPath := fmt.Sprintf("/api/v2/subscriptions/%d", createdB.ID)
 	assertAPIError(
 		t,
 		api.do(t, http.MethodGet, foreignPath, loginA.AccessToken, "", nil, http.StatusNotFound),
@@ -340,13 +338,13 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	)
 
 	replacementRules := map[string]any{
-		"categories":       []string{"cs.CL"},
-		"include_keywords": []string{"Agents"},
+		"category": "cs.CL",
+		"keywords": []string{"Agents"},
 	}
 	updatedAResponse := api.do(
 		t,
 		http.MethodPatch,
-		fmt.Sprintf("/api/v1/subscriptions/%d", createdA.ID),
+		fmt.Sprintf("/api/v2/subscriptions/%d", createdA.ID),
 		loginA.AccessToken,
 		`"1"`,
 		map[string]any{"name": "Updated agent papers", "rules": replacementRules},
@@ -354,15 +352,15 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	)
 	updatedA := decodeResponse[subscriptionResponse](t, updatedAResponse)
 	if updatedAResponse.etag != `"2"` || updatedA.Version != 2 ||
-		updatedA.Name != "Updated agent papers" || len(updatedA.Rules.Categories) != 1 ||
-		updatedA.Rules.Categories[0] != "cs.CL" || len(updatedA.Rules.Authors) != 0 {
+		updatedA.Name != "Updated agent papers" || updatedA.Rules.Category == "" ||
+		updatedA.Rules.Category != "cs.CL" {
 		t.Fatal("update subscription A: expected complete replacement and version 2")
 	}
 
 	stale := api.do(
 		t,
 		http.MethodPatch,
-		fmt.Sprintf("/api/v1/subscriptions/%d", createdA.ID),
+		fmt.Sprintf("/api/v2/subscriptions/%d", createdA.ID),
 		loginA.AccessToken,
 		`"1"`,
 		map[string]any{"name": "stale overwrite"},
@@ -373,7 +371,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	noOpResponse := api.do(
 		t,
 		http.MethodPatch,
-		fmt.Sprintf("/api/v1/subscriptions/%d", createdA.ID),
+		fmt.Sprintf("/api/v2/subscriptions/%d", createdA.ID),
 		loginA.AccessToken,
 		`"2"`,
 		map[string]any{"name": "Updated agent papers", "rules": replacementRules},
@@ -395,7 +393,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	pausedAResponse := api.do(
 		t,
 		http.MethodPatch,
-		fmt.Sprintf("/api/v1/subscriptions/%d", createdA.ID),
+		fmt.Sprintf("/api/v2/subscriptions/%d", createdA.ID),
 		loginA.AccessToken,
 		`"2"`,
 		map[string]any{"enabled": false},
@@ -403,13 +401,13 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	)
 	pausedA := decodeResponse[subscriptionResponse](t, pausedAResponse)
 	if pausedA.Enabled || pausedA.Version != 3 || pausedAResponse.etag != `"3"` ||
-		len(pausedA.Rules.Categories) != 1 {
+		pausedA.Rules.Category == "" {
 		t.Fatal("pause subscription A: expected version 3 with preserved rules")
 	}
 	pausedPage := decodeResponse[subscriptionPageResponse](t, api.do(
 		t,
 		http.MethodGet,
-		"/api/v1/subscriptions?enabled=false",
+		"/api/v2/subscriptions?enabled=false",
 		loginA.AccessToken,
 		"",
 		nil,
@@ -423,7 +421,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 		api.do(
 			t,
 			http.MethodPost,
-			"/api/v1/subscriptions",
+			"/api/v2/subscriptions",
 			loginB.AccessToken,
 			"",
 			createSubscriptionBody(
@@ -435,7 +433,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	limitReached := api.do(
 		t,
 		http.MethodPost,
-		"/api/v1/subscriptions",
+		"/api/v2/subscriptions",
 		loginB.AccessToken,
 		"",
 		createSubscriptionBody(arXiv.ID, "B subscription 21", true, []string{"cs.AI"}),
@@ -448,7 +446,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	api.do(
 		t,
 		http.MethodDelete,
-		fmt.Sprintf("/api/v1/subscriptions/%d", createdA.ID),
+		fmt.Sprintf("/api/v2/subscriptions/%d", createdA.ID),
 		loginA.AccessToken,
 		`"3"`,
 		nil,
@@ -457,7 +455,7 @@ func TestM1AcceptanceAcrossUsersAndDatabaseBoundaries(t *testing.T) {
 	assertAPIError(
 		t,
 		api.do(
-			t, http.MethodGet, fmt.Sprintf("/api/v1/subscriptions/%d", createdA.ID),
+			t, http.MethodGet, fmt.Sprintf("/api/v2/subscriptions/%d", createdA.ID),
 			loginA.AccessToken, "", nil, http.StatusNotFound,
 		),
 		subscription.CodeSubscriptionNotFound,
@@ -550,7 +548,11 @@ func newM1TestAPI(
 	database *gorm.DB,
 	mysqlCheck server.DependencyCheck,
 	logs *bytes.Buffer,
+	checkers ...subscription.AIConfigurationChecker,
 ) testAPI {
+	return newM1TestAPIWithClock(t, database, mysqlCheck, logs, time.Now, checkers...)
+}
+func newM1TestAPIWithClock(t *testing.T, database *gorm.DB, mysqlCheck server.DependencyCheck, logs *bytes.Buffer, clock auth.Clock, checkers ...subscription.AIConfigurationChecker) testAPI {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	userRepository := user.NewRepository(database)
@@ -560,45 +562,45 @@ func newM1TestAPI(
 		[]byte("m1-integration-jwt-secret-at-least-32-bytes"),
 		"signalwatch-m1-integration",
 		15*time.Minute,
-		time.Now,
+		clock,
 	)
 	if err != nil {
 		t.Fatalf("create M1 token service: %v", err)
 	}
-	authHandler := auth.NewHandler(auth.NewService(userRepository, tokenService), logger)
+	sessions, err := auth.NewSessionService(auth.NewSessionStore(database), tokenService, 7*24*time.Hour, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authHandler := auth.NewHandler(auth.NewService(userRepository, sessions), sessions, false, logger)
 	sourceService := source.NewService(source.NewRepository(database))
 	sourceHandler := source.NewHandler(sourceService, logger)
-	subscriptionService := subscription.NewService(subscription.NewRepository(database), sourceService)
+	subscriptionService := subscription.NewService(subscription.NewRepository(database), sourceService, checkers...)
 	subscriptionHandler := subscription.NewHandler(subscriptionService, logger)
 	paperQueryHandler := paper.NewQueryHandler(
 		paper.NewQueryService(paper.NewQueryRepository(database)), logger,
 	)
 	router, err := server.NewRouter(server.Dependencies{
-		AppEnv:                    "test",
-		ServiceName:               "signalwatch-api",
-		Logger:                    logger,
-		MySQLCheck:                mysqlCheck,
-		RedisCheck:                func(context.Context) error { return nil },
-		RegisterHandler:           userHandler.Register,
-		LoginHandler:              authHandler.Login,
-		AuthMiddleware:            auth.Middleware(tokenService),
-		ActiveRoleMiddleware:      auth.RequireRoles(userRepository, logger, user.RoleUser, user.RoleOperator),
-		UserRoleMiddleware:        auth.RequireRoles(userRepository, logger, user.RoleUser),
-		OperatorRoleMiddleware:    auth.RequireRoles(userRepository, logger, user.RoleOperator),
-		OperationsAuditMiddleware: func(c *gin.Context) { c.Next() },
-		GetProfileHandler:         userHandler.GetProfile,
-		UpdateProfileHandler:      userHandler.UpdateProfile,
-		ListSourcesHandler:        sourceHandler.List,
-		GetSourceHandler:          sourceHandler.Get,
-		CreateSubscriptionHandler: subscriptionHandler.Create,
-		ListSubscriptionsHandler:  subscriptionHandler.List,
-		GetSubscriptionHandler:    subscriptionHandler.Get,
-		UpdateSubscriptionHandler: subscriptionHandler.Update,
-		DeleteSubscriptionHandler: subscriptionHandler.Delete,
-		ListPapersHandler:         paperQueryHandler.List,
-		GetPaperHandler:           paperQueryHandler.Get,
-		OperationsStatusHandler:   func(c *gin.Context) { c.Status(http.StatusOK) },
-		OperationsSourcesHandler:  func(c *gin.Context) { c.Status(http.StatusOK) },
+		AppEnv:      "test",
+		ServiceName: "signalwatch-api",
+		Logger:      logger,
+		MySQLCheck:  mysqlCheck,
+		RedisCheck:  func(context.Context) error { return nil }, Accounts: server.AccountsRoutes{RegisterHandler: userHandler.Register,
+			LoginHandler:   authHandler.Login,
+			RefreshHandler: authHandler.Refresh, LogoutHandler: authHandler.Logout,
+
+			GetProfileHandler:    userHandler.GetProfile,
+			UpdateProfileHandler: userHandler.UpdateProfile}, Authorization: server.AuthorizationRoutes{AuthMiddleware: auth.Middleware(tokenService),
+			ActiveRoleMiddleware:      auth.RequireRoles(userRepository, logger, user.RoleUser, user.RoleOperator),
+			UserRoleMiddleware:        auth.RequireRoles(userRepository, logger, user.RoleUser),
+			OperatorRoleMiddleware:    auth.RequireRoles(userRepository, logger, user.RoleOperator),
+			OperationsAuditMiddleware: func(c *gin.Context) { c.Next() }}, Sources: server.SourcesRoutes{ListSourcesHandler: sourceHandler.List,
+			GetSourceHandler: sourceHandler.Get}, Subscriptions: server.SubscriptionsRoutes{CreateSubscriptionHandler: subscriptionHandler.Create,
+			ListSubscriptionsHandler:  subscriptionHandler.List,
+			GetSubscriptionHandler:    subscriptionHandler.Get,
+			UpdateSubscriptionHandler: subscriptionHandler.Update,
+			DeleteSubscriptionHandler: subscriptionHandler.Delete}, Papers: server.PapersRoutes{ListPapersHandler: paperQueryHandler.List,
+			GetPaperHandler: paperQueryHandler.Get}, Operations: server.OperationsRoutes{OperationsStatusHandler: func(c *gin.Context) { c.Status(http.StatusOK) },
+			OperationsSourcesHandler: func(c *gin.Context) { c.Status(http.StatusOK) }},
 	})
 	if err != nil {
 		t.Fatalf("create in-process M1 API: %v", err)
@@ -650,6 +652,7 @@ func (api testAPI) do(
 			requestID,
 		)
 	}
+	validateWireContract(t, request, encodedBody, recorder)
 	return testResponse{
 		status: recorder.Code, requestID: requestID,
 		etag: recorder.Header().Get("ETag"), body: append([]byte(nil), recorder.Body.Bytes()...),
@@ -690,8 +693,8 @@ func createSubscriptionBody(
 		"name":      name,
 		"enabled":   enabled,
 		"rules": map[string]any{
-			"categories":       categories,
-			"include_keywords": []string{},
+			"category": categories[0],
+			"keywords": []string{},
 		},
 	}
 }

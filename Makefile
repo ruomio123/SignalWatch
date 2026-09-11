@@ -19,7 +19,9 @@ COMPOSE := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE)
 # 将从 .env 读取的变量导出给 Go 程序和 Docker Compose。
 #
 # 这里显式列出变量，避免把 Make 自身的所有变量都导出到子进程。
-export APP_ENV HTTP_ADDR LOG_LEVEL WORKER_HEARTBEAT
+export AI_CONFIG_TEST_MIN_INTERVAL AI_GENERATION_MIN_INTERVAL AI_CONFIG_TEST_DAILY_LIMIT AI_PAPER_DAILY_LIMIT AI_DIGEST_DAILY_LIMIT
+export AI_ENABLED AI_CREDENTIAL_KEYS AI_CREDENTIAL_ACTIVE_KEY_VERSION AI_ENABLED_PROVIDERS AI_WORKERS AI_QUEUE_CAPACITY
+export APP_ENV APP_PUBLIC_URL HTTP_ADDR LOG_LEVEL WORKER_HEARTBEAT
 export MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD
 export MYSQL_DSN MYSQL_MAX_OPEN_CONNS MYSQL_MAX_IDLE_CONNS
 export REDIS_ADDR REDIS_PASSWORD REDIS_DB
@@ -31,16 +33,16 @@ export ARXIV_REQUEST_ATTEMPTS ARXIV_REQUEST_BACKOFF ARXIV_REQUEST_INTERVAL
 export ARXIV_HTTP_TIMEOUT
 export MATCHER_WORKERS MATCHER_QUEUE_CAPACITY
 export OPS_STATUS_RETENTION
-export DIGEST_INTERVAL DIGEST_LOCK_TTL DIGEST_COMPLETION_TTL
+export DIGEST_INTERVAL
 export MAIL_WORKERS MAIL_QUEUE_CAPACITY
 export SMTP_ADDR SMTP_FROM SMTP_USERNAME SMTP_PASSWORD SMTP_STARTTLS SMTP_TIMEOUT
-export M1_TEST_MYSQL_DSN M4_TEST_SMTP_ADDR
+export M1_TEST_MYSQL_DSN M4_TEST_SMTP_ADDR TEST_REDIS_ADDR
 
 # 这些名称代表操作，不代表同名文件。
 # 即使目录中出现名为 test、api 的文件，Make 仍然会执行对应命令。
 .PHONY: deps-up deps-down api worker ops-grant ops-revoke ops-list fmt vet test test-race openapi-check \
 	test-integration m1-verify m2-verify m3-verify m4-verify v2-verify require-env require-test-dsn migrate-up \
-	migrate-down migrate-status migrate-test-up migrate-test-status
+	migrate-down migrate-status migrate-test-up migrate-test-status repair-00017-partial
 # 检查本地环境变量文件是否存在。
 # api 和 worker 缺少 .env 时，会在真正启动之前停止并显示处理方法。
 require-env:
@@ -80,6 +82,11 @@ migrate-down: require-env
 # 查看每个迁移版本是已应用还是待执行。
 migrate-status: require-env
 	@$(GOOSE) -dir "$(MIGRATIONS_DIR)" mysql "$$MYSQL_DSN" status
+
+# 仅修复旧版 00017 在替换 AI 摘要索引时失败所留下的精确局部状态。
+# SQL 会先核对 goose 版本、列、索引及新表是否为空；状态不符时拒绝修改。
+repair-00017-partial: require-env
+	@$(COMPOSE) exec -T mysql sh -c 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql -u"$$MYSQL_USER" "$$MYSQL_DATABASE"' < scripts/repair-00017-partial.sql
 
 # 集成数据库必须由调用方预先创建；这里仅应用/查看项目迁移。
 migrate-test-up: require-test-dsn
@@ -122,7 +129,7 @@ test:
 test-race:
 	go test -race ./...
 
-# kin-openapi v0.133.0 在 Go 测试中加载并语义校验 OpenAPI 3.1。
+# kin-openapi v0.133.0 在 Go 测试中加载并语义校验 OpenAPI 3.0.3。
 openapi-check:
 	go test ./internal/contract
 
@@ -152,3 +159,20 @@ m4-verify: m3-verify
 
 # V2 保留 M4 产品闭环，并以系统级同步替换订阅驱动采集。
 v2-verify: m4-verify
+
+.PHONY: frontend verify test-deps-up migration-drill capacity
+frontend:
+	npm --prefix web ci
+	npm --prefix web run build
+
+test-deps-up:
+	docker compose -p signalwatch-refactor-test -f deploy/compose.test.yaml up -d --wait
+
+verify:
+	./scripts/verify.sh
+
+migration-drill:
+	./scripts/test-migrations.sh
+
+capacity: require-test-dsn
+	SIGNALWATCH_CAPACITY=1 SIGNALWATCH_INTEGRATION_REQUIRED=1 go test -v -count=1 -run '^TestCapacityWorkload$$' ./internal/integration

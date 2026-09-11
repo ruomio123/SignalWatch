@@ -4,9 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
+	"signalwatch/internal/ai"
 	"signalwatch/internal/auth"
+	"signalwatch/internal/bootstrap"
 	"signalwatch/internal/operations"
 	"signalwatch/internal/paper"
 	"signalwatch/internal/platform/config"
@@ -87,8 +91,18 @@ func main() {
 
 	// main 是组合根：在这里使用真实数据库组装业务依赖。
 	// internal/server 只负责中间件和路由注册。
+	aiService, closeAI, err := bootstrap.OpenAI(cfg, logger, nil)
+	if err != nil {
+		logger.Error("initialize AI failed", "module", "ai")
+		os.Exit(1)
+	}
+	defer closeAI()
+	var checker user.AIConfigurationChecker
+	if aiService.Configurations() != nil {
+		checker = aiService.Configurations()
+	}
 	userRepository := user.NewRepository(database)
-	userService := user.NewService(userRepository)
+	userService := user.NewService(userRepository, checker)
 	userHandler := user.NewHandler(userService, logger)
 	tokenService, err := auth.NewTokenService(
 		[]byte(cfg.JWTSecret),
@@ -104,13 +118,18 @@ func main() {
 		)
 		os.Exit(1)
 	}
-	authService := auth.NewService(userRepository, tokenService)
-	authHandler := auth.NewHandler(authService, logger)
+	sessionService, err := auth.NewSessionService(auth.NewSessionStore(database), tokenService, cfg.AuthSessionTTL, time.Now)
+	if err != nil {
+		logger.Error("initialize sessions failed", "module", "auth", "error", err)
+		os.Exit(1)
+	}
+	authService := auth.NewService(userRepository, sessionService)
+	authHandler := auth.NewHandler(authService, sessionService, cfg.AppEnv == "production", logger)
 	sourceRepository := source.NewRepository(database)
 	sourceService := source.NewService(sourceRepository)
 	sourceHandler := source.NewHandler(sourceService, logger)
 	subscriptionRepository := subscription.NewRepository(database)
-	subscriptionService := subscription.NewService(subscriptionRepository, sourceService)
+	subscriptionService := subscription.NewService(subscriptionRepository, sourceService, checker)
 	subscriptionHandler := subscription.NewHandler(subscriptionService, logger)
 	paperQueryService := paper.NewQueryService(paper.NewQueryRepository(database))
 	paperQueryHandler := paper.NewQueryHandler(paperQueryService, logger)
@@ -128,32 +147,38 @@ func main() {
 		os.Exit(1)
 	}
 
+	aiHandler := ai.Handler{Service: aiService, Configurations: aiService.Configurations(), Calls: aiService.Calls(), Enabled: cfg.AIEnabled}
 	router, err := server.NewRouter(server.Dependencies{
-		AppEnv:                    cfg.AppEnv,
-		ServiceName:               serviceName,
-		Logger:                    logger,
-		MySQLCheck:                sqlDB.PingContext,
-		RedisCheck:                redisCheck,
-		RegisterHandler:           userHandler.Register,
-		LoginHandler:              authHandler.Login,
-		AuthMiddleware:            auth.Middleware(tokenService),
-		ActiveRoleMiddleware:      auth.RequireRoles(userRepository, logger, user.RoleUser, user.RoleOperator),
-		UserRoleMiddleware:        auth.RequireRoles(userRepository, logger, user.RoleUser),
-		OperatorRoleMiddleware:    auth.RequireRoles(userRepository, logger, user.RoleOperator),
-		OperationsAuditMiddleware: operations.AuditMiddleware(logger),
-		GetProfileHandler:         userHandler.GetProfile,
-		UpdateProfileHandler:      userHandler.UpdateProfile,
-		ListSourcesHandler:        sourceHandler.List,
-		GetSourceHandler:          sourceHandler.Get,
-		CreateSubscriptionHandler: subscriptionHandler.Create,
-		ListSubscriptionsHandler:  subscriptionHandler.List,
-		GetSubscriptionHandler:    subscriptionHandler.Get,
-		UpdateSubscriptionHandler: subscriptionHandler.Update,
-		DeleteSubscriptionHandler: subscriptionHandler.Delete,
-		ListPapersHandler:         paperQueryHandler.List,
-		GetPaperHandler:           paperQueryHandler.Get,
-		OperationsStatusHandler:   opsHandler.Status,
-		OperationsSourcesHandler:  opsHandler.Sources,
+
+		AppEnv:      cfg.AppEnv,
+		ServiceName: serviceName,
+		Logger:      logger,
+		MySQLCheck:  sqlDB.PingContext,
+		RedisCheck:  redisCheck, AI: server.AIRoutes{GetAISummaryHandler: aiHandler.Get, RequestAISummaryHandler: aiHandler.Request,
+			ListAIProvidersHandler:       aiHandler.Providers,
+			GetAIConfigurationHandler:    aiHandler.GetConfiguration,
+			PutAIConfigurationHandler:    aiHandler.PutConfiguration,
+			PatchAIConfigurationHandler:  aiHandler.PatchConfiguration,
+			RotateAISecretHandler:        aiHandler.RotateSecret,
+			TestAIConfigurationHandler:   aiHandler.TestConfiguration,
+			DeleteAIConfigurationHandler: aiHandler.DeleteConfiguration,
+			GetAIUsageHandler:            aiHandler.Usage, ListAICallsHandler: aiHandler.ListCalls}, Accounts: server.AccountsRoutes{RegisterHandler: userHandler.Register,
+			LoginHandler:   authHandler.Login,
+			RefreshHandler: authHandler.Refresh, LogoutHandler: authHandler.Logout,
+
+			GetProfileHandler:    userHandler.GetProfile,
+			UpdateProfileHandler: userHandler.UpdateProfile}, Authorization: server.AuthorizationRoutes{AuthMiddleware: auth.Middleware(tokenService),
+			ActiveRoleMiddleware:      auth.RequireRoles(userRepository, logger, user.RoleUser, user.RoleOperator),
+			UserRoleMiddleware:        auth.RequireRoles(userRepository, logger, user.RoleUser),
+			OperatorRoleMiddleware:    auth.RequireRoles(userRepository, logger, user.RoleOperator),
+			OperationsAuditMiddleware: operations.AuditMiddleware(logger)}, Sources: server.SourcesRoutes{ListSourcesHandler: sourceHandler.List,
+			GetSourceHandler: sourceHandler.Get}, Subscriptions: server.SubscriptionsRoutes{CreateSubscriptionHandler: subscriptionHandler.Create,
+			ListSubscriptionsHandler:  subscriptionHandler.List,
+			GetSubscriptionHandler:    subscriptionHandler.Get,
+			UpdateSubscriptionHandler: subscriptionHandler.Update,
+			DeleteSubscriptionHandler: subscriptionHandler.Delete}, Papers: server.PapersRoutes{ListPapersHandler: paperQueryHandler.List,
+			GetPaperHandler: paperQueryHandler.Get}, Operations: server.OperationsRoutes{OperationsStatusHandler: opsHandler.Status,
+			OperationsSourcesHandler: opsHandler.Sources},
 	})
 	if err != nil {
 		logger.Error(
@@ -171,10 +196,9 @@ func main() {
 		"env", cfg.AppEnv,
 	)
 
-	// 当前只需要基础监听能力，直接由 Gin 启动 HTTP 服务。
-	err = router.Run(cfg.HTTPAddr)
-	if err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := server.Serve(ctx, cfg.HTTPAddr, router); err != nil {
 		logger.Error("api server stopped", "module", "http", "error", err)
-		return
 	}
 }

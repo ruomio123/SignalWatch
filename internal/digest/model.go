@@ -5,6 +5,8 @@ import "time"
 const localDateLayout = "2006-01-02"
 
 type Schedule struct {
+	LocalDate         string `gorm:"column:local_date"`
+	SubscriptionID    uint64 `gorm:"column:subscription_id"`
 	UserID            uint64 `gorm:"column:user_id"`
 	Email             string `gorm:"column:email"`
 	Timezone          string `gorm:"column:timezone"`
@@ -13,8 +15,9 @@ type Schedule struct {
 }
 
 type Job struct {
-	UserID    uint64
-	LocalDate string
+	SubscriptionID uint64
+	UserID         uint64
+	LocalDate      string
 }
 
 type Match struct {
@@ -29,6 +32,7 @@ type Item struct {
 	ArXivID        string
 	Title          string
 	Abstract       string
+	Comments       string
 	Authors        []string
 	Categories     []string
 	PublishedAt    time.Time
@@ -40,6 +44,10 @@ type Item struct {
 }
 
 type User struct {
+	SubscriptionID    uint64
+	SubscriptionName  string
+	DigestAIEnabled   bool
+	DigestAILanguage  string
 	ID                uint64
 	Email             string
 	Timezone          string
@@ -47,6 +55,7 @@ type User struct {
 }
 
 type ProcessResult struct {
+	Retried         bool
 	Locked          bool
 	AlreadyComplete bool
 	Stale           bool

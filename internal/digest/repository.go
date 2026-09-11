@@ -9,18 +9,22 @@ import (
 
 	"gorm.io/gorm"
 
-	"signalwatch/internal/paper"
-	"signalwatch/internal/subscription"
 	userpkg "signalwatch/internal/user"
 )
 
 var ErrUserNotFound = errors.New("digest user not found")
 
+type CandidateReader interface {
+	FindActiveUser(context.Context, uint64, uint64) (User, error)
+	ListCandidates(context.Context, uint64, uint64, int) ([]Item, error)
+}
+type CandidateRepository interface {
+	CandidateReader
+	CountRemaining(context.Context, uint64, uint64, []uint64) (int64, error)
+}
 type Repository interface {
+	CandidateRepository
 	ScheduleRepository
-	FindActiveUser(ctx context.Context, userID uint64) (User, error)
-	ListCandidates(ctx context.Context, userID uint64, limit int) ([]Item, error)
-	MarkDelivered(ctx context.Context, userID uint64, paperIDs []uint64, deliveredAt time.Time) (int64, error)
 }
 
 type repository struct {
@@ -32,28 +36,34 @@ func NewRepository(db *gorm.DB) Repository { return &repository{db: db} }
 func (repository *repository) ListActiveSchedules(ctx context.Context) ([]Schedule, error) {
 	var schedules []Schedule
 	err := repository.db.WithContext(ctx).
-		Model(&userpkg.User{}).
-		Select(`id AS user_id, email, timezone, TIME_FORMAT(digest_time, '%H:%i:%s') AS digest_time,
-			max_items_per_digest`).
-		Where("status = ? AND role = ?", userpkg.StatusActive, userpkg.RoleUser).
-		Order("id ASC").
+		Table("users u").Joins("JOIN subscriptions s ON s.user_id=u.id").
+		Select(`u.id AS user_id, s.id AS subscription_id, u.email, u.timezone, TIME_FORMAT(u.digest_time, '%H:%i:%s') AS digest_time, s.max_items_per_digest`).
+		Where("u.status=? AND u.role=? AND s.enabled=1 AND s.deleted_at IS NULL", userpkg.StatusActive, userpkg.RoleUser).Order("u.id ASC,s.id ASC").
 		Scan(&schedules).Error
 	if err != nil {
 		return nil, fmt.Errorf("list active digest users: %w", err)
 	}
-	return schedules, nil
+	var retries []Schedule
+	if err := repository.db.WithContext(ctx).Table("digest_deliveries").Select("user_id,subscription_id,local_date").Where("(state='retry' AND next_retry_at<=UTC_TIMESTAMP(6)) OR (state='sending' AND lease_until<=UTC_TIMESTAMP(6))").Limit(1000).Find(&retries).Error; err != nil {
+		return nil, err
+	}
+	return append(retries, schedules...), nil
 }
 
-func (repository *repository) FindActiveUser(ctx context.Context, userID uint64) (User, error) {
+func (repository *repository) FindActiveUser(ctx context.Context, userID, subscriptionID uint64) (User, error) {
 	var row struct {
+		SubscriptionID    uint64
+		SubscriptionName  string
+		DigestAIEnabled   bool
+		DigestAILanguage  string
 		ID                uint64 `gorm:"column:id"`
 		Email             string `gorm:"column:email"`
 		Timezone          string `gorm:"column:timezone"`
 		MaxItemsPerDigest uint16 `gorm:"column:max_items_per_digest"`
 	}
-	err := repository.db.WithContext(ctx).Model(&userpkg.User{}).
-		Select("id, email, timezone, max_items_per_digest").
-		Where("id = ? AND status = ? AND role = ?", userID, userpkg.StatusActive, userpkg.RoleUser).
+	err := repository.db.WithContext(ctx).Table("users u").Joins("JOIN subscriptions s ON s.user_id=u.id").
+		Select("u.id, u.email, u.timezone, s.max_items_per_digest, s.digest_ai_enabled, s.digest_ai_language, s.id AS subscription_id, s.name AS subscription_name").
+		Where("u.id=? AND s.id=? AND u.status=? AND u.role=? AND s.enabled=1 AND s.deleted_at IS NULL", userID, subscriptionID, userpkg.StatusActive, userpkg.RoleUser).
 		Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return User{}, ErrUserNotFound
@@ -62,6 +72,8 @@ func (repository *repository) FindActiveUser(ctx context.Context, userID uint64)
 		return User{}, fmt.Errorf("find active digest user: %w", err)
 	}
 	return User{
+		SubscriptionID: row.SubscriptionID, SubscriptionName: row.SubscriptionName,
+		DigestAIEnabled: row.DigestAIEnabled, DigestAILanguage: row.DigestAILanguage,
 		ID: row.ID, Email: row.Email, Timezone: row.Timezone,
 		MaxItemsPerDigest: row.MaxItemsPerDigest,
 	}, nil
@@ -69,10 +81,10 @@ func (repository *repository) FindActiveUser(ctx context.Context, userID uint64)
 
 func (repository *repository) ListCandidates(
 	ctx context.Context,
-	userID uint64,
+	userID, subscriptionID uint64,
 	limit int,
 ) ([]Item, error) {
-	if userID == 0 || limit < 1 {
+	if userID == 0 || subscriptionID == 0 || limit < 1 {
 		return nil, errors.New("invalid digest candidate query")
 	}
 	type selectedPaper struct {
@@ -85,15 +97,10 @@ func (repository *repository) ListCandidates(
 		Select("p.id, p.first_seen_at").
 		Joins("JOIN subscription_papers AS sp ON sp.paper_id = p.id").
 		Joins("JOIN subscriptions AS s ON s.id = sp.subscription_id").
-		Where("s.user_id = ?", userID).
+		Where("s.user_id = ? AND s.id = ?", userID, subscriptionID).
 		Where("s.enabled = ? AND s.deleted_at IS NULL", true).
 		Where("sp.delivered_at IS NULL").
-		Where(`NOT EXISTS (
-			SELECT 1 FROM subscription_papers AS sent_sp
-			JOIN subscriptions AS sent_s ON sent_s.id = sent_sp.subscription_id
-			WHERE sent_s.user_id = ? AND sent_sp.paper_id = p.id
-				AND sent_sp.delivered_at IS NOT NULL
-		)`, userID).
+		Where("NOT EXISTS (SELECT 1 FROM digest_delivery_items di WHERE di.subscription_id=sp.subscription_id AND di.paper_id=sp.paper_id)").
 		Group("p.id, p.first_seen_at").
 		Order("p.first_seen_at ASC").
 		Order("p.id ASC").
@@ -115,6 +122,7 @@ func (repository *repository) ListCandidates(
 		ArXivID             string          `gorm:"column:arxiv_id"`
 		Title               string          `gorm:"column:title"`
 		Abstract            string          `gorm:"column:abstract"`
+		Comments            string          `gorm:"column:comments"`
 		AuthorsJSON         json.RawMessage `gorm:"column:authors_json"`
 		CategoriesJSON      json.RawMessage `gorm:"column:categories_json"`
 		PublishedAt         time.Time       `gorm:"column:published_at"`
@@ -130,15 +138,16 @@ func (repository *repository) ListCandidates(
 	var rows []candidateRow
 	err = repository.db.WithContext(ctx).
 		Table("papers AS p").
-		Select(`p.id AS paper_id, p.arxiv_id, p.title, p.abstract, p.authors_json,
+		Select(`p.id AS paper_id, p.arxiv_id, p.title, p.abstract, p.comments, p.authors_json,
 			p.categories_json, p.published_at, p.arxiv_updated_at, p.arxiv_url,
 			p.pdf_url, p.first_seen_at, s.id AS subscription_id,
 			s.name AS subscription_name, s.category, sp.matched_keywords_json`).
 		Joins("JOIN subscription_papers AS sp ON sp.paper_id = p.id").
 		Joins("JOIN subscriptions AS s ON s.id = sp.subscription_id").
-		Where("s.user_id = ?", userID).
+		Where("s.user_id = ? AND s.id = ?", userID, subscriptionID).
 		Where("s.enabled = ? AND s.deleted_at IS NULL", true).
 		Where("sp.delivered_at IS NULL").
+		Where("NOT EXISTS (SELECT 1 FROM digest_delivery_items di WHERE di.subscription_id=sp.subscription_id AND di.paper_id=sp.paper_id)").
 		Where("p.id IN ?", ids).
 		Order("p.first_seen_at ASC").
 		Order("p.id ASC").
@@ -162,7 +171,7 @@ func (repository *repository) ListCandidates(
 			}
 			items = append(items, Item{
 				PaperID: row.PaperID, ArXivID: row.ArXivID, Title: row.Title,
-				Abstract: row.Abstract, Authors: authors, Categories: categories,
+				Abstract: row.Abstract, Comments: row.Comments, Authors: authors, Categories: categories,
 				PublishedAt: row.PublishedAt, ArXivUpdatedAt: row.ArXivUpdatedAt,
 				ArXivURL: row.ArXivURL, PDFURL: row.PDFURL, FirstSeenAt: row.FirstSeenAt,
 				Matches: []Match{},
@@ -182,32 +191,16 @@ func (repository *repository) ListCandidates(
 	return items, nil
 }
 
-func (repository *repository) MarkDelivered(
-	ctx context.Context,
-	userID uint64,
-	paperIDs []uint64,
-	deliveredAt time.Time,
-) (int64, error) {
-	if userID == 0 || len(paperIDs) == 0 || deliveredAt.IsZero() {
-		return 0, errors.New("invalid digest delivery update")
+// Count only this subscription's undelivered papers, excluding this email's IDs.
+func (repository *repository) CountRemaining(ctx context.Context, userID, subscriptionID uint64, selectedIDs []uint64) (int64, error) {
+	if userID == 0 || subscriptionID == 0 || len(selectedIDs) == 0 {
+		return 0, errors.New("invalid remaining query")
 	}
-	var affected int64
-	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		ownedSubscriptions := tx.Model(&subscription.Subscription{}).
-			Select("id").Where("user_id = ?", userID)
-		result := tx.Model(&paper.SubscriptionPaper{}).
-			Where("subscription_id IN (?)", ownedSubscriptions).
-			Where("paper_id IN ?", paperIDs).
-			Where("delivered_at IS NULL").
-			Update("delivered_at", deliveredAt.UTC())
-		if result.Error != nil {
-			return result.Error
-		}
-		affected = result.RowsAffected
-		return nil
-	})
-	if err != nil {
-		return 0, fmt.Errorf("mark digest delivered: %w", err)
-	}
-	return affected, nil
+	var count int64
+	err := repository.db.WithContext(ctx).Table("subscription_papers sp").
+		Joins("JOIN subscriptions s ON s.id=sp.subscription_id").
+		Joins("JOIN papers p ON p.id=sp.paper_id").
+		Where("s.user_id=? AND s.id=? AND s.enabled=1 AND s.deleted_at IS NULL AND sp.delivered_at IS NULL", userID, subscriptionID).
+		Where("NOT EXISTS (SELECT 1 FROM digest_delivery_items di WHERE di.subscription_id=sp.subscription_id AND di.paper_id=sp.paper_id)").Where("sp.paper_id NOT IN ?", selectedIDs).Distinct("sp.paper_id").Count(&count).Error
+	return count, err
 }

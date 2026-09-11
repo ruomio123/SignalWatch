@@ -2,699 +2,194 @@ package subscription
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"time"
-
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-
-	"signalwatch/internal/matcher"
-	"signalwatch/internal/paper"
 	"signalwatch/internal/source"
 )
 
-const maxEnabledSubscriptions = int64(20)
+type repository struct{ db *gorm.DB }
 
-var (
-	ErrLimitReached          = errors.New("subscription limit reached")
-	ErrUserNotFound          = errors.New("active user not found")
-	ErrNotFound              = errors.New("subscription not found")
-	ErrVersionConflict       = errors.New("subscription version conflict")
-	ErrInvalidBackfillWindow = errors.New("invalid subscription backfill window")
-)
-
-type Repository interface {
-	CreateAtomic(ctx context.Context, subscription *Subscription, rules []Rule, backfill BackfillWindow) error
-	Count(ctx context.Context, userID uint64, filter ListFilter) (int64, error)
-	List(ctx context.Context, userID uint64, filter ListFilter, offset, limit int) ([]QueryResult, error)
-	Get(ctx context.Context, userID, id uint64) (QueryResult, error)
-	UpdateAtomic(ctx context.Context, userID, id uint64, expectedVersion uint32, patch SubscriptionPatch, rules *[]Rule) (Subscription, []Rule, error)
-	SoftDelete(ctx context.Context, userID, id uint64, expectedVersion uint32) error
+func NewRepository(db *gorm.DB) Repository { return &repository{db} }
+func (r *repository) Transact(ctx context.Context, fn func(Tx) error) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error { return fn(mysqlTx{tx}) })
 }
-
-type BackfillWindow struct {
-	From      time.Time
-	To        time.Time
-	MatchedAt time.Time
+func scope(db *gorm.DB, uid uint64, f ListFilter) *gorm.DB {
+	q := db.Model(&Subscription{}).Where("user_id=? AND deleted_at IS NULL", uid)
+	if f.Enabled != nil {
+		q = q.Where("enabled=?", *f.Enabled)
+	}
+	if f.SourceID != nil {
+		q = q.Where("source_id=?", *f.SourceID)
+	}
+	return q
 }
-
-type transactionStore interface {
-	LockActiveUser(ctx context.Context, userID uint64) error
-	CountEnabled(ctx context.Context, userID uint64) (int64, error)
-	CreateSubscription(ctx context.Context, subscription *Subscription) error
-	ListBackfillPapers(ctx context.Context, sourceID uint64, from, to time.Time) ([]paper.Paper, error)
-	InsertBackfillMatches(ctx context.Context, matches []paper.SubscriptionPaper) error
-	LockOwnedSubscription(ctx context.Context, userID, id uint64, expectedVersion uint32) (Subscription, error)
-	OwnedActiveSubscriptionExists(ctx context.Context, userID, id uint64) (bool, error)
-	UpdateSubscription(ctx context.Context, subscription *Subscription, patch SubscriptionPatch) error
+func (r *repository) Count(ctx context.Context, uid uint64, f ListFilter) (int64, error) {
+	var n int64
+	err := scope(r.db.WithContext(ctx), uid, f).Count(&n).Error
+	return n, err
 }
-
-type transactionManager interface {
-	WithinTransaction(ctx context.Context, work func(transactionStore) error) error
-}
-
-type repository struct {
-	db           *gorm.DB
-	transactions transactionManager
-	deletions    deletionStore
-}
-
-func NewRepository(db *gorm.DB) Repository {
-	store := gormDeletionStore{db: db}
-	return &repository{db: db, transactions: gormTransactionManager{db: db}, deletions: store}
-}
-
-func (repository *repository) CreateAtomic(
-	ctx context.Context,
-	subscription *Subscription,
-	rules []Rule,
-	backfill BackfillWindow,
-) error {
-	if subscription == nil {
-		return errors.New("subscription is required")
-	}
-	if subscription.Enabled && (backfill.From.IsZero() || backfill.To.IsZero() ||
-		backfill.MatchedAt.IsZero() || backfill.From.After(backfill.To)) {
-		return ErrInvalidBackfillWindow
-	}
-	category, keywordsJSON, err := flattenRules(rules)
-	if err != nil {
-		return err
-	}
-	subscription.Category = category
-	subscription.KeywordsJSON = keywordsJSON
-	return repository.transactions.WithinTransaction(ctx, func(tx transactionStore) error {
-		if err := tx.LockActiveUser(ctx, subscription.UserID); err != nil {
-			return err
-		}
-		if subscription.Enabled {
-			count, err := tx.CountEnabled(ctx, subscription.UserID)
-			if err != nil {
-				return err
-			}
-			if count >= maxEnabledSubscriptions {
-				return ErrLimitReached
-			}
-		}
-		if err := tx.CreateSubscription(ctx, subscription); err != nil {
-			return err
-		}
-		if !subscription.Enabled {
-			return nil
-		}
-		papers, err := tx.ListBackfillPapers(
-			ctx, subscription.SourceID, backfill.From.UTC(), backfill.To.UTC(),
-		)
-		if err != nil {
-			return fmt.Errorf("list subscription backfill papers: %w", err)
-		}
-		candidate := matcher.Candidate{
-			ID: subscription.ID, Category: subscription.Category,
-			KeywordsJSON: subscription.KeywordsJSON,
-		}
-		matches := make([]paper.SubscriptionPaper, 0, len(papers))
-		for _, stored := range papers {
-			matchedKeywords, matched, err := matcher.Evaluate(stored, candidate)
-			if err != nil {
-				return fmt.Errorf("evaluate subscription backfill paper %d: %w", stored.ID, err)
-			}
-			if !matched {
-				continue
-			}
-			encoded, err := json.Marshal(matchedKeywords)
-			if err != nil {
-				return fmt.Errorf("encode subscription backfill keywords: %w", err)
-			}
-			matches = append(matches, paper.SubscriptionPaper{
-				SubscriptionID: subscription.ID, PaperID: stored.ID,
-				MatchedKeywordsJSON: encoded, MatchedAt: backfill.MatchedAt.UTC(),
-			})
-		}
-		if err := tx.InsertBackfillMatches(ctx, matches); err != nil {
-			return fmt.Errorf("insert subscription backfill matches: %w", err)
-		}
-		return nil
-	})
-}
-
-func (repository *repository) UpdateAtomic(
-	ctx context.Context,
-	userID uint64,
-	id uint64,
-	expectedVersion uint32,
-	patch SubscriptionPatch,
-	replacementRules *[]Rule,
-) (Subscription, []Rule, error) {
-	var updated Subscription
-	var resultRules []Rule
-	err := repository.transactions.WithinTransaction(ctx, func(tx transactionStore) error {
-		current, err := tx.LockOwnedSubscription(ctx, userID, id, expectedVersion)
-		if errors.Is(err, ErrNotFound) {
-			exists, existsErr := tx.OwnedActiveSubscriptionExists(ctx, userID, id)
-			if existsErr != nil {
-				return existsErr
-			}
-			if exists {
-				return ErrVersionConflict
-			}
-			return ErrNotFound
-		}
-		if err != nil {
-			return err
-		}
-
-		currentRules, err := rulesFromSubscription(current)
-		if err != nil {
-			return err
-		}
-		changed := subscriptionPatchChanges(current, patch)
-		if replacementRules != nil && !sameRules(currentRules, *replacementRules) {
-			changed = true
-		}
-		if !changed {
-			updated = current
-			resultRules = currentRules
-			return nil
-		}
-
-		if patch.Enabled != nil && !current.Enabled && *patch.Enabled {
-			if err := tx.LockActiveUser(ctx, userID); err != nil {
-				return err
-			}
-			count, err := tx.CountEnabled(ctx, userID)
-			if err != nil {
-				return err
-			}
-			if count >= maxEnabledSubscriptions {
-				return ErrLimitReached
-			}
-		}
-
-		if replacementRules != nil && !sameRules(currentRules, *replacementRules) {
-			category, keywordsJSON, err := flattenRules(*replacementRules)
-			if err != nil {
-				return err
-			}
-			patch.Category = &category
-			patch.KeywordsJSON = &keywordsJSON
-			resultRules = append([]Rule(nil), (*replacementRules)...)
-			for index := range resultRules {
-				resultRules[index].SubscriptionID = current.ID
-			}
-		} else {
-			resultRules = currentRules
-		}
-		if err := tx.UpdateSubscription(ctx, &current, patch); err != nil {
-			return err
-		}
-		updated = current
-		return nil
-	})
-	if err != nil {
-		return Subscription{}, nil, err
-	}
-	return updated, resultRules, nil
-}
-
-func subscriptionPatchChanges(current Subscription, patch SubscriptionPatch) bool {
-	if patch.Name != nil && current.Name != *patch.Name {
-		return true
-	}
-	if patch.ObjectiveSet && !sameOptionalString(current.Objective, patch.Objective) {
-		return true
-	}
-	return patch.Enabled != nil && current.Enabled != *patch.Enabled
-}
-
-func sameOptionalString(left, right *string) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return *left == *right
-}
-
-func sameRules(current, replacement []Rule) bool {
-	if len(current) != len(replacement) {
-		return false
-	}
-	for index := range current {
-		if current[index].RuleType != replacement[index].RuleType ||
-			current[index].RuleValue != replacement[index].RuleValue ||
-			current[index].NormalizedValue != replacement[index].NormalizedValue {
-			return false
-		}
-	}
-	return true
-}
-
-func flattenRules(rules []Rule) (string, json.RawMessage, error) {
-	category := ""
-	keywords := make([]string, 0)
-	for _, rule := range rules {
-		switch rule.RuleType {
-		case source.RuleTypeCategory:
-			if category != "" {
-				return "", nil, ErrInvalidStoredRule
-			}
-			category = rule.RuleValue
-		case source.RuleTypeIncludeKeyword:
-			keywords = append(keywords, rule.RuleValue)
-		default:
-			return "", nil, ErrInvalidStoredRule
-		}
-	}
-	if category == "" {
-		return "", nil, ErrInvalidStoredRule
-	}
-	encoded, err := json.Marshal(keywords)
-	if err != nil {
-		return "", nil, err
-	}
-	return category, encoded, nil
-}
-
-func rulesFromSubscription(item Subscription) ([]Rule, error) {
-	if item.Category == "" {
-		return nil, ErrInvalidStoredRule
-	}
-	var keywords []string
-	if err := json.Unmarshal(item.KeywordsJSON, &keywords); err != nil {
-		return nil, ErrInvalidStoredRule
-	}
-	rules := make([]Rule, 0, 1+len(keywords))
-	rules = append(rules, Rule{
-		SubscriptionID: item.ID,
-		RuleType:       source.RuleTypeCategory, RuleValue: item.Category,
-		NormalizedValue: item.Category,
-	})
-	for _, keyword := range keywords {
-		normalized, err := NormalizeTextRule(keyword)
-		if err != nil {
-			return nil, ErrInvalidStoredRule
-		}
-		rules = append(rules, Rule{
-			SubscriptionID: item.ID,
-			RuleType:       source.RuleTypeIncludeKeyword,
-			RuleValue:      normalized.RuleValue, NormalizedValue: normalized.NormalizedValue,
-		})
-	}
-	return rules, nil
-}
-
-type deletionStore interface {
-	SoftDelete(ctx context.Context, userID, id uint64, expectedVersion uint32) (bool, error)
-	OwnedActiveSubscriptionExists(ctx context.Context, userID, id uint64) (bool, error)
-}
-
-func (repository *repository) SoftDelete(
-	ctx context.Context,
-	userID uint64,
-	id uint64,
-	expectedVersion uint32,
-) error {
-	deleted, err := repository.deletions.SoftDelete(ctx, userID, id, expectedVersion)
-	if err != nil {
-		return err
-	}
-	if deleted {
-		return nil
-	}
-	exists, err := repository.deletions.OwnedActiveSubscriptionExists(ctx, userID, id)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return ErrVersionConflict
-	}
-	return ErrNotFound
-}
-
-func (repository *repository) Count(
-	ctx context.Context,
-	userID uint64,
-	filter ListFilter,
-) (int64, error) {
-	var count int64
-	query := applyListFilter(repository.db.WithContext(ctx).Model(&Subscription{}), userID, filter)
-	if err := query.Count(&count).Error; err != nil {
-		return 0, err
-	}
-	return count, nil
-}
-
-func (repository *repository) List(
-	ctx context.Context,
-	userID uint64,
-	filter ListFilter,
-	offset int,
-	limit int,
-) ([]QueryResult, error) {
-	var rows []subscriptionQueryRow
-	query := selectSubscriptionsWithSource(repository.db.WithContext(ctx))
-	query = applyListFilter(query, userID, filter)
-	if err := query.
-		Order("subscriptions.created_at DESC, subscriptions.id DESC").
-		Offset(offset).
-		Limit(limit).
-		Scan(&rows).Error; err != nil {
+func (r *repository) List(ctx context.Context, uid uint64, f ListFilter, offset, limit int) ([]QueryResult, error) {
+	var rows []Subscription
+	if err := scope(r.db.WithContext(ctx), uid, f).Order("created_at DESC,id DESC").Offset(offset).Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	return repository.attachRules(ctx, rows)
+	return r.hydrate(ctx, rows)
 }
-
-func (repository *repository) Get(
-	ctx context.Context,
-	userID uint64,
-	id uint64,
-) (QueryResult, error) {
-	var row subscriptionQueryRow
-	err := ownedSubscriptionQuery(selectSubscriptionsWithSource(repository.db.WithContext(ctx)), userID, id).
-		Take(&row).Error
+func (r *repository) Get(ctx context.Context, uid, id uint64) (QueryResult, error) {
+	var sub Subscription
+	err := scope(r.db.WithContext(ctx), uid, ListFilter{}).Where("id=?", id).Take(&sub).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return QueryResult{}, ErrNotFound
 	}
 	if err != nil {
 		return QueryResult{}, err
 	}
-
-	results, err := repository.attachRules(ctx, []subscriptionQueryRow{row})
+	rows, err := r.hydrate(ctx, []Subscription{sub})
 	if err != nil {
 		return QueryResult{}, err
 	}
-	return results[0], nil
+	return rows[0], nil
 }
 
-func applyListFilter(query *gorm.DB, userID uint64, filter ListFilter) *gorm.DB {
-	query = query.Where("subscriptions.user_id = ? AND subscriptions.deleted_at IS NULL", userID)
-	if filter.Enabled != nil {
-		query = query.Where("subscriptions.enabled = ?", *filter.Enabled)
+// Hydrate uses full subscription records plus two bounded batch queries. New
+// persisted subscription fields cannot disappear through a hand-copied projection.
+func (r *repository) hydrate(ctx context.Context, subs []Subscription) ([]QueryResult, error) {
+	result := make([]QueryResult, 0, len(subs))
+	if len(subs) == 0 {
+		return result, nil
 	}
-	if filter.SourceID != nil {
-		query = query.Where("subscriptions.source_id = ?", *filter.SourceID)
+	sourceIDs := []uint64{}
+	ids := []uint64{}
+	for _, s := range subs {
+		sourceIDs = append(sourceIDs, s.SourceID)
+		ids = append(ids, s.ID)
 	}
-	return query
-}
-
-func ownedSubscriptionQuery(query *gorm.DB, userID, id uint64) *gorm.DB {
-	return query.Where(
-		"subscriptions.id = ? AND subscriptions.user_id = ? AND subscriptions.deleted_at IS NULL",
-		id,
-		userID,
-	)
-}
-
-func selectSubscriptionsWithSource(query *gorm.DB) *gorm.DB {
-	return query.Table("subscriptions").
-		Select(`
-			subscriptions.id AS subscription_id,
-			subscriptions.user_id AS subscription_user_id,
-			subscriptions.source_id AS subscription_source_id,
-			subscriptions.name AS subscription_name,
-			subscriptions.objective AS subscription_objective,
-			subscriptions.category AS subscription_category,
-			subscriptions.keywords_json AS subscription_keywords_json,
-			subscriptions.enabled AS subscription_enabled,
-			subscriptions.version AS subscription_version,
-			subscriptions.created_at AS subscription_created_at,
-			subscriptions.updated_at AS subscription_updated_at,
-			subscriptions.deleted_at AS subscription_deleted_at,
-			sources.id AS public_source_id,
-			sources.source_key AS public_source_key,
-			sources.kind AS public_source_kind,
-			sources.name AS public_source_name,
-			sources.config_json AS public_source_config_json
-		`).
-		Joins("JOIN sources ON sources.id = subscriptions.source_id")
-}
-
-func (repository *repository) attachRules(
-	_ context.Context,
-	rows []subscriptionQueryRow,
-) ([]QueryResult, error) {
-	results := make([]QueryResult, 0, len(rows))
-	for _, row := range rows {
-		result, err := row.result()
-		if err != nil {
-			return nil, err
+	var sources []source.Source
+	if err := r.db.WithContext(ctx).Where("id IN ?", sourceIDs).Find(&sources).Error; err != nil {
+		return nil, err
+	}
+	sourceByID := map[uint64]source.Source{}
+	for _, s := range sources {
+		sourceByID[s.ID] = s
+	}
+	var states []struct {
+		SubscriptionID     uint64
+		State              string
+		Processed, Matched uint64
+	}
+	if err := r.db.WithContext(ctx).Table("subscription_backfills").Select("subscription_id,state,processed,matched").Where("subscription_id IN ?", ids).Scan(&states).Error; err != nil {
+		return nil, err
+	}
+	byID := map[uint64]BackfillStatus{}
+	for _, b := range states {
+		byID[b.SubscriptionID] = BackfillStatus{b.State, b.Processed, b.Matched}
+	}
+	for _, s := range subs {
+		s.Backfill = BackfillStatus{State: "complete"}
+		if b, ok := byID[s.ID]; ok {
+			s.Backfill = b
 		}
-		results = append(results, result)
+		result = append(result, QueryResult{Subscription: s, Source: sourceByID[s.SourceID]})
 	}
-	return results, nil
-}
-
-type subscriptionQueryRow struct {
-	SubscriptionID        uint64          `gorm:"column:subscription_id"`
-	SubscriptionUserID    uint64          `gorm:"column:subscription_user_id"`
-	SubscriptionSourceID  uint64          `gorm:"column:subscription_source_id"`
-	SubscriptionName      string          `gorm:"column:subscription_name"`
-	SubscriptionObjective *string         `gorm:"column:subscription_objective"`
-	SubscriptionCategory  string          `gorm:"column:subscription_category"`
-	SubscriptionKeywords  json.RawMessage `gorm:"column:subscription_keywords_json"`
-	SubscriptionEnabled   bool            `gorm:"column:subscription_enabled"`
-	SubscriptionVersion   uint32          `gorm:"column:subscription_version"`
-	SubscriptionCreatedAt time.Time       `gorm:"column:subscription_created_at"`
-	SubscriptionUpdatedAt time.Time       `gorm:"column:subscription_updated_at"`
-	SubscriptionDeletedAt *time.Time      `gorm:"column:subscription_deleted_at"`
-	PublicSourceID        uint64          `gorm:"column:public_source_id"`
-	PublicSourceKey       string          `gorm:"column:public_source_key"`
-	PublicSourceKind      string          `gorm:"column:public_source_kind"`
-	PublicSourceName      string          `gorm:"column:public_source_name"`
-	PublicSourceConfig    json.RawMessage `gorm:"column:public_source_config_json"`
-}
-
-func (row subscriptionQueryRow) result() (QueryResult, error) {
-	result := QueryResult{
-		Subscription: Subscription{
-			ID: row.SubscriptionID, UserID: row.SubscriptionUserID,
-			SourceID: row.SubscriptionSourceID, Name: row.SubscriptionName,
-			Objective: row.SubscriptionObjective, Category: row.SubscriptionCategory,
-			KeywordsJSON: append(json.RawMessage(nil), row.SubscriptionKeywords...),
-			Enabled:      row.SubscriptionEnabled,
-			Version:      row.SubscriptionVersion, CreatedAt: row.SubscriptionCreatedAt,
-			UpdatedAt: row.SubscriptionUpdatedAt, DeletedAt: row.SubscriptionDeletedAt,
-		},
-		Source: source.Source{
-			ID: row.PublicSourceID, SourceKey: row.PublicSourceKey,
-			Kind: row.PublicSourceKind, Name: row.PublicSourceName,
-			ConfigJSON: append(json.RawMessage(nil), row.PublicSourceConfig...),
-		},
-		Rules: make([]Rule, 0),
-	}
-	rules, err := rulesFromSubscription(result.Subscription)
-	if err != nil {
-		return QueryResult{}, err
-	}
-	result.Rules = rules
 	return result, nil
 }
-
-type gormTransactionManager struct {
-	db *gorm.DB
-}
-
-func (manager gormTransactionManager) WithinTransaction(
-	ctx context.Context,
-	work func(transactionStore) error,
-) error {
-	return manager.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return work(gormTransactionStore{db: tx})
+func (r *repository) SoftDelete(ctx context.Context, uid, id uint64, version uint32) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row Subscription
+		err := scope(tx, uid, ListFilter{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=?", id).Take(&row).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if row.Version != version {
+			return ErrVersionConflict
+		}
+		return tx.Model(&Subscription{}).Where("id=?", id).Updates(map[string]any{"deleted_at": gorm.Expr("UTC_TIMESTAMP(6)"), "updated_at": gorm.Expr("UTC_TIMESTAMP(6)"), "version": gorm.Expr("version+1")}).Error
 	})
 }
 
-type gormTransactionStore struct {
-	db *gorm.DB
-}
+type mysqlTx struct{ db *gorm.DB }
 
-func (store gormTransactionStore) LockActiveUser(ctx context.Context, userID uint64) error {
-	var row struct{ ID uint64 }
-	err := store.db.WithContext(ctx).
-		Table("users").
-		Select("id").
-		Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("id = ? AND status = ?", userID, "active").
-		Take(&row).Error
+func (t mysqlTx) LockUser(ctx context.Context, uid uint64) (uint16, error) {
+	var row struct{ MaxItemsPerDigest uint16 }
+	err := t.db.WithContext(ctx).Table("users").Clauses(clause.Locking{Strength: "UPDATE"}).Select("max_items_per_digest").Where("id=? AND status='active' AND role='user'", uid).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return ErrUserNotFound
+		return 0, ErrUserNotFound
 	}
-	return err
+	return row.MaxItemsPerDigest, err
 }
-
-func (store gormTransactionStore) CountEnabled(ctx context.Context, userID uint64) (int64, error) {
-	var count int64
-	err := store.db.WithContext(ctx).
-		Model(&Subscription{}).
-		Where("user_id = ? AND enabled = ? AND deleted_at IS NULL", userID, true).
-		Count(&count).Error
-	return count, err
+func (t mysqlTx) CountEnabled(ctx context.Context, uid uint64) (int64, error) {
+	var n int64
+	err := scope(t.db.WithContext(ctx), uid, ListFilter{}).Where("enabled=1").Count(&n).Error
+	return n, err
 }
-
-func (store gormTransactionStore) CreateSubscription(
-	ctx context.Context,
-	subscription *Subscription,
-) error {
-	return store.db.WithContext(ctx).Create(subscription).Error
-}
-
-func (store gormTransactionStore) ListBackfillPapers(
-	ctx context.Context,
-	sourceID uint64,
-	from time.Time,
-	to time.Time,
-) ([]paper.Paper, error) {
-	var papers []paper.Paper
-	err := store.db.WithContext(ctx).
-		Where("source_id = ? AND published_at >= ? AND published_at <= ?", sourceID, from, to).
-		Order("id ASC").
-		Find(&papers).Error
-	return papers, err
-}
-
-func (store gormTransactionStore) InsertBackfillMatches(
-	ctx context.Context,
-	matches []paper.SubscriptionPaper,
-) error {
-	if len(matches) == 0 {
-		return nil
-	}
-	return store.db.WithContext(ctx).
-		Clauses(clause.OnConflict{DoNothing: true}).
-		Create(&matches).Error
-}
-
-func (store gormTransactionStore) LockOwnedSubscription(
-	ctx context.Context,
-	userID uint64,
-	id uint64,
-	expectedVersion uint32,
-) (Subscription, error) {
-	var item Subscription
-	err := lockOwnedSubscriptionQuery(
-		store.db.WithContext(ctx), userID, id, expectedVersion, &item,
-	).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return Subscription{}, ErrNotFound
-	}
-	return item, err
-}
-
-func lockOwnedSubscriptionQuery(
-	db *gorm.DB,
-	userID uint64,
-	id uint64,
-	expectedVersion uint32,
-	target *Subscription,
-) *gorm.DB {
-	return db.
-		Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where(
-			"id = ? AND user_id = ? AND version = ? AND deleted_at IS NULL",
-			id,
-			userID,
-			expectedVersion,
-		).
-		Take(target)
-}
-
-func (store gormTransactionStore) OwnedActiveSubscriptionExists(
-	ctx context.Context,
-	userID uint64,
-	id uint64,
-) (bool, error) {
-	return ownedActiveSubscriptionExists(store.db.WithContext(ctx), userID, id)
-}
-
-func (store gormTransactionStore) UpdateSubscription(
-	ctx context.Context,
-	item *Subscription,
-	patch SubscriptionPatch,
-) error {
-	values := map[string]any{
-		"updated_at": gorm.Expr("UTC_TIMESTAMP(6)"),
-		"version":    gorm.Expr("version + 1"),
-	}
-	if patch.Name != nil {
-		values["name"] = *patch.Name
-	}
-	if patch.ObjectiveSet {
-		if patch.Objective == nil {
-			values["objective"] = nil
-		} else {
-			values["objective"] = *patch.Objective
+func (t mysqlTx) Insert(ctx context.Context, s *Subscription) error {
+	if s.DigestAIEnabled {
+		if err := t.requireActiveAI(ctx, s.UserID); err != nil {
+			return err
 		}
 	}
-	if patch.Enabled != nil {
-		values["enabled"] = *patch.Enabled
+	return t.db.WithContext(ctx).Create(s).Error
+}
+func (t mysqlTx) Enqueue(ctx context.Context, s *Subscription, w BackfillWindow) error {
+	return t.db.WithContext(ctx).Exec("INSERT INTO subscription_backfills(subscription_id,source_id,category,keywords_json,window_from,window_to,next_retry_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", s.ID, s.SourceID, s.Category, string(s.KeywordsJSON), w.From, w.To, w.To, w.To).Error
+}
+func (t mysqlTx) LockSubscription(ctx context.Context, uid, id uint64) (Subscription, error) {
+	var s Subscription
+	err := scope(t.db.WithContext(ctx), uid, ListFilter{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=?", id).Take(&s).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return s, ErrNotFound
 	}
-	if patch.Category != nil {
-		values["category"] = *patch.Category
+	return s, err
+}
+func (t mysqlTx) Update(ctx context.Context, s *Subscription, p SubscriptionPatch) error {
+	if p.DigestAIEnabled != nil && *p.DigestAIEnabled {
+		if err := t.requireActiveAI(ctx, s.UserID); err != nil {
+			return err
+		}
 	}
-	if patch.KeywordsJSON != nil {
-		values["keywords_json"] = *patch.KeywordsJSON
+	values := map[string]any{"updated_at": gorm.Expr("UTC_TIMESTAMP(6)"), "version": gorm.Expr("version+1")}
+	if p.Name != nil {
+		values["name"] = *p.Name
 	}
-
-	result := store.db.WithContext(ctx).
-		Model(&Subscription{}).
-		Where(
-			"id = ? AND user_id = ? AND version = ? AND deleted_at IS NULL",
-			item.ID,
-			item.UserID,
-			item.Version,
-		).
-		Updates(values)
-	if result.Error != nil {
-		return result.Error
+	if p.ObjectiveSet {
+		values["objective"] = p.Objective
 	}
-	if result.RowsAffected != 1 {
-		return ErrVersionConflict
+	if p.Enabled != nil {
+		values["enabled"] = *p.Enabled
 	}
-	return store.db.WithContext(ctx).
-		Where("id = ? AND user_id = ? AND deleted_at IS NULL", item.ID, item.UserID).
-		Take(item).Error
+	if p.MaxItemsPerDigest != nil {
+		values["max_items_per_digest"] = *p.MaxItemsPerDigest
+	}
+	if p.DigestAIEnabled != nil {
+		values["digest_ai_enabled"] = *p.DigestAIEnabled
+	}
+	if p.DigestAILanguage != nil {
+		values["digest_ai_language"] = *p.DigestAILanguage
+	}
+	if p.Category != nil {
+		values["category"] = *p.Category
+	}
+	if p.KeywordsJSON != nil {
+		values["keywords_json"] = *p.KeywordsJSON
+	}
+	if err := t.db.WithContext(ctx).Model(&Subscription{}).Where("id=? AND version=?", s.ID, s.Version).Updates(values).Error; err != nil {
+		return err
+	}
+	return t.db.WithContext(ctx).Where("id=?", s.ID).Take(s).Error
 }
 
-type gormDeletionStore struct {
-	db *gorm.DB
-}
-
-func (store gormDeletionStore) SoftDelete(
-	ctx context.Context,
-	userID uint64,
-	id uint64,
-	expectedVersion uint32,
-) (bool, error) {
-	result := softDeleteQuery(store.db.WithContext(ctx), userID, id, expectedVersion)
-	return result.RowsAffected == 1, result.Error
-}
-
-func softDeleteQuery(db *gorm.DB, userID, id uint64, expectedVersion uint32) *gorm.DB {
-	return db.Model(&Subscription{}).
-		Where(
-			"id = ? AND user_id = ? AND version = ? AND deleted_at IS NULL",
-			id,
-			userID,
-			expectedVersion,
-		).
-		Updates(map[string]any{
-			"deleted_at": gorm.Expr("UTC_TIMESTAMP(6)"),
-			"updated_at": gorm.Expr("UTC_TIMESTAMP(6)"),
-			"version":    gorm.Expr("version + 1"),
-		})
-}
-
-func (store gormDeletionStore) OwnedActiveSubscriptionExists(
-	ctx context.Context,
-	userID uint64,
-	id uint64,
-) (bool, error) {
-	return ownedActiveSubscriptionExists(store.db.WithContext(ctx), userID, id)
-}
-
-func ownedActiveSubscriptionExists(db *gorm.DB, userID, id uint64) (bool, error) {
-	var count int64
-	err := db.Model(&Subscription{}).
-		Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
-		Count(&count).Error
-	return count > 0, err
+// Called only while holding the account lock shared by configuration deletion.
+func (t mysqlTx) requireActiveAI(ctx context.Context, uid uint64) error {
+	var active int64
+	if err := t.db.WithContext(ctx).Table("user_ai_configurations").Where("user_id=? AND status='active'", uid).Count(&active).Error; err != nil {
+		return err
+	}
+	if active == 0 {
+		return ErrAIConfigurationRequired
+	}
+	return nil
 }

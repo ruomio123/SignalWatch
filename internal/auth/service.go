@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -21,8 +22,8 @@ type UserRepository interface {
 	FindByEmail(ctx context.Context, normalizedEmail string) (user.User, error)
 }
 
-type TokenIssuer interface {
-	Issue(userID uint64) (IssuedToken, error)
+type LoginSessionIssuer interface {
+	IssueSession(context.Context, uint64) (LoginResult, error)
 }
 
 type LoginInput struct {
@@ -31,17 +32,19 @@ type LoginInput struct {
 }
 
 type LoginResult struct {
-	AccessToken string
-	ExpiresIn   int64
+	AccessToken      string
+	ExpiresIn        int64
+	RefreshToken     string
+	SessionExpiresAt time.Time
 }
 
 type Service struct {
 	repository UserRepository
-	tokens     TokenIssuer
+	sessions   LoginSessionIssuer
 }
 
-func NewService(repository UserRepository, tokens TokenIssuer) *Service {
-	return &Service{repository: repository, tokens: tokens}
+func NewService(repository UserRepository, sessions LoginSessionIssuer) *Service {
+	return &Service{repository: repository, sessions: sessions}
 }
 
 func (service *Service) Login(
@@ -70,13 +73,10 @@ func (service *Service) Login(
 		return LoginResult{}, ErrInvalidCredentials
 	}
 
-	issued, err := service.tokens.Issue(storedUser.ID)
+	issued, err := service.sessions.IssueSession(ctx, storedUser.ID)
 	if err != nil {
-		return LoginResult{}, fmt.Errorf("issue access token: %w", err)
+		return LoginResult{}, fmt.Errorf("issue login session: %w", err)
 	}
 
-	return LoginResult{
-		AccessToken: issued.AccessToken,
-		ExpiresIn:   issued.ExpiresIn,
-	}, nil
+	return issued, nil
 }

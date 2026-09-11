@@ -33,14 +33,22 @@ var (
 
 // Service 负责用户注册的业务规则。
 type Service struct {
-	repository Repository
+	repository      Repository
+	aiConfiguration interface {
+		Active(context.Context, uint64) (bool, error)
+	}
 }
 
-// NewService 创建一个使用指定 Repository 的用户服务。
-func NewService(repository Repository) *Service {
-	return &Service{
-		repository: repository,
+type AIConfigurationChecker interface {
+	Active(context.Context, uint64) (bool, error)
+}
+
+func NewService(repository Repository, checkers ...AIConfigurationChecker) *Service {
+	service := &Service{repository: repository}
+	if len(checkers) > 0 {
+		service.aiConfiguration = checkers[0]
 	}
+	return service
 }
 
 // NormalizeEmail 返回去除首尾空白并转为小写的邮箱。
@@ -125,6 +133,18 @@ func (service *Service) UpdateProfile(
 	changes, err := validateProfileUpdate(input)
 	if err != nil {
 		return User{}, err
+	}
+	if input.AIEnabled != nil && *input.AIEnabled {
+		if service.aiConfiguration == nil {
+			return User{}, ErrAIConfigurationRequired
+		}
+		active, err := service.aiConfiguration.Active(ctx, userID)
+		if err != nil {
+			return User{}, err
+		}
+		if !active {
+			return User{}, ErrAIConfigurationRequired
+		}
 	}
 	profile, err := service.repository.UpdateProfile(ctx, userID, changes)
 	if err != nil {

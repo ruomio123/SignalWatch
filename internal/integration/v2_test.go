@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"io"
+	"log/slog"
+	"signalwatch/internal/backfill"
 	"signalwatch/internal/paper"
 	"signalwatch/internal/source"
 	"signalwatch/internal/subscription"
@@ -73,21 +76,31 @@ func TestV2SubscriptionCreationAtomicallyBackfillsRecentLocalPapers(t *testing.T
 	var logs bytes.Buffer
 	api := newM1TestAPI(t, database, sqlDB.PingContext, &logs)
 	decodeResponse[userResponse](t, api.do(
-		t, http.MethodPost, "/api/v1/auth/register", "", "",
+		t, http.MethodPost, "/api/v2/auth/register", "", "",
 		map[string]any{"email": email, "password": testPassword}, http.StatusCreated,
 	))
 	login := decodeResponse[loginResponse](t, api.do(
-		t, http.MethodPost, "/api/v1/auth/login", "", "",
+		t, http.MethodPost, "/api/v2/auth/login", "", "",
 		map[string]any{"email": email, "password": testPassword}, http.StatusOK,
 	))
 	created := decodeResponse[subscriptionResponse](t, api.do(
-		t, http.MethodPost, "/api/v1/subscriptions", login.AccessToken, "",
+		t, http.MethodPost, "/api/v2/subscriptions", login.AccessToken, "",
 		map[string]any{
 			"source_id": arXiv.ID, "name": "Recent agents", "enabled": true,
-			"rules": map[string]any{"categories": []string{"cs.AI"}, "include_keywords": []string{"agent"}},
+			"rules": map[string]any{"category": "cs.AI", "keywords": []string{"agent"}},
 		}, http.StatusCreated,
 	))
 
+	worker := backfill.New(backfill.NewMySQLStore(database), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for {
+		worked, err := worker.Step(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !worked {
+			break
+		}
+	}
 	var matches []paper.SubscriptionPaper
 	if err := database.Where("subscription_id = ?", created.ID).Order("paper_id ASC").Find(&matches).Error; err != nil {
 		t.Fatalf("load atomic backfill matches: %v", err)
@@ -99,10 +112,10 @@ func TestV2SubscriptionCreationAtomicallyBackfillsRecentLocalPapers(t *testing.T
 
 	disabled := false
 	paused := decodeResponse[subscriptionResponse](t, api.do(
-		t, http.MethodPost, "/api/v1/subscriptions", login.AccessToken, "",
+		t, http.MethodPost, "/api/v2/subscriptions", login.AccessToken, "",
 		map[string]any{
 			"source_id": arXiv.ID, "name": "Paused agents", "enabled": disabled,
-			"rules": map[string]any{"categories": []string{"cs.AI"}, "include_keywords": []string{"agent"}},
+			"rules": map[string]any{"category": "cs.AI", "keywords": []string{"agent"}},
 		}, http.StatusCreated,
 	))
 	var pausedCount int64

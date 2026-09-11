@@ -25,10 +25,11 @@ type Scheduler struct {
 }
 
 type ScheduleResult struct {
-	Users     int
-	Due       int
-	Submitted int
-	Invalid   int
+	Users         int
+	Subscriptions int
+	Due           int
+	Submitted     int
+	Invalid       int
 }
 
 func NewScheduler(
@@ -43,15 +44,20 @@ func NewScheduler(
 	return &Scheduler{repository: repository, submitter: submitter, logger: logger, now: now}, nil
 }
 
-// Run submits every active user whose local digest time has passed today.
-// The durable Redis completion marker makes repeated scheduler passes cheap
-// and allows a failed delivery to be retried later on the same local day.
+// Run submits every enabled subscription whose local digest time has passed today.
+// MySQL owns the per-day identity; due retries retain their original date and
+// snapshot even when the next local day has begun.
 func (scheduler *Scheduler) Run(ctx context.Context) (ScheduleResult, error) {
 	schedules, err := scheduler.repository.ListActiveSchedules(ctx)
 	if err != nil {
 		return ScheduleResult{}, fmt.Errorf("list digest schedules: %w", err)
 	}
-	result := ScheduleResult{Users: len(schedules)}
+	result := ScheduleResult{Subscriptions: len(schedules)}
+	users := map[uint64]bool{}
+	for _, schedule := range schedules {
+		users[schedule.UserID] = true
+	}
+	result.Users = len(users)
 	now := scheduler.now()
 	for _, schedule := range schedules {
 		job, due, err := dueJob(schedule, now)
@@ -75,8 +81,12 @@ func (scheduler *Scheduler) Run(ctx context.Context) (ScheduleResult, error) {
 }
 
 func dueJob(schedule Schedule, now time.Time) (Job, bool, error) {
-	if schedule.UserID == 0 {
+	if schedule.UserID == 0 || schedule.SubscriptionID == 0 {
 		return Job{}, false, errors.New("invalid user id")
+	}
+	if schedule.LocalDate != "" {
+		job := Job{UserID: schedule.UserID, SubscriptionID: schedule.SubscriptionID, LocalDate: schedule.LocalDate}
+		return job, true, validateJob(job)
 	}
 	location, err := time.LoadLocation(strings.TrimSpace(schedule.Timezone))
 	if err != nil {
@@ -89,5 +99,5 @@ func dueJob(schedule Schedule, now time.Time) (Job, bool, error) {
 	localNow := now.In(location)
 	due := localNow.Hour() > digestClock.Hour() ||
 		localNow.Hour() == digestClock.Hour() && localNow.Minute() >= digestClock.Minute()
-	return Job{UserID: schedule.UserID, LocalDate: localNow.Format(localDateLayout)}, due, nil
+	return Job{SubscriptionID: schedule.SubscriptionID, UserID: schedule.UserID, LocalDate: localNow.Format(localDateLayout)}, due, nil
 }

@@ -48,12 +48,12 @@ func TestMailPoolAppliesBoundedBackpressure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pool: %v", err)
 	}
-	if err := pool.Submit(t.Context(), Job{UserID: 1, LocalDate: "2026-09-08"}); err != nil {
+	if err := pool.Submit(t.Context(), Job{SubscriptionID: 3, UserID: 1, LocalDate: "2026-09-08"}); err != nil {
 		t.Fatalf("fill queue: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
-	if err := pool.Submit(ctx, Job{UserID: 2, LocalDate: "2026-09-08"}); err != context.DeadlineExceeded {
+	if err := pool.Submit(ctx, Job{SubscriptionID: 3, UserID: 2, LocalDate: "2026-09-08"}); err != context.DeadlineExceeded {
 		t.Fatalf("expected queue backpressure deadline, got %v", err)
 	}
 }
@@ -62,7 +62,7 @@ func TestMailPoolUsesConfiguredWorkerConcurrency(t *testing.T) {
 	processor := &blockingProcessor{started: make(chan struct{}, 4), release: make(chan struct{}, 4)}
 	pool, _ := NewPool(processor, digestTestLogger(), PoolConfig{Workers: 2, QueueCapacity: 4})
 	for userID := uint64(1); userID <= 4; userID++ {
-		if err := pool.Submit(t.Context(), Job{UserID: userID, LocalDate: "2026-09-08"}); err != nil {
+		if err := pool.Submit(t.Context(), Job{SubscriptionID: 3, UserID: userID, LocalDate: "2026-09-08"}); err != nil {
 			t.Fatalf("submit: %v", err)
 		}
 	}

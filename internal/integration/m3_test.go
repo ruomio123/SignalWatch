@@ -50,11 +50,11 @@ func TestM3MatchedPaperAPIAndUserIsolation(t *testing.T) {
 	api := newM1TestAPI(t, database, sqlDB.PingContext, &logs)
 	register := func(email string) (userResponse, string) {
 		registered := decodeResponse[userResponse](t, api.do(
-			t, http.MethodPost, "/api/v1/auth/register", "", "",
+			t, http.MethodPost, "/api/v2/auth/register", "", "",
 			map[string]any{"email": email, "password": testPassword}, http.StatusCreated,
 		))
 		login := decodeResponse[loginResponse](t, api.do(
-			t, http.MethodPost, "/api/v1/auth/login", "", "",
+			t, http.MethodPost, "/api/v2/auth/login", "", "",
 			map[string]any{"email": email, "password": testPassword}, http.StatusOK,
 		))
 		return registered, login.AccessToken
@@ -68,10 +68,10 @@ func TestM3MatchedPaperAPIAndUserIsolation(t *testing.T) {
 	}
 	createSubscription := func(token, name, category string, keywords []string) subscriptionResponse {
 		return decodeResponse[subscriptionResponse](t, api.do(
-			t, http.MethodPost, "/api/v1/subscriptions", token, "",
+			t, http.MethodPost, "/api/v2/subscriptions", token, "",
 			map[string]any{
 				"source_id": arXiv.ID, "name": name, "enabled": true,
-				"rules": map[string]any{"categories": []string{category}, "include_keywords": keywords},
+				"rules": map[string]any{"category": category, "keywords": keywords},
 			},
 			http.StatusCreated,
 		))
@@ -114,10 +114,10 @@ func TestM3MatchedPaperAPIAndUserIsolation(t *testing.T) {
 	}
 
 	pageA := decodeResponse[paper.QueryPage](t, api.do(
-		t, http.MethodGet, "/api/v1/papers?page=1&page_size=20", tokenA, "", nil, http.StatusOK,
+		t, http.MethodGet, "/api/v2/papers?page=1&page_size=20", tokenA, "", nil, http.StatusOK,
 	))
 	pageB := decodeResponse[paper.QueryPage](t, api.do(
-		t, http.MethodGet, "/api/v1/papers?page=1&page_size=20", tokenB, "", nil, http.StatusOK,
+		t, http.MethodGet, "/api/v2/papers?page=1&page_size=20", tokenB, "", nil, http.StatusOK,
 	))
 	if pageA.Total != 1 || len(pageA.Items) != 1 || len(pageA.Items[0].Matches) != 1 ||
 		pageA.Items[0].Matches[0].SubscriptionID != subscriptionA.ID {
@@ -129,7 +129,7 @@ func TestM3MatchedPaperAPIAndUserIsolation(t *testing.T) {
 
 	filtered := decodeResponse[paper.QueryPage](t, api.do(
 		t, http.MethodGet,
-		fmt.Sprintf("/api/v1/papers?subscription_id=%d", subscriptionB.ID),
+		fmt.Sprintf("/api/v2/papers?subscription_id=%d", subscriptionB.ID),
 		tokenA, "", nil, http.StatusOK,
 	))
 	if filtered.Total != 0 || len(filtered.Items) != 0 {
@@ -137,7 +137,7 @@ func TestM3MatchedPaperAPIAndUserIsolation(t *testing.T) {
 	}
 
 	sharedDetail := decodeResponse[paper.PublicPaper](t, api.do(
-		t, http.MethodGet, fmt.Sprintf("/api/v1/papers/%d", inserted.Papers[0].ID),
+		t, http.MethodGet, fmt.Sprintf("/api/v2/papers/%d", inserted.Papers[0].ID),
 		tokenA, "", nil, http.StatusOK,
 	))
 	if len(sharedDetail.Matches) != 1 || sharedDetail.Matches[0].SubscriptionID != subscriptionA.ID ||
@@ -146,7 +146,7 @@ func TestM3MatchedPaperAPIAndUserIsolation(t *testing.T) {
 		t.Fatalf("paper detail did not preserve owned match reason: %+v", sharedDetail)
 	}
 	assertAPIError(t, api.do(
-		t, http.MethodGet, fmt.Sprintf("/api/v1/papers/%d", inserted.Papers[1].ID),
+		t, http.MethodGet, fmt.Sprintf("/api/v2/papers/%d", inserted.Papers[1].ID),
 		tokenA, "", nil, http.StatusNotFound,
 	), paper.CodePaperNotFound, "paper not found")
 }

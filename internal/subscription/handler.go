@@ -44,28 +44,34 @@ type SubscriptionService interface {
 }
 
 type createRequest struct {
-	SourceID  uint64             `json:"source_id"`
-	Name      string             `json:"name"`
-	Objective *string            `json:"objective"`
-	Enabled   *bool              `json:"enabled"`
-	Rules     createRulesRequest `json:"rules"`
+	MaxItemsPerDigest *uint16            `json:"max_items_per_digest"`
+	DigestAIEnabled   *bool              `json:"digest_ai_enabled"`
+	DigestAILanguage  *string            `json:"digest_ai_language"`
+	SourceID          uint64             `json:"source_id"`
+	Name              string             `json:"name"`
+	Objective         *string            `json:"objective"`
+	Enabled           *bool              `json:"enabled"`
+	Rules             createRulesRequest `json:"rules"`
 }
 
 type createRulesRequest struct {
-	Categories      []string `json:"categories"`
-	IncludeKeywords []string `json:"include_keywords"`
+	Category string   `json:"category"`
+	Keywords []string `json:"keywords"`
 }
 
 type updateRequest struct {
-	Name      json.RawMessage `json:"name"`
-	Objective json.RawMessage `json:"objective"`
-	Enabled   json.RawMessage `json:"enabled"`
-	Rules     json.RawMessage `json:"rules"`
+	MaxItemsPerDigest json.RawMessage `json:"max_items_per_digest"`
+	DigestAIEnabled   json.RawMessage `json:"digest_ai_enabled"`
+	DigestAILanguage  json.RawMessage `json:"digest_ai_language"`
+	Name              json.RawMessage `json:"name"`
+	Objective         json.RawMessage `json:"objective"`
+	Enabled           json.RawMessage `json:"enabled"`
+	Rules             json.RawMessage `json:"rules"`
 }
 
 type updateRulesRequest struct {
-	Categories      json.RawMessage `json:"categories"`
-	IncludeKeywords json.RawMessage `json:"include_keywords"`
+	Category json.RawMessage `json:"category"`
+	Keywords json.RawMessage `json:"keywords"`
 }
 
 type Handler struct {
@@ -89,13 +95,16 @@ func (handler *Handler) Create(c *gin.Context) {
 		return
 	}
 	created, err := handler.service.Create(c.Request.Context(), uint64(userID), CreateInput{
-		SourceID:  request.SourceID,
-		Name:      request.Name,
-		Objective: request.Objective,
-		Enabled:   request.Enabled,
+		MaxItemsPerDigest: request.MaxItemsPerDigest,
+		DigestAIEnabled:   request.DigestAIEnabled,
+		DigestAILanguage:  request.DigestAILanguage,
+		SourceID:          request.SourceID,
+		Name:              request.Name,
+		Objective:         request.Objective,
+		Enabled:           request.Enabled,
 		Rules: RulesInput{
-			Categories:      request.Rules.Categories,
-			IncludeKeywords: request.Rules.IncludeKeywords,
+			Category: request.Rules.Category,
+			Keywords: request.Rules.Keywords,
 		},
 	})
 	if err != nil {
@@ -253,10 +262,40 @@ func parseIfMatch(c *gin.Context) (uint32, bool) {
 }
 
 func (request updateRequest) input() (UpdateInput, error) {
-	if request.Name == nil && request.Objective == nil && request.Enabled == nil && request.Rules == nil {
+	if request.MaxItemsPerDigest == nil && request.DigestAIEnabled == nil && request.DigestAILanguage == nil && request.Name == nil && request.Objective == nil && request.Enabled == nil && request.Rules == nil {
 		return UpdateInput{}, ErrEmptyUpdate
 	}
 	var input UpdateInput
+	if request.MaxItemsPerDigest != nil {
+		var limit uint16
+		if bytes.Equal(bytes.TrimSpace(request.MaxItemsPerDigest), []byte("null")) {
+			return UpdateInput{}, ErrInvalidDigestLimit
+		}
+		if err := decodeStrictJSON(request.MaxItemsPerDigest, &limit); err != nil {
+			return UpdateInput{}, err
+		}
+		input.MaxItemsPerDigest = &limit
+	}
+	if request.DigestAIEnabled != nil {
+		if bytes.Equal(bytes.TrimSpace(request.DigestAIEnabled), []byte("null")) {
+			return UpdateInput{}, ErrInvalidFilter
+		}
+		var enabled bool
+		if err := decodeStrictJSON(request.DigestAIEnabled, &enabled); err != nil {
+			return UpdateInput{}, err
+		}
+		input.DigestAIEnabled = &enabled
+	}
+	if request.DigestAILanguage != nil {
+		if bytes.Equal(bytes.TrimSpace(request.DigestAILanguage), []byte("null")) {
+			return UpdateInput{}, ErrInvalidAILanguage
+		}
+		var language string
+		if err := decodeStrictJSON(request.DigestAILanguage, &language); err != nil {
+			return UpdateInput{}, err
+		}
+		input.DigestAILanguage = &language
+	}
 	if request.Name != nil {
 		var name string
 		if err := decodeStrictJSON(request.Name, &name); err != nil {
@@ -302,20 +341,20 @@ func parseUpdateRules(raw json.RawMessage) (RulesInput, error) {
 	if err := decodeStrictJSON(raw, &request); err != nil {
 		return RulesInput{}, err
 	}
-	if request.Categories == nil || bytes.Equal(bytes.TrimSpace(request.Categories), []byte("null")) {
+	if request.Category == nil || bytes.Equal(bytes.TrimSpace(request.Category), []byte("null")) {
 		return RulesInput{}, ErrInvalidRule
 	}
 
 	var result RulesInput
-	if err := decodeStrictJSON(request.Categories, &result.Categories); err != nil {
+	if err := decodeStrictJSON(request.Category, &result.Category); err != nil {
 		return RulesInput{}, err
 	}
-	result.IncludeKeywords = []string{}
-	if request.IncludeKeywords != nil {
-		if bytes.Equal(bytes.TrimSpace(request.IncludeKeywords), []byte("null")) {
+	result.Keywords = []string{}
+	if request.Keywords != nil {
+		if bytes.Equal(bytes.TrimSpace(request.Keywords), []byte("null")) {
 			return RulesInput{}, ErrInvalidRule
 		}
-		if err := decodeStrictJSON(request.IncludeKeywords, &result.IncludeKeywords); err != nil {
+		if err := decodeStrictJSON(request.Keywords, &result.Keywords); err != nil {
 			return RulesInput{}, err
 		}
 	}
@@ -390,9 +429,11 @@ func (handler *Handler) writeCreateError(c *gin.Context, err error) {
 		httpx.WriteError(c, http.StatusNotFound, source.CodeSourceNotFound, "source not found")
 	case errors.Is(err, ErrLimitReached):
 		httpx.WriteError(c, http.StatusConflict, CodeSubscriptionLimitReached, "enabled subscription limit reached")
+	case errors.Is(err, ErrAIConfigurationRequired):
+		httpx.WriteError(c, http.StatusConflict, "AI_CONFIGURATION_REQUIRED", "configure an AI provider first")
 	case errors.Is(err, ErrInvalidSourceID),
 		errors.Is(err, source.ErrInvalidID),
-		errors.Is(err, ErrInvalidName),
+		errors.Is(err, ErrInvalidName), errors.Is(err, ErrInvalidDigestLimit), errors.Is(err, ErrInvalidAILanguage),
 		errors.Is(err, ErrInvalidObjective),
 		errors.Is(err, ErrInvalidRule),
 		errors.Is(err, ErrDuplicateRule),
@@ -416,10 +457,12 @@ func (handler *Handler) writeMutationError(c *gin.Context, logMessage string, er
 		httpx.WriteError(c, http.StatusConflict, CodeSubscriptionVersionConflict, "subscription version conflict")
 	case errors.Is(err, ErrLimitReached):
 		httpx.WriteError(c, http.StatusConflict, CodeSubscriptionLimitReached, "enabled subscription limit reached")
+	case errors.Is(err, ErrAIConfigurationRequired):
+		httpx.WriteError(c, http.StatusConflict, "AI_CONFIGURATION_REQUIRED", "configure an AI provider first")
 	case errors.Is(err, ErrInvalidID),
 		errors.Is(err, ErrInvalidVersion),
 		errors.Is(err, ErrEmptyUpdate),
-		errors.Is(err, ErrInvalidName),
+		errors.Is(err, ErrInvalidName), errors.Is(err, ErrInvalidDigestLimit), errors.Is(err, ErrInvalidAILanguage),
 		errors.Is(err, ErrInvalidObjective),
 		errors.Is(err, ErrInvalidRule),
 		errors.Is(err, ErrDuplicateRule),

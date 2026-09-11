@@ -18,7 +18,7 @@ import (
 	"signalwatch/internal/source"
 )
 
-const createSubscriptionPath = "/api/v1/subscriptions"
+const createSubscriptionPath = "/api/v2/subscriptions"
 
 func TestHandlerCreateUsesAuthenticatedUserAndReturnsCreated(t *testing.T) {
 	var capturedUserID uint64
@@ -27,13 +27,13 @@ func TestHandlerCreateUsesAuthenticatedUserAndReturnsCreated(t *testing.T) {
 		capturedUserID = userID
 		captured = input
 		return PublicSubscription{ID: 88, Source: arXivCatalog(), Name: "Agent papers", Enabled: true,
-			Version: 1, Rules: PublicRules{Categories: []string{"cs.AI"}, Authors: []string{},
-				IncludeKeywords: []string{}, ExcludeKeywords: []string{}}}, nil
+			Version: 1, Rules: PublicRules{Category: "cs.AI",
+				Keywords: []string{}}}, nil
 	}}
 	router, _ := newSubscriptionTestRouter(service, true)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, createSubscriptionPath, strings.NewReader(
-		`{"source_id":1,"name":"Agent papers","rules":{"categories":["cs.ai"]}}`,
+		`{"source_id":1,"name":"Agent papers","rules":{"category":"cs.ai"}}`,
 	))
 	request.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(recorder, request)
@@ -42,7 +42,7 @@ func TestHandlerCreateUsesAuthenticatedUserAndReturnsCreated(t *testing.T) {
 		t.Fatalf("expected 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	if capturedUserID != 42 || captured.SourceID != 1 || captured.Enabled != nil ||
-		len(captured.Rules.Categories) != 1 {
+		captured.Rules.Category != "cs.ai" {
 		t.Fatalf("unexpected service input user=%d input=%+v", capturedUserID, captured)
 	}
 	var response PublicSubscription
@@ -73,7 +73,7 @@ func TestHandlerCreateStrictlyRejectsForgedSourceFields(t *testing.T) {
 	}}
 	for _, forbidden := range []string{"endpoint", "source_key"} {
 		router, _ := newSubscriptionTestRouter(service, true)
-		body := `{"source_id":1,"name":"valid","` + forbidden + `":"forged","rules":{"categories":["cs.AI"]}}`
+		body := `{"source_id":1,"name":"valid","` + forbidden + `":"forged","rules":{"category":"cs.AI"}}`
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, createSubscriptionPath, strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
@@ -104,7 +104,7 @@ func TestHandlerCreateMapsExpectedFailures(t *testing.T) {
 			}}, true)
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodPost, createSubscriptionPath, strings.NewReader(
-				`{"source_id":1,"name":"valid","rules":{"categories":["cs.AI"]}}`,
+				`{"source_id":1,"name":"valid","rules":{"category":"cs.AI"}}`,
 			))
 			request.Header.Set("Content-Type", "application/json")
 			router.ServeHTTP(recorder, request)
@@ -120,7 +120,7 @@ func TestHandlerCreateHidesUnexpectedFailure(t *testing.T) {
 	router, logs := newSubscriptionTestRouter(service, true)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, createSubscriptionPath, strings.NewReader(
-		`{"source_id":1,"name":"valid","rules":{"categories":["cs.AI"]}}`,
+		`{"source_id":1,"name":"valid","rules":{"category":"cs.AI"}}`,
 	))
 	request.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(recorder, request)
@@ -202,8 +202,8 @@ func TestHandlerGetReturnsETagAndSafeCompleteRules(t *testing.T) {
 		}
 		return PublicSubscription{
 			ID: 9, Source: arXivCatalog(), Name: "papers", Enabled: true, Version: 7,
-			Rules: PublicRules{Categories: []string{"cs.AI"}, Authors: []string{},
-				IncludeKeywords: []string{}, ExcludeKeywords: []string{}},
+			Rules: PublicRules{Category: "cs.AI",
+				Keywords: []string{}},
 			CreatedAt: createdAt, UpdatedAt: createdAt,
 		}, nil
 	}}
@@ -214,7 +214,7 @@ func TestHandlerGetReturnsETagAndSafeCompleteRules(t *testing.T) {
 	if recorder.Code != http.StatusOK || recorder.Header().Get("ETag") != `"7"` {
 		t.Fatalf("expected 200 and ETag, got status=%d etag=%q body=%s", recorder.Code, recorder.Header().Get("ETag"), recorder.Body.String())
 	}
-	for _, field := range []string{`"categories":["cs.AI"]`, `"authors":[]`, `"include_keywords":[]`, `"exclude_keywords":[]`} {
+	for _, field := range []string{`"category":"cs.AI"`, `"keywords":[]`} {
 		if !strings.Contains(recorder.Body.String(), field) {
 			t.Fatalf("expected response field %s in %s", field, recorder.Body.String())
 		}
@@ -264,13 +264,13 @@ func TestHandlerUpdateParsesIfMatchPartialFieldsAndCompleteRules(t *testing.T) {
 		gotUserID, gotID, gotVersion, gotInput = userID, id, version, input
 		return PublicSubscription{
 			ID: 9, Source: arXivCatalog(), Name: "papers", Version: 4,
-			Rules: PublicRules{Categories: []string{"cs.CL"}, Authors: []string{},
-				IncludeKeywords: []string{}, ExcludeKeywords: []string{}},
+			Rules: PublicRules{Category: "cs.CL",
+				Keywords: []string{}},
 		}, nil
 	}}
 	router, _ := newSubscriptionTestRouter(service, true)
 	request := httptest.NewRequest(http.MethodPatch, createSubscriptionPath+"/9", strings.NewReader(
-		`{"objective":null,"enabled":false,"rules":{"categories":["cs.CL"],"include_keywords":[]}}`,
+		`{"objective":null,"enabled":false,"rules":{"category":"cs.CL","keywords":[]}}`,
 	))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("If-Match", `"3"`)
@@ -282,8 +282,7 @@ func TestHandlerUpdateParsesIfMatchPartialFieldsAndCompleteRules(t *testing.T) {
 	}
 	if gotUserID != 42 || gotID != 9 || gotVersion != 3 || gotInput.Name != nil ||
 		!gotInput.ObjectiveSet || gotInput.Objective != nil || gotInput.Enabled == nil || *gotInput.Enabled ||
-		gotInput.Rules == nil || len(gotInput.Rules.Categories) != 1 ||
-		len(gotInput.Rules.Authors) != 0 || len(gotInput.Rules.ExcludeKeywords) != 0 {
+		gotInput.Rules == nil || gotInput.Rules.Category != "cs.CL" {
 		t.Fatalf("unexpected update input user=%d id=%d version=%d input=%+v", gotUserID, gotID, gotVersion, gotInput)
 	}
 }
@@ -320,8 +319,8 @@ func TestHandlerUpdateStrictlyRejectsEmptyForbiddenAndIncompleteBodies(t *testin
 		`{"source_id":2}`,
 		`{"enabled":null}`,
 		`{"rules":null}`,
-		`{"rules":{"categories":["cs.AI"],"authors":[],"include_keywords":[]}}`,
-		`{"rules":{"categories":["cs.AI"],"authors":[],"include_keywords":[],"exclude_keywords":[],"extra":[]}}`,
+		`{"rules":{"category":"cs.AI","authors":[],"keywords":[]}}`,
+		`{"rules":{"category":"cs.AI","authors":[],"keywords":[],"exclude_keywords":[],"extra":[]}}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			router, _ := newSubscriptionTestRouter(service, true)
