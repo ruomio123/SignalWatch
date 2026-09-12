@@ -24,7 +24,7 @@ func (r *Repository) Cleanup(ctx context.Context, now time.Time) error {
 		Title          string
 		Abstract       string
 	}
-	err := r.DB.WithContext(ctx).Table("paper_ai_summaries a").Select("a.id,a.input_hash,a.profile,a.config_version,ac.config_version AS current_version,p.title,p.abstract").Joins("JOIN papers p ON p.id=a.scope_id").Joins("LEFT JOIN user_ai_configurations ac ON ac.user_id=a.owner_user_id").Where("a.expires_at IS NULL AND a.updated_at<?", now.Add(-time.Minute)).Order("a.updated_at,a.id").Limit(100).Scan(&rows).Error
+	err := r.DB.WithContext(ctx).Table("paper_ai_summaries a").Select("a.id,a.input_hash,a.profile,a.config_version,ac.config_version AS current_version,p.title,p.abstract").Joins("JOIN papers p ON p.id=a.scope_id").Joins("LEFT JOIN user_ai_configurations ac ON ac.user_id=a.owner_user_id AND ac.is_default=1").Where("a.expires_at IS NULL AND a.updated_at<?", now.Add(-time.Minute)).Order("a.updated_at,a.id").Limit(100).Scan(&rows).Error
 	if err != nil {
 		return err
 	}

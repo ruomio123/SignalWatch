@@ -168,47 +168,50 @@ test("preferences show failure then save and refresh account data", async ({
   await expect(page.getByText("09:30", { exact: true })).toBeVisible();
 });
 
-test("configuration test feedback and delete refresh reading preferences", async ({
+test("API verification and default deletion refresh reading preferences", async ({
   page,
 }) => {
   await setup(page);
   let deleted = false;
-  await page.route("**/api/v2/me", (route) =>
-    route.fulfill({ json: { ...profile, ai_enabled: !deleted } }),
+  const c = {
+    id: "generation-A",
+    name: "默认 API",
+    configured: true,
+    usable: true,
+    is_default: true,
+    provider: "qwen",
+    model: "qwen-plus",
+    generation: "generation-A",
+    version: 8,
+    masked_key: "••••1234",
+  };
+  await page.route("**/api/v2/me", (r) =>
+    r.fulfill({ json: { ...profile, ai_enabled: !deleted } }),
   );
-  await page.route("**/api/v2/ai/configuration", async (route) => {
-    if (route.request().method() === "DELETE") {
-      deleted = true;
-      await route.fulfill({ status: 204 });
-      return;
-    }
-    await route.fulfill({
-      json: deleted
-        ? { configured: false, usable: false }
-        : {
-            configured: true,
-            usable: true,
-            provider: "qwen",
-            model: "qwen-plus",
-            generation: "generation-A",
-            version: 8,
-            masked_key: "••••1234",
-          },
-    });
+  await page.route("**/api/v2/ai/credentials", (r) =>
+    r.fulfill({ json: { items: deleted ? [] : [c] } }),
+  );
+  await page.route("**/api/v2/ai/credentials/generation-A", (r) => {
+    deleted = true;
+    return r.fulfill({ status: 204 });
   });
-  await page.route("**/api/v2/ai/configuration/test", (route) =>
-    route.fulfill({ json: {} }),
+  await page.route("**/api/v2/ai/credentials/generation-A/test", (r) =>
+    r.fulfill({ json: c }),
   );
-  await page.goto("/settings");
-  await page.getByRole("button", { name: "测试当前配置" }).click();
+  await page.goto("/api-keys");
+  await page.getByRole("button", { name: "验证", exact: true }).click();
+  await expect(page.getByText("连接验证成功。", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "删除", exact: true }).click();
   await expect(
-    page.getByText("当前配置连接测试成功。", { exact: true }),
+    page.getByText(/此条是默认 API，删除后会关闭相关 AI 开关/),
   ).toBeVisible();
-  await expect(page.getByLabel("启用论文 AI 解读")).toBeChecked();
-  await page.getByRole("button", { name: "删除 AI 配置" }).click();
-  await page.getByRole("button", { name: "确认删除配置" }).click();
+  await page.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect(page.getByText("还没有 API Key", { exact: true })).toBeVisible();
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "偏好设置", exact: true })
+    .click();
   await expect(page.getByLabel("启用论文 AI 解读")).not.toBeChecked();
-  await expect(page.getByText("尚未配置供应商", { exact: true })).toBeVisible();
 });
 
 test("login handles rejected credentials and returns to requested page", async ({
@@ -406,6 +409,7 @@ for (const width of [1440, 768, 390, 320]) {
       ["/subscriptions", "订阅", "subscriptions"],
       ["/papers", "匹配论文", "papers"],
       ["/settings", "偏好设置", "settings"],
+      ["/api-keys", "API 管理", "api-keys"],
     ]) {
       await page.goto(path);
       await expect(
@@ -415,16 +419,21 @@ for (const width of [1440, 768, 390, 320]) {
       await expect(page.getByRole("alert")).toHaveCount(0);
       await screenshots(name);
     }
-    await page.route("**/api/v2/ai/configuration", (route) =>
+    await page.route("**/api/v2/ai/credentials", (route) =>
       route.fulfill({
         json: {
-          configured: true,
-          usable: true,
-          provider: "qwen",
-          model: "qwen-plus",
-          generation: "review-generation",
-          version: 4,
-          masked_key: "••••1234",
+          items: [
+            {
+              name: "日常研究",
+              configured: true,
+              usable: true,
+              provider: "qwen",
+              model: "qwen-plus",
+              generation: "review-generation",
+              version: 4,
+              masked_key: "••••1234",
+            },
+          ],
         },
       }),
     );
@@ -448,9 +457,9 @@ for (const width of [1440, 768, 390, 320]) {
     );
     await page.reload();
     await expect(
-      page.getByRole("button", { name: "测试当前配置" }),
+      page.getByRole("button", { name: "验证", exact: true }),
     ).toBeVisible();
-    await screenshots("settings-configured");
+    await screenshots("api-keys-configured");
     await page.goto("/subscriptions");
     await page.getByRole("button", { name: "编辑 智能体与推理" }).click();
     await screenshots("subscription-editor");

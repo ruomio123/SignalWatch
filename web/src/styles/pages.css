@@ -296,6 +296,175 @@ tbody tr:hover {
   display: grid;
   gap: 20px;
 }
+.preference-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  line-height: 1.5;
+}
+.api-tabs {
+  display: flex;
+  gap: 24px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 24px;
+}
+.api-tabs button {
+  padding: 12px 2px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  background: transparent;
+  font-weight: 500;
+}
+.api-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--primary);
+  color: var(--primary);
+}
+.api-card {
+  min-width: 0;
+  overflow: hidden;
+}
+.api-card-header {
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.api-card-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.api-count {
+  font-size: 12px;
+  padding: 2px 8px;
+  background: #f3f4f6;
+  border-radius: 12px;
+  color: var(--muted);
+}
+.api-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 20px 24px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: #f5f6ff;
+  color: #4338ca;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.api-summary > svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.api-summary span {
+  color: #64748b;
+}
+.api-feedback {
+  margin: 16px 24px;
+}
+.api-table-wrap {
+  overflow-x: auto;
+  width: 100%;
+}
+.api-table {
+  width: 100%;
+  min-width: 940px;
+  border-collapse: collapse;
+  text-align: left;
+}
+.api-table th {
+  background: #f9fafb;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.api-table th,
+.api-table td {
+  padding: 18px 20px;
+  border-bottom: 1px solid #eef0f3;
+  vertical-align: middle;
+}
+.api-table tr:last-child td {
+  border-bottom: 0;
+}
+.api-table td {
+  font-size: 13px;
+}
+.api-table tbody tr:hover {
+  background: #fcfcff;
+}
+.api-entry-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 240px;
+  overflow-wrap: anywhere;
+}
+.api-entry-name svg {
+  flex-shrink: 0;
+  color: #9ca3af;
+}
+.api-badges {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.api-model {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  max-width: 190px;
+}
+.api-masked-key {
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+}
+.api-date {
+  color: var(--muted);
+  font-size: 12px !important;
+  min-width: 100px;
+}
+.api-row-actions {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+  min-width: 164px;
+}
+.api-row-actions .button {
+  font-size: 12px;
+  padding: 5px 7px;
+  min-height: 32px;
+  white-space: nowrap;
+}
+.api-row-actions .api-delete {
+  color: #dc2626;
+}
+.api-key-form {
+  gap: 20px;
+}
+.api-key-form label {
+  min-width: 0;
+}
+.api-return {
+  margin-bottom: 12px;
+}
+.api-activity {
+  display: grid;
+  gap: 24px;
+  min-width: 0;
+}
+@media (max-width: 767px) {
+  .api-summary,
+  .api-feedback {
+    margin: 16px;
+  }
+  .api-card-header .button {
+    width: 100%;
+    justify-content: center;
+  }
+}
 .configuration-status {
   display: flex;
   flex-wrap: wrap;
@@ -495,7 +664,7 @@ tbody tr:hover {
   }
 }
 
-@media (max-width: 1100px) {
+@container subscription-list (max-width: 1100px) {
   .subscription-table,
   .subscription-table tbody {
     display: block;

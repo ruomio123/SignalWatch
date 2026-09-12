@@ -20,6 +20,7 @@ type Dependencies struct {
 	Logger        *slog.Logger
 	MySQLCheck    DependencyCheck
 	RedisCheck    DependencyCheck
+	AgentHandler  gin.HandlerFunc
 	AI            AIRoutes
 	Accounts      AccountsRoutes
 	Sources       SourcesRoutes
@@ -29,6 +30,9 @@ type Dependencies struct {
 	Authorization AuthorizationRoutes
 }
 type AIRoutes struct {
+	CredentialsHandler           gin.HandlerFunc
+	CredentialHandler            gin.HandlerFunc
+	DefaultSelectionHandler      gin.HandlerFunc
 	GetAISummaryHandler          gin.HandlerFunc
 	RequestAISummaryHandler      gin.HandlerFunc
 	ListAIProvidersHandler       gin.HandlerFunc
@@ -162,6 +166,26 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 		}
 		return handler
 	}
+	agentHandler := orDisabled(dependencies.AgentHandler)
+	aiRoutes.GET("/agent/conversations", agentHandler)
+	aiRoutes.POST("/agent/conversations", agentHandler)
+	aiRoutes.GET("/agent/conversations/:id", agentHandler)
+	aiRoutes.DELETE("/agent/conversations/:id", agentHandler)
+	aiRoutes.GET("/agent/conversations/:id/messages", agentHandler)
+	aiRoutes.POST("/agent/conversations/:id/messages", agentHandler)
+	aiRoutes.GET("/agent/runs/:id", agentHandler)
+	aiRoutes.POST("/agent/runs/:id/cancel", agentHandler)
+	aiRoutes.GET("/agent/subscription-drafts/:id", agentHandler)
+	aiRoutes.PATCH("/agent/subscription-drafts/:id", agentHandler)
+	aiRoutes.POST("/agent/subscription-drafts/:id/confirm", agentHandler)
+	aiRoutes.GET("/ai/credentials", orDisabled(dependencies.AI.CredentialsHandler))
+	aiRoutes.POST("/ai/credentials", orDisabled(dependencies.AI.CredentialsHandler))
+	aiRoutes.GET("/ai/credentials/:id", orDisabled(dependencies.AI.CredentialHandler))
+	aiRoutes.PUT("/ai/credentials/:id", orDisabled(dependencies.AI.CredentialHandler))
+	aiRoutes.DELETE("/ai/credentials/:id", orDisabled(dependencies.AI.CredentialHandler))
+	aiRoutes.POST("/ai/credentials/:id/test", orDisabled(dependencies.AI.CredentialHandler))
+	aiRoutes.GET("/ai/default-selection", orDisabled(dependencies.AI.DefaultSelectionHandler))
+	aiRoutes.PUT("/ai/default-selection", orDisabled(dependencies.AI.DefaultSelectionHandler))
 	aiRoutes.GET("/ai/providers", orDisabled(dependencies.AI.ListAIProvidersHandler))
 	aiRoutes.GET("/ai/configuration", orDisabled(dependencies.AI.GetAIConfigurationHandler))
 	aiRoutes.PUT("/ai/configuration", orDisabled(dependencies.AI.PutAIConfigurationHandler))

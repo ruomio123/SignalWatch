@@ -2,10 +2,12 @@ package subscription
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"signalwatch/internal/source"
+	"time"
 )
 
 type repository struct{ db *gorm.DB }
@@ -185,11 +187,56 @@ func (t mysqlTx) Update(ctx context.Context, s *Subscription, p SubscriptionPatc
 // Called only while holding the account lock shared by configuration deletion.
 func (t mysqlTx) requireActiveAI(ctx context.Context, uid uint64) error {
 	var active int64
-	if err := t.db.WithContext(ctx).Table("user_ai_configurations").Where("user_id=? AND status='active'", uid).Count(&active).Error; err != nil {
+	if err := t.db.WithContext(ctx).Table("user_ai_configurations").Where("user_id=? AND is_default=1 AND status='active'", uid).Count(&active).Error; err != nil {
 		return err
 	}
 	if active == 0 {
 		return ErrAIConfigurationRequired
 	}
 	return nil
+}
+
+func (r *repository) ReadDraft(ctx context.Context, uid uint64, id string) (Draft, error) {
+	var d Draft
+	err := r.db.WithContext(ctx).Where("id=? AND user_id=?", id, uid).Take(&d).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		err = ErrNotFound
+	}
+	return d, err
+}
+func (t mysqlTx) LockDraft(ctx context.Context, uid uint64, ref draftReference, now time.Time) (*Subscription, error) {
+	var d Draft
+	if err := t.db.WithContext(ctx).Where("id=? AND user_id=?", ref.ID, uid).Take(&d).Error; err != nil {
+		return nil, ErrDraftConflict
+	}
+	var c struct {
+		LatestDraftID string
+		ActiveRunID   *string
+	}
+	if err := t.db.WithContext(ctx).Table("agent_conversations").Clauses(clause.Locking{Strength: "UPDATE"}).Select("latest_draft_id,active_run_id").Where("id=? AND user_id=?", d.ConversationID, uid).Take(&c).Error; err != nil {
+		return nil, ErrDraftConflict
+	}
+	if err := t.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=?", ref.ID).Take(&d).Error; err != nil {
+		return nil, err
+	}
+	var expected, actual any
+	if json.Unmarshal([]byte(ref.Payload), &expected) != nil || json.Unmarshal(d.Payload, &actual) != nil {
+		return nil, ErrDraftConflict
+	}
+	a, _ := json.Marshal(expected)
+	b, _ := json.Marshal(actual)
+	if d.Version != ref.Version || string(a) != string(b) {
+		return nil, ErrDraftConflict
+	}
+	if d.SubscriptionID != nil {
+		sub, err := t.LockSubscription(ctx, uid, *d.SubscriptionID)
+		return &sub, err
+	}
+	if c.LatestDraftID != d.ID || c.ActiveRunID != nil || !d.ExpiresAt.After(now) {
+		return nil, ErrDraftConflict
+	}
+	return nil, nil
+}
+func (t mysqlTx) ConfirmDraft(ctx context.Context, id string, sub uint64) error {
+	return t.db.WithContext(ctx).Model(&Draft{}).Where("id=? AND subscription_id IS NULL", id).Update("subscription_id", sub).Error
 }

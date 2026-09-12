@@ -1,0 +1,114 @@
+package agent
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"signalwatch/internal/subscription"
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+func (s *Service) CreateConversation(ctx context.Context, uid uint64, kind string, pid *uint64) (Conversation, error) {
+	if uid == 0 || (kind != "subscription" && kind != "paper") || (kind == "subscription" && pid != nil) || (kind == "paper" && (pid == nil || *pid == 0)) {
+		return Conversation{}, ErrInput
+	}
+	title := "订阅助手"
+	if pid != nil {
+		p, err := s.Papers.Get(ctx, uid, *pid)
+		if err != nil {
+			return Conversation{}, ErrNotFound
+		}
+		title = p.Title
+	}
+	runes := []rune(title)
+	if len(runes) > 160 {
+		title = string(runes[:160])
+	}
+	now := time.Now().UTC()
+	c := Conversation{ID: rand.Text(), UserID: uid, Kind: kind, PaperID: pid, Title: title, CreatedAt: now, UpdatedAt: now}
+	return c, s.Store.CreateConversation(ctx, c)
+}
+func (s *Service) Conversation(ctx context.Context, uid uint64, id string) (Conversation, error) {
+	c, err := s.Store.Conversation(ctx, uid, id)
+	if err != nil {
+		return c, err
+	}
+	if c.PaperID != nil {
+		if _, err := s.Papers.Get(ctx, uid, *c.PaperID); err != nil {
+			return Conversation{}, ErrNotFound
+		}
+	}
+	return c, nil
+}
+func (s *Service) Conversations(ctx context.Context, uid uint64, kind string, pid *uint64, page int) ([]Conversation, error) {
+	if page < 1 || page > 100000 || (kind != "" && kind != "paper" && kind != "subscription") {
+		return nil, ErrInput
+	}
+	rows, err := s.Store.Conversations(ctx, uid, kind, pid, page)
+	if err != nil {
+		return nil, err
+	}
+	out := []Conversation{}
+	for _, c := range rows {
+		if c.PaperID != nil {
+			if _, err := s.Papers.Get(ctx, uid, *c.PaperID); err != nil {
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+func (s *Service) Submit(ctx context.Context, uid uint64, id string, input SubmitInput) (Run, error) {
+	input.Question = strings.TrimSpace(input.Question)
+	for _, ch := range input.IdempotencyKey {
+		if ch < 33 || ch > 126 {
+			return Run{}, ErrInput
+		}
+	}
+	if !utf8.ValidString(input.Question) || utf8.RuneCountInString(input.Question) < 1 || utf8.RuneCountInString(input.Question) > 2000 || len(input.IdempotencyKey) < 8 || len(input.IdempotencyKey) > 64 || len(input.Provider) > 32 || len(input.Model) > 64 || len(input.CredentialID) > 64 {
+		return Run{}, ErrInput
+	}
+	c, err := s.Conversation(ctx, uid, id)
+	if err != nil {
+		return Run{}, err
+	}
+	if input.ContextMode == "" {
+		input.ContextMode = "fulltext"
+	}
+	if input.ContextMode != "fulltext" && input.ContextMode != "abstract" {
+		return Run{}, ErrInput
+	}
+	choice, err := s.Gateway.Selection(ctx, uid, input.Provider, input.Model, input.CredentialID)
+	if err != nil {
+		return Run{}, err
+	}
+	now := time.Now().UTC()
+	raw, _ := json.Marshal(input)
+	h := sha256.Sum256(raw)
+	cp, _ := json.Marshal(Checkpoint{Phase: "ready", Observations: []Observation{}, Evidence: []Citation{}})
+	r := Run{ID: rand.Text(), ConversationID: c.ID, UserID: uid, Question: input.Question, Provider: input.Provider, Model: input.Model, Generation: choice.Generation, Version: choice.Version, IdempotencyKey: input.IdempotencyKey, InputHash: hex.EncodeToString(h[:]), ContextMode: input.ContextMode, State: "pending", Progress: "queued", Checkpoint: cp, CreatedAt: now, UpdatedAt: now}
+	return s.Store.Submit(ctx, r)
+}
+func (s *Service) RunByID(ctx context.Context, uid uint64, id string) (Run, error) {
+	r, err := s.Store.RunByID(ctx, uid, id)
+	if err != nil {
+		return r, err
+	}
+	_, err = s.Conversation(ctx, uid, r.ConversationID)
+	return r, err
+}
+func (s *Service) Confirm(ctx context.Context, uid uint64, id string, version uint32) (subscription.PublicSubscription, error) {
+	d, err := s.Store.Draft(ctx, uid, id)
+	if err != nil {
+		return subscription.PublicSubscription{}, err
+	}
+	if _, err = s.Conversation(ctx, uid, d.ConversationID); err != nil {
+		return subscription.PublicSubscription{}, err
+	}
+	return s.Subscriptions.ConfirmDraft(ctx, uid, id, version)
+}

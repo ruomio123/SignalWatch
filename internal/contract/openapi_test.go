@@ -106,7 +106,7 @@ func TestOpenAPIContractMatchesRegisteredRouterOperations(t *testing.T) {
 		t.Fatalf("create router for contract comparison: %v", err)
 	}
 	for _, route := range router.Routes() {
-		path := strings.ReplaceAll(route.Path, ":id", "{id}")
+		path := strings.ReplaceAll(strings.ReplaceAll(route.Path, ":id", "{id}"), ":provider", "{provider}")
 		if _, covered := registered[path]; covered {
 			registered[path][route.Method] = true
 		}
@@ -235,6 +235,17 @@ func mapKeys[V any](values map[string]V) []string {
 
 func currentOperations() map[string][]string {
 	return map[string][]string{
+		"/api/v2/ai/credentials":                         {"GET", "POST"},
+		"/api/v2/ai/credentials/{id}":                    {"GET", "PUT", "DELETE"},
+		"/api/v2/ai/credentials/{id}/test":               {"POST"},
+		"/api/v2/ai/default-selection":                   {"GET", "PUT"},
+		"/api/v2/agent/conversations":                    {"GET", "POST"},
+		"/api/v2/agent/conversations/{id}":               {"GET", "DELETE"},
+		"/api/v2/agent/conversations/{id}/messages":      {"GET", "POST"},
+		"/api/v2/agent/runs/{id}":                        {"GET"},
+		"/api/v2/agent/runs/{id}/cancel":                 {"POST"},
+		"/api/v2/agent/subscription-drafts/{id}":         {"GET", "PATCH"},
+		"/api/v2/agent/subscription-drafts/{id}/confirm": {"POST"},
 		"/healthz":                        {"GET"},
 		"/readyz":                         {"GET"},
 		"/api/v2/auth/register":           {"POST"},

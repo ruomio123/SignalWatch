@@ -16,17 +16,19 @@ import (
 const developmentJWTSecret = "development-only-change-me-32-bytes"
 
 type Config struct {
-	AIEnabled                    bool
-	AIConfigTestMinInterval      time.Duration
-	AIGenerationMinInterval      time.Duration
-	AIConfigTestDailyLimit       int
-	AIPaperDailyLimit            int
-	AIDigestDailyLimit           int
-	AICredentialKeys             string
-	AICredentialActiveKeyVersion string
-	AIEnabledProviders           []string
-	AIWorkers                    int
-	AIQueueCapacity              int
+	AIEnabled                     bool
+	AIConfigTestMinInterval       time.Duration
+	AIGenerationMinInterval       time.Duration
+	AIConfigTestDailyLimit        int
+	AIPaperDailyLimit             int
+	AIDigestDailyLimit            int
+	AISubscriptionAgentDailyLimit int
+	AIPaperQADailyLimit           int
+	AICredentialKeys              string
+	AICredentialActiveKeyVersion  string
+	AIEnabledProviders            []string
+	AIWorkers                     int
+	AIQueueCapacity               int
 
 	AppEnv          string        // 应用运行环境，例如 dev、test、prod
 	PublicBaseURL   string        // Optional public origin for email links
@@ -265,7 +267,7 @@ func Load() (Config, error) {
 	for _, option := range []struct {
 		name   string
 		target *int
-	}{{"AI_CONFIG_TEST_DAILY_LIMIT", &cfg.AIConfigTestDailyLimit}, {"AI_PAPER_DAILY_LIMIT", &cfg.AIPaperDailyLimit}, {"AI_DIGEST_DAILY_LIMIT", &cfg.AIDigestDailyLimit}} {
+	}{{"AI_CONFIG_TEST_DAILY_LIMIT", &cfg.AIConfigTestDailyLimit}, {"AI_PAPER_DAILY_LIMIT", &cfg.AIPaperDailyLimit}, {"AI_DIGEST_DAILY_LIMIT", &cfg.AIDigestDailyLimit}, {"AI_SUBSCRIPTION_AGENT_DAILY_LIMIT", &cfg.AISubscriptionAgentDailyLimit}, {"AI_PAPER_QA_DAILY_LIMIT", &cfg.AIPaperQADailyLimit}} {
 		if raw, ok := os.LookupEnv(option.name); ok {
 			v, e := strconv.Atoi(raw)
 			if e != nil || v < 0 || v > 1000000 {

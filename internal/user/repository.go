@@ -82,7 +82,7 @@ func (repository *gormRepository) UpdateProfile(
 		// precondition closes the race between API validation and deletion.
 		if changes.AIEnabled != nil && *changes.AIEnabled {
 			var active int64
-			if err := tx.Table("user_ai_configurations").Where("user_id=? AND status='active'", userID).Count(&active).Error; err != nil {
+			if err := tx.Table("user_ai_configurations").Where("user_id=? AND is_default=1 AND status='active'", userID).Count(&active).Error; err != nil {
 				return err
 			}
 			if active == 0 {

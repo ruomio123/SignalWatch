@@ -8,6 +8,7 @@ import { Auth, Landing } from "./pages/Auth";
 import { Dashboard } from "./pages/Dashboard";
 import { Subscriptions } from "./pages/Subscriptions";
 import { Papers } from "./pages/Papers";
+import { APIKeys } from "./pages/APIKeys";
 import { Settings } from "./pages/Settings";
 import "./style.css";
 createRoot(document.getElementById("root")!).render(
@@ -27,6 +28,7 @@ createRoot(document.getElementById("root")!).render(
               <Route path="/subscriptions" element={<Subscriptions />} />
               <Route path="/papers" element={<Papers />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/api-keys" element={<APIKeys />} />
             </Route>
             <Route path="*" element={<p>页面不存在</p>} />
           </Routes>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, Navigate, useLocation, Link } from "react-router-dom";
 import {
+  KeyRound,
   ChevronDown,
   FileText,
   House,
@@ -25,6 +26,7 @@ const links = [
   { to: "/papers", label: "匹配论文", icon: FileText },
   { to: "/subscriptions", label: "订阅", icon: Rss },
   { to: "/settings", label: "偏好设置", icon: Settings },
+  { to: "/api-keys", label: "API 管理", icon: KeyRound },
 ];
 export function Layout() {
   const { token } = useSession();

@@ -42,14 +42,14 @@ type RulesInput struct {
 }
 
 type CreateInput struct {
-	MaxItemsPerDigest *uint16
-	DigestAIEnabled   *bool
-	DigestAILanguage  *string
-	SourceID          uint64
-	Name              string
-	Objective         *string
-	Enabled           *bool
-	Rules             RulesInput
+	MaxItemsPerDigest *uint16    `json:"max_items_per_digest"`
+	DigestAIEnabled   *bool      `json:"digest_ai_enabled"`
+	DigestAILanguage  *string    `json:"digest_ai_language"`
+	SourceID          uint64     `json:"source_id"`
+	Name              string     `json:"name"`
+	Objective         *string    `json:"objective"`
+	Enabled           *bool      `json:"enabled"`
+	Rules             RulesInput `json:"rules"`
 }
 
 // UpdateInput keeps field presence separate from field values. In particular,

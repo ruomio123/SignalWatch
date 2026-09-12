@@ -40,6 +40,20 @@ func (s *Service) createAtomic(ctx context.Context, sub *Subscription, window Ba
 		if err != nil {
 			return err
 		}
+		if ref, ok := ctx.Value(draftKey{}).(draftReference); ok {
+			dtx, ok := tx.(draftTx)
+			if !ok {
+				return ErrDraftConflict
+			}
+			existing, err := dtx.LockDraft(ctx, sub.UserID, ref, window.To)
+			if err != nil {
+				return err
+			}
+			if existing != nil {
+				*sub = *existing
+				return nil
+			}
+		}
 		if sub.MaxItemsPerDigest == 0 {
 			sub.MaxItemsPerDigest = limit
 		}
@@ -58,7 +72,12 @@ func (s *Service) createAtomic(ctx context.Context, sub *Subscription, window Ba
 			return err
 		}
 		if sub.Enabled {
-			return tx.Enqueue(ctx, sub, window)
+			if err := tx.Enqueue(ctx, sub, window); err != nil {
+				return err
+			}
+		}
+		if ref, ok := ctx.Value(draftKey{}).(draftReference); ok {
+			return tx.(draftTx).ConfirmDraft(ctx, ref.ID, sub.ID)
 		}
 		return nil
 	})

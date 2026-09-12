@@ -13,12 +13,14 @@ import (
 )
 
 const (
-	ConfigurationActive  = "active"
-	ConfigurationInvalid = "invalid"
-	UnusableCredential   = "credential_invalid"
-	FeatureDigest        = "digest"
-	FeaturePaper         = "paper"
-	FeatureConfigTest    = "config_test"
+	ConfigurationActive      = "active"
+	ConfigurationInvalid     = "invalid"
+	UnusableCredential       = "credential_invalid"
+	FeatureDigest            = "digest"
+	FeaturePaper             = "paper"
+	FeatureConfigTest        = "config_test"
+	FeatureSubscriptionAgent = "subscription_agent"
+	FeaturePaperQA           = "paper_qa"
 )
 
 var (
@@ -34,9 +36,11 @@ var (
 )
 
 type Configuration struct {
-	Generation       string     `gorm:"column:generation"`
+	Generation       string     `gorm:"column:generation;primaryKey"`
 	UserID           uint64     `gorm:"column:user_id;primaryKey"`
 	ProviderID       string     `gorm:"column:provider_id"`
+	Name             string     `gorm:"column:name"`
+	IsDefault        *bool      `gorm:"column:is_default;default:true" json:"-"`
 	ModelID          string     `gorm:"column:model_id"`
 	Status           string     `gorm:"column:status"`
 	ConfigVersion    uint64     `gorm:"column:config_version"`
@@ -53,8 +57,11 @@ type Configuration struct {
 func (Configuration) TableName() string { return "user_ai_configurations" }
 
 type PublicConfiguration struct {
+	ID             string     `json:"id,omitempty"`
+	Name           string     `json:"name,omitempty"`
 	Generation     string     `json:"generation,omitempty"`
 	Configured     bool       `json:"configured"`
+	IsDefault      bool       `json:"is_default"`
 	Usable         bool       `json:"usable"`
 	UnusableReason string     `json:"unusable_reason,omitempty"`
 	ProviderID     string     `json:"provider,omitempty"`
@@ -70,7 +77,7 @@ type PublicConfiguration struct {
 
 func publicConfiguration(c Configuration, enabled []string, catalog ProviderCatalog) PublicConfiguration {
 	created, updated := c.CreatedAt, c.UpdatedAt
-	result := PublicConfiguration{Generation: c.Generation, Configured: true, ProviderID: c.ProviderID, ModelID: c.ModelID,
+	result := PublicConfiguration{ID: c.Generation, Name: c.Name, IsDefault: c.IsDefault == nil || *c.IsDefault, Generation: c.Generation, Configured: true, ProviderID: c.ProviderID, ModelID: c.ModelID,
 		MaskedKey: "••••" + c.KeyHint, Status: c.Status, Version: c.ConfigVersion,
 		LastTestedAt: c.LastTestedAt, LastUsedAt: c.LastUsedAt, CreatedAt: &created, UpdatedAt: &updated}
 	if available, reason := catalog.SelectionAvailability(enabled, c.ProviderID, c.ModelID); !available {
@@ -192,6 +199,9 @@ func validAPIKey(value string) bool {
 }
 
 func (s *ConfigurationService) Put(ctx context.Context, userID uint64, provider, model, apiKey string, expected *uint64) (PublicConfiguration, error) {
+	return s.putNamed(ctx, userID, provider, model, apiKey, expected, nil)
+}
+func (s *ConfigurationService) putNamed(ctx context.Context, userID uint64, provider, model, apiKey string, expected *uint64, name *string) (PublicConfiguration, error) {
 	if !s.catalog.ValidateSelection(s.enabled, provider, model) {
 		return PublicConfiguration{}, ErrProviderDisabled
 	}
@@ -219,18 +229,22 @@ func (s *ConfigurationService) Put(ctx context.Context, userID uint64, provider,
 	var output PublicConfiguration
 	err := s.verify(ctx, userID, provider, model, apiKey, before.Generation, before.ConfigVersion, func(commit context.Context) error {
 		var err error
-		output, err = s.saveVerified(commit, userID, provider, model, apiKey, expected)
+		output, err = s.saveVerified(commit, userID, provider, model, apiKey, expected, name)
 		return err
 	})
 	return output, err
 }
-func (s *ConfigurationService) saveVerified(ctx context.Context, userID uint64, provider, model, apiKey string, expected *uint64) (PublicConfiguration, error) {
+func (s *ConfigurationService) saveVerified(ctx context.Context, userID uint64, provider, model, apiKey string, expected *uint64, name *string) (PublicConfiguration, error) {
 	now := s.now().UTC()
 	saved, err := s.store.Mutate(ctx, userID, expected, func(current Configuration, revision uint64) (Configuration, error) {
 		saved := current
-		if current.Generation == "" {
+		if current.Generation == "" || current.ProviderID != provider {
 			saved.Generation = rand.Text()
 			saved.CreatedAt = now
+			saved.Name = provider + " API"
+		}
+		if name != nil {
+			saved.Name = *name
 		}
 		saved.ConfigVersion = revision
 		ciphertext, nonce, masterVersion, err := s.keyring.Encrypt([]byte(apiKey), secret.AAD(userID, provider, model, revision))

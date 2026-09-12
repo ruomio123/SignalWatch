@@ -375,3 +375,46 @@ input[type="checkbox"] {
     flex-grow: 1;
   }
 }
+
+.agent-chat {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+.agent-chat select,
+.agent-chat textarea {
+  max-width: 100%;
+}
+.agent-messages {
+  display: grid;
+  gap: 1rem;
+  max-height: 52vh;
+  overflow-y: auto;
+  padding: 0.5rem;
+}
+.agent-message {
+  padding: 1rem;
+  border: 1px solid var(--border, #dedede);
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+}
+.agent-message.user {
+  background: var(--bg-soft, #f3f5f7);
+}
+.agent-text {
+  white-space: pre-wrap;
+}
+.agent-message blockquote {
+  margin: 0.75rem 0;
+  padding-left: 1rem;
+  border-left: 3px solid #879bb7;
+  white-space: pre-wrap;
+}
+.agent-message details {
+  margin-top: 0.5rem;
+}
+.credential-list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}

@@ -187,6 +187,21 @@ func main() {
 		os.Exit(1)
 	}
 	defer closeAI()
+	agentService, documentService := bootstrap.OpenAgent(database, aiService, limiter)
+	agentDone := make(chan struct{})
+	documentDone := make(chan struct{})
+	go func() {
+		defer close(agentDone)
+		if agentService != nil {
+			agentService.Run(ctx)
+		}
+	}()
+	go func() {
+		defer close(documentDone)
+		if documentService != nil {
+			documentService.Run(ctx)
+		}
+	}()
 	digestProcessor, err := digest.NewProcessor(
 		digestRepository, digestCoordinator, smtpSender, func() time.Time { return time.Now().UTC() }, digest.Options{PublicBaseURL: cfg.PublicBaseURL, Enricher: aiService},
 	)
@@ -271,6 +286,20 @@ func main() {
 			}
 			opsReporter.RecordTask(reportContext, operations.TaskSnapshot{Task: "ai", State: state, UpdatedAt: updatedAt, Metrics: metrics})
 		}
+		if agentService != nil && documentService != nil {
+			for name, store := range map[string]interface {
+				Stats(context.Context) (map[string]int, error)
+			}{"agent": agentService.Store, "documents": documentService.Store} {
+				metricsCtx, stop := context.WithTimeout(reportContext, 200*time.Millisecond)
+				values, err := store.Stats(metricsCtx)
+				stop()
+				state := "running"
+				if err != nil {
+					state = "failed"
+				}
+				opsReporter.RecordTask(reportContext, operations.TaskSnapshot{Task: name, State: state, UpdatedAt: updatedAt, Metrics: values})
+			}
+		}
 		opsReporter.RecordTask(reportContext, queueTaskSnapshot("matcher", updatedAt, matcherQueue, matcherStats.LastSuccessAt, matcherStats.LastFailureAt))
 		opsReporter.RecordTask(reportContext, queueTaskSnapshot("mail", updatedAt, mailQueue, mailStats.LastSuccessAt, mailStats.LastFailureAt))
 	}
@@ -293,6 +322,8 @@ func main() {
 		return result, scheduleErr
 	}
 	run(ctx, logger, cfg.WorkerHeartbeat, cfg.DigestInterval, reportHeartbeat, scheduleDigests)
+	<-agentDone
+	<-documentDone
 	<-backfillDone
 	<-aiDone
 	<-collectorDone

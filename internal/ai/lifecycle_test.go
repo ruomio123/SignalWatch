@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,85 @@ import (
 
 	"signalwatch/internal/platform/httpx"
 )
+
+func TestNamedCredentialHTTPIdentityAndOwnership(t *testing.T) {
+	f := newAIIntegrationFixture(t)
+	uid := f.users[0].ID
+	r := gin.New()
+	r.Use(httpx.RequestIDMiddleware())
+	r.Use(func(c *gin.Context) { httpx.SetCurrentUserID(c, httpx.UserID(uid)) })
+	h := Handler{Configurations: f.configurations, Calls: f.configurations.calls, Enabled: true}
+	r.POST("/credentials", h.Credentials)
+	r.GET("/credentials/:id", h.Credential)
+	r.PUT("/credentials/:id", h.Credential)
+	r.DELETE("/credentials/:id", h.Credential)
+	call := func(method, path, body, etag string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if etag != "" {
+			req.Header.Set("If-Match", etag)
+		}
+		out := httptest.NewRecorder()
+		r.ServeHTTP(out, req)
+		return out
+	}
+	var entries []PublicConfiguration
+	for _, name := range []string{"研究", "备用"} {
+		out := call("POST", "/credentials", `{"name":"`+name+`","provider":"glm","model":"glm-4.7-flash","api_key":"named-test-key-1234"}`, "")
+		if out.Code != 201 {
+			t.Fatalf("create: %d %s", out.Code, out.Body)
+		}
+		validateAIJSON(t, out, "AIConfiguration")
+		if strings.Contains(out.Body.String(), "named-test-key") || strings.Contains(out.Body.String(), "ciphertext") {
+			t.Fatal("credential secret leaked")
+		}
+		var c PublicConfiguration
+		mustAI(t, json.Unmarshal(out.Body.Bytes(), &c))
+		if c.ID == "" || c.ID != c.Generation || c.Name != name || out.Header().Get("ETag") != configurationETag(c) {
+			t.Fatal("identity contract missing")
+		}
+		entries = append(entries, c)
+	}
+	if entries[0].ID == entries[1].ID {
+		t.Fatal("POST overwrote existing provider entry")
+	}
+	out := call("PUT", "/credentials/"+entries[0].ID, `{"name":"修改","model":"glm-4.7-flash"}`, configurationETag(entries[1]))
+	if out.Code != 409 {
+		t.Fatal("sibling ETag accepted", out.Code)
+	}
+	uid = f.users[1].ID
+	out = call("GET", "/credentials/"+entries[0].ID, "", "")
+	var other PublicConfiguration
+	mustAI(t, json.Unmarshal(out.Body.Bytes(), &other))
+	if other.Configured || other.MaskedKey != "" {
+		t.Fatal("cross-user credential exposed")
+	}
+	out = call("DELETE", "/credentials/"+entries[0].ID, "", configurationETag(entries[0]))
+	if out.Code != 409 {
+		t.Fatal("cross-user delete allowed", out.Code)
+	}
+	uid = f.users[0].ID
+	out = call("PUT", "/credentials/"+entries[0].ID, `{"name":"修改","model":"glm-4.7-flash"}`, configurationETag(entries[0]))
+	if out.Code != 200 {
+		t.Fatalf("edit: %d %s", out.Code, out.Body)
+	}
+	validateAIJSON(t, out, "AIConfiguration")
+	var updated PublicConfiguration
+	mustAI(t, json.Unmarshal(out.Body.Bytes(), &updated))
+	if updated.ID != entries[0].ID || updated.Name != "修改" {
+		t.Fatal("edit changed identity")
+	}
+	if out := call("DELETE", "/credentials/"+updated.ID, "", configurationETag(updated)); out.Code != 204 {
+		t.Fatal("delete failed", out.Code)
+	}
+	out = call("GET", "/credentials/"+entries[1].ID, "", "")
+	var sibling PublicConfiguration
+	mustAI(t, json.Unmarshal(out.Body.Bytes(), &sibling))
+	if !sibling.Usable || sibling.ID != entries[1].ID {
+		t.Fatal("sibling deleted")
+	}
+}
 
 func TestMySQLRecreatedConfigurationCannotReuseTasksOrCommands(t *testing.T) {
 	f := newAIIntegrationFixture(t)

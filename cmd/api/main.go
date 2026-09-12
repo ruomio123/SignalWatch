@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"signalwatch/internal/agent"
 	"signalwatch/internal/ai"
 	"signalwatch/internal/auth"
 	"signalwatch/internal/bootstrap"
@@ -147,15 +148,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	agentService, _ := bootstrap.OpenAgent(database, aiService, nil)
+	agentHandler := agent.Handler{Service: agentService}
 	aiHandler := ai.Handler{Service: aiService, Configurations: aiService.Configurations(), Calls: aiService.Calls(), Enabled: cfg.AIEnabled}
 	router, err := server.NewRouter(server.Dependencies{
 
-		AppEnv:      cfg.AppEnv,
-		ServiceName: serviceName,
-		Logger:      logger,
-		MySQLCheck:  sqlDB.PingContext,
-		RedisCheck:  redisCheck, AI: server.AIRoutes{GetAISummaryHandler: aiHandler.Get, RequestAISummaryHandler: aiHandler.Request,
-			ListAIProvidersHandler:       aiHandler.Providers,
+		AgentHandler: agentHandler.Handle,
+		AppEnv:       cfg.AppEnv,
+		ServiceName:  serviceName,
+		Logger:       logger,
+		MySQLCheck:   sqlDB.PingContext,
+		RedisCheck:   redisCheck, AI: server.AIRoutes{GetAISummaryHandler: aiHandler.Get, RequestAISummaryHandler: aiHandler.Request,
+			ListAIProvidersHandler: aiHandler.Providers,
+			CredentialsHandler:     aiHandler.Credentials, CredentialHandler: aiHandler.Credential, DefaultSelectionHandler: aiHandler.DefaultSelection,
 			GetAIConfigurationHandler:    aiHandler.GetConfiguration,
 			PutAIConfigurationHandler:    aiHandler.PutConfiguration,
 			PatchAIConfigurationHandler:  aiHandler.PatchConfiguration,

@@ -1,15 +1,14 @@
 openapi: 3.0.3
 info:
   title: SignalWatch API
-  version: 2.3.0-sessions
+  version: 2.5.0-credentials
   description: |
     SignalWatch M4 HTTP API contract. All timestamps are UTC RFC3339 values.
     The public API covers identity, profile settings, the controlled source
     catalog, subscription CRUD, and the current user's matched arXiv papers.
     Background local matching provides explainable match reasons. M4 adds the
     subscription-scoped daily Digest (scheduled in the user timezone) and email delivery Worker; mail delivery operations
-    are intentionally not exposed as public endpoints. User-supplied provider credentials provide optional paper summaries and cached Digest enrichment; Agents remain
-    outside this contract. Read-only operations endpoints expose safe runtime
+    are intentionally not exposed as public endpoints. User-supplied provider credentials provide optional paper summaries and cached Digest enrichment; Bounded Agents provide persistent subscription drafting and evidence-based paper conversations. Read-only operations endpoints expose safe runtime
     status to database-authorized operator accounts; no administrative mutation
     or log-download endpoint is exposed.
 tags:
@@ -23,6 +22,464 @@ tags:
 security:
   - bearerAuth: []
 paths:
+  /api/v2/ai/credentials:
+    get:
+      operationId: listAICredentials
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AIConfiguration'
+        default:
+          $ref: '#/components/responses/AIError'
+    post:
+      operationId: createAICredential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, provider, model, api_key]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 80}
+                provider: {type: string}
+                model: {type: string}
+                api_key: {type: string, writeOnly: true, minLength: 8, maxLength: 1024}
+      responses:
+        '201':
+          description: Verified credential created with a new identity; existing keys are preserved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AIConfiguration'}
+        default:
+          $ref: '#/components/responses/AIError'
+  /api/v2/ai/credentials/{id}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+    get:
+      operationId: getAICredential
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIConfiguration'
+        default:
+          $ref: '#/components/responses/AIError'
+    put:
+      operationId: putAICredential
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIConfiguration'
+        default:
+          $ref: '#/components/responses/AIError'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - name
+              - model
+              properties:
+                name: {type: string, minLength: 1, maxLength: 80}
+                model:
+                  type: string
+                api_key:
+                  type: string
+                  writeOnly: true
+                  maxLength: 1024
+      parameters:
+      - name: If-Match
+        in: header
+        schema:
+          type: string
+        required: true
+        description: Credential generation:version in double quotes.
+    delete:
+      operationId: deleteAICredential
+      responses:
+        '204':
+          description: Completed; no response body.
+        default:
+          $ref: '#/components/responses/AIError'
+      parameters:
+      - name: If-Match
+        in: header
+        required: true
+        schema:
+          type: string
+  /api/v2/ai/credentials/{id}/test:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+    post:
+      operationId: testAICredential
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIConfiguration'
+        default:
+          $ref: '#/components/responses/AIError'
+  /api/v2/ai/default-selection:
+    get:
+      operationId: getAIDefaultSelection
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIConfiguration'
+        default:
+          $ref: '#/components/responses/AIError'
+    put:
+      operationId: putAIDefaultSelection
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIConfiguration'
+        default:
+          $ref: '#/components/responses/AIError'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - provider
+              - generation
+              - version
+              properties:
+                provider:
+                  type: string
+                model:
+                  type: string
+                generation:
+                  type: string
+                version:
+                  type: integer
+                  minimum: 1
+  /api/v2/agent/conversations:
+    get:
+      operationId: listAgentConversations
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                - page
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Conversation'
+                  page:
+                    type: integer
+        default:
+          $ref: '#/components/responses/AIError'
+      parameters:
+      - name: kind
+        in: query
+        schema:
+          type: string
+          enum:
+          - subscription
+          - paper
+      - name: paper_id
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100000
+    post:
+      operationId: createAgentConversation
+      responses:
+        '201':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+        default:
+          $ref: '#/components/responses/AIError'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - kind
+              properties:
+                kind:
+                  type: string
+                  enum:
+                  - subscription
+                  - paper
+                paper_id:
+                  type: integer
+                  minimum: 1
+  /api/v2/agent/conversations/{id}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+    get:
+      operationId: getAgentConversation
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+        default:
+          $ref: '#/components/responses/AIError'
+    delete:
+      operationId: deleteAgentConversation
+      responses:
+        '204':
+          description: Completed; no response body.
+        default:
+          $ref: '#/components/responses/AIError'
+  /api/v2/agent/conversations/{id}/messages:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+    get:
+      operationId: listAgentMessages
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                - next_before
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentMessage'
+                  next_before:
+                    type: integer
+                    minimum: 0
+        default:
+          $ref: '#/components/responses/AIError'
+      parameters:
+      - name: before
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+    post:
+      operationId: submitAgentQuestion
+      responses:
+        '202':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - run_id
+                - run
+                properties:
+                  run_id:
+                    type: string
+                  run:
+                    $ref: '#/components/schemas/AgentRun'
+        default:
+          $ref: '#/components/responses/AIError'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitAgentQuestion'
+  /api/v2/agent/runs/{id}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+    get:
+      operationId: getAgentRun
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - run
+                - steps
+                properties:
+                  run:
+                    $ref: '#/components/schemas/AgentRun'
+                  steps:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentStep'
+        default:
+          $ref: '#/components/responses/AIError'
+  /api/v2/agent/runs/{id}/cancel:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+    post:
+      operationId: cancelAgentRun
+      responses:
+        '204':
+          description: Completed; no response body.
+        default:
+          $ref: '#/components/responses/AIError'
+  /api/v2/agent/subscription-drafts/{id}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+    get:
+      operationId: getAgentDraft
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionDraft'
+        default:
+          $ref: '#/components/responses/AIError'
+    patch:
+      operationId: editAgentDraft
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version, payload]
+              properties:
+                version: {type: integer, minimum: 1}
+                payload: {$ref: '#/components/schemas/AgentDraftInput'}
+      responses:
+        '200':
+          description: New draft version; the previous version cannot be confirmed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SubscriptionDraft'}
+        default: {$ref: '#/components/responses/AIError'}
+  /api/v2/agent/subscription-drafts/{id}/confirm:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+    post:
+      operationId: confirmAgentDraft
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        default:
+          $ref: '#/components/responses/AIError'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - version
+              properties:
+                version:
+                  type: integer
+                  minimum: 1
   /api/v2/papers/{id}/ai-summary:
     parameters:
       - name: id
@@ -167,7 +624,7 @@ paths:
       parameters:
         - {name: page, in: query, schema: {type: integer, minimum: 1, maximum: 100000, default: 1}}
         - {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
-        - {name: feature, in: query, schema: {type: string, enum: [config_test, paper, digest]}}
+        - {name: feature, in: query, schema: {type: string, enum: [config_test, paper, digest, subscription_agent, paper_qa]}}
         - {name: status, in: query, schema: {type: string, enum: [started, succeeded, failed, unknown]}}
       responses:
         default: {$ref: "#/components/responses/AIError"}
@@ -714,6 +1171,282 @@ components:
         pattern: '^"[1-9][0-9]*"$'
         example: '"3"'
   schemas:
+    Conversation:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - kind
+      - title
+      - created_at
+      - updated_at
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum:
+          - subscription
+          - paper
+        paper_id:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+        active_run_id:
+          type: string
+        latest_draft_id:
+          type: string
+        created_at: &id001
+          $ref: '#/components/schemas/UTCTimestamp'
+        updated_at: *id001
+    AgentRun:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - conversation_id
+      - provider
+      - model
+      - context_mode
+      - state
+      - progress
+      - created_at
+      - updated_at
+      properties:
+        id:
+          type: string
+        conversation_id:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        context_mode:
+          type: string
+          enum:
+          - fulltext
+          - abstract
+        state:
+          type: string
+          enum:
+          - pending
+          - running
+          - completed
+          - failed
+          - unknown
+          - cancelled
+        progress:
+          type: string
+        failure_code:
+          type: string
+        deadline: *id001
+        created_at: *id001
+        updated_at: *id001
+    Citation:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - document_id
+      - content_hash
+      - page
+      - quote
+      - url
+      properties:
+        id:
+          type: string
+        document_id:
+          type: string
+        content_hash:
+          type: string
+        page:
+          type: integer
+          minimum: 0
+        quote:
+          type: string
+        url:
+          type: string
+    AgentMessage:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - conversation_id
+      - run_id
+      - role
+      - content
+      - provider
+      - model
+      - citations
+      - created_at
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        conversation_id:
+          type: string
+        run_id:
+          type: string
+        role:
+          type: string
+          enum:
+          - user
+          - assistant
+        content:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Citation'
+        draft_id:
+          type: string
+        created_at: *id001
+    AgentStep:
+      type: object
+      additionalProperties: false
+      required:
+      - run_id
+      - sequence
+      - kind
+      - duration_ms
+      - input_tokens
+      - output_tokens
+      - created_at
+      properties:
+        run_id:
+          type: string
+        sequence:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          enum:
+          - model
+          - tool
+        tool:
+          type: string
+        call_id:
+          type: string
+        duration_ms:
+          type: integer
+          minimum: 0
+        input_tokens:
+          type: integer
+          minimum: 0
+        output_tokens:
+          type: integer
+          minimum: 0
+        failure_code:
+          type: string
+        created_at: *id001
+    SubmitAgentQuestion:
+      type: object
+      additionalProperties: false
+      required:
+      - question
+      - provider
+      - model
+      - idempotency_key
+      properties:
+        question:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        provider:
+          type: string
+          maxLength: 32
+        model:
+          type: string
+          maxLength: 64
+        credential_id: {type: string, maxLength: 64, description: Explicit credential identity; legacy provider-only selection is accepted only when unambiguous.}
+        idempotency_key:
+          type: string
+          minLength: 8
+          maxLength: 64
+        context_mode:
+          type: string
+          enum:
+          - fulltext
+          - abstract
+          default: fulltext
+    SubscriptionDraft:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - conversation_id
+      - version
+      - payload
+      - expires_at
+      - created_at
+      properties:
+        id:
+          type: string
+        conversation_id:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        payload:
+          $ref: '#/components/schemas/AgentDraftInput'
+        subscription_id:
+          type: integer
+          minimum: 1
+        expires_at: *id001
+        created_at: *id001
+    AgentDraftInput:
+      type: object
+      additionalProperties: false
+      required:
+      - source_id
+      - name
+      - objective
+      - enabled
+      - max_items_per_digest
+      - digest_ai_enabled
+      - digest_ai_language
+      - rules
+      properties:
+        source_id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+        objective:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+          nullable: true
+        max_items_per_digest:
+          type: integer
+          minimum: 1
+          maximum: 20
+        digest_ai_enabled:
+          type: boolean
+        digest_ai_language:
+          type: string
+          enum:
+          - zh
+          - en
+        rules:
+          type: object
+          additionalProperties: false
+          required:
+          - category
+          - keywords
+          properties:
+            category:
+              type: string
+            keywords:
+              type: array
+              items:
+                type: string
     HealthResponse:
       type: object
       additionalProperties: false
@@ -1371,8 +2104,11 @@ components:
       additionalProperties: false
       required: [configured, usable]
       properties:
+        id: {type: string, minLength: 1, maxLength: 64, description: "Stable credential identity, equal to generation."}
+        name: {type: string, maxLength: 80}
         generation: {type: string, minLength: 1, maxLength: 64}
         configured: {type: boolean}
+        is_default: {type: boolean}
         usable: {type: boolean}
         unusable_reason: {type: string, enum: [provider_disabled, model_retired, credential_invalid]}
         provider: {type: string, enum: [glm, qwen, deepseek, openai, kimi]}
@@ -1405,7 +2141,7 @@ components:
             additionalProperties: false
             required: [feature, daily_limit, calls, min_interval_seconds]
             properties:
-              feature: {type: string, enum: [config_test, paper, digest]}
+              feature: {type: string, enum: [config_test, paper, digest, subscription_agent, paper_qa]}
               daily_limit: {type: integer, minimum: 0, description: Zero means unlimited.}
               calls: {type: integer, minimum: 0}
               remaining: {type: integer, minimum: 0}
@@ -1421,7 +2157,7 @@ components:
             required: [day, feature, calls, succeeded, failed, input_tokens, output_tokens, usage_missing]
             properties:
               day: {type: string, format: date}
-              feature: {type: string, enum: [digest, paper, config_test]}
+              feature: {type: string, enum: [digest, paper, config_test, subscription_agent, paper_qa]}
               calls: {type: integer, minimum: 0}
               succeeded: {type: integer, minimum: 0}
               failed: {type: integer, minimum: 0}
@@ -1445,7 +2181,7 @@ components:
             required: [id, feature, provider, model, status, created_at, duration_ms, input_tokens, output_tokens, usage_known]
             properties:
               id: {type: string}
-              feature: {type: string, enum: [config_test, paper, digest]}
+              feature: {type: string, enum: [config_test, paper, digest, subscription_agent, paper_qa]}
               provider: {type: string}
               model: {type: string}
               status: {type: string, enum: [started, succeeded, failed, unknown]}

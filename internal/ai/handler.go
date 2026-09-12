@@ -339,6 +339,8 @@ func (h Handler) writeConfigurationError(c *gin.Context, err error) {
 	}
 
 	switch {
+	case errors.Is(err, ErrInvalidCredentialName):
+		httpx.WriteError(c, 400, httpx.CodeValidationError, "name must contain 1 to 80 characters")
 	case errors.Is(err, ErrConfigurationRequired):
 		httpx.WriteError(c, 409, "AI_CONFIGURATION_REQUIRED", "configure an AI provider first")
 	case errors.Is(err, ErrConfigurationInvalid):
@@ -416,4 +418,125 @@ func (h Handler) ListCalls(c *gin.Context) {
 		return
 	}
 	c.JSON(200, result)
+}
+
+func (h Handler) Credentials(c *gin.Context) {
+	uid, ok := currentAIUser(c)
+	if !ok {
+		return
+	}
+	if c.Request.Method == "POST" && !h.requireEnabled(c) {
+		return
+	}
+	if !h.Enabled || h.Configurations == nil {
+		c.JSON(200, gin.H{"items": []any{}})
+		return
+	}
+	if c.Request.Method == "POST" {
+		if !h.requireEnabled(c) {
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
+		var input struct {
+			Name     string `json:"name"`
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+			APIKey   string `json:"api_key"`
+		}
+		if !httpx.BindJSON(c, &input) {
+			return
+		}
+		value, err := h.Configurations.CreateCredential(c.Request.Context(), uid, input.Name, input.Provider, input.Model, input.APIKey)
+		input.APIKey = ""
+		if err != nil {
+			h.writeConfigurationError(c, err)
+			return
+		}
+		c.Header("ETag", configurationETag(value))
+		c.JSON(http.StatusCreated, value)
+		return
+	}
+	rows, err := h.Configurations.ListCredentials(c.Request.Context(), uid)
+	if err != nil {
+		h.writeConfigurationError(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"items": rows})
+}
+func (h Handler) Credential(c *gin.Context) {
+	uid, ok := currentAIUser(c)
+	if !ok || !h.requireEnabled(c) {
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
+	id := c.Param("id")
+	c.Request = c.Request.WithContext(CredentialIDContext(c.Request.Context(), id))
+	switch c.Request.Method {
+	case "GET":
+		h.GetConfiguration(c)
+	case "DELETE":
+		h.DeleteConfiguration(c)
+	case "POST":
+		h.TestConfiguration(c)
+	case "PUT":
+		var input struct {
+			Name   string `json:"name"`
+			Model  string `json:"model"`
+			APIKey string `json:"api_key"`
+		}
+		if !httpx.BindJSON(c, &input) {
+			return
+		}
+		version, present, valid := h.optionalIfMatch(c)
+		if !valid {
+			return
+		}
+		if !present {
+			httpx.WriteError(c, 400, httpx.CodeValidationError, "If-Match is required")
+			return
+		}
+		value, err := h.Configurations.UpdateCredential(c.Request.Context(), uid, id, input.Name, input.Model, input.APIKey, version)
+		input.APIKey = ""
+		if err != nil {
+			h.writeConfigurationError(c, err)
+			return
+		}
+		writeConfiguration(c, value)
+	}
+}
+func (h Handler) DefaultSelection(c *gin.Context) {
+	if c.Request.Method == "GET" {
+		h.GetConfiguration(c)
+		return
+	}
+	uid, ok := currentAIUser(c)
+	if !ok || !h.requireEnabled(c) {
+		return
+	}
+	var input struct {
+		Provider   string `json:"provider"`
+		Model      string `json:"model"`
+		Generation string `json:"generation"`
+		Version    uint64 `json:"version"`
+	}
+	if !httpx.BindJSON(c, &input) {
+		return
+	}
+	ctx := CredentialIDContext(c.Request.Context(), input.Generation)
+	current, err := h.Configurations.Get(ctx, uid)
+	if err == nil && (current.Generation != input.Generation || current.Version != input.Version || current.ProviderID != input.Provider) {
+		err = ErrConfigurationConflict
+	}
+	if err == nil && input.Model != "" && input.Model != current.ModelID {
+		current, err = h.Configurations.ChangeModel(ctx, uid, input.Version, input.Model)
+	}
+	if err == nil {
+		err = h.Configurations.SelectDefault(ctx, uid, input.Provider, current.Generation, current.Version)
+	}
+	if err != nil {
+		h.writeConfigurationError(c, err)
+		return
+	}
+	current.IsDefault = true
+	writeConfiguration(c, current)
 }

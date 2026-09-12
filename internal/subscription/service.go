@@ -136,73 +136,11 @@ func (service *Service) Create(
 	userID uint64,
 	input CreateInput,
 ) (PublicSubscription, error) {
-	if userID == 0 {
-		return PublicSubscription{}, ErrUserNotFound
-	}
-	if input.SourceID == 0 {
-		return PublicSubscription{}, ErrInvalidSourceID
-	}
-
-	catalog, err := service.sources.Get(ctx, input.SourceID)
-	if err != nil {
-		return PublicSubscription{}, fmt.Errorf("get source catalog entry: %w", err)
-	}
-
-	name := strings.TrimSpace(input.Name)
-	if name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > maxNameRunes {
-		return PublicSubscription{}, ErrInvalidName
-	}
-	objective, err := normalizeObjective(input.Objective)
+	subscription, catalog, normalizedRules, err := service.prepareCreate(ctx, userID, input)
 	if err != nil {
 		return PublicSubscription{}, err
 	}
-	normalizedRules, err := NormalizeRules(input.Rules, catalog)
-	if err != nil {
-		return PublicSubscription{}, err
-	}
-
-	enabled := true
-	if input.Enabled != nil {
-		enabled = *input.Enabled
-	}
-	if input.MaxItemsPerDigest != nil && (*input.MaxItemsPerDigest < 1 || *input.MaxItemsPerDigest > 20) {
-		return PublicSubscription{}, ErrInvalidDigestLimit
-	}
-	language := "zh"
-	if input.DigestAILanguage != nil {
-		language = *input.DigestAILanguage
-	}
-	if language != "zh" && language != "en" {
-		return PublicSubscription{}, ErrInvalidAILanguage
-	}
-	aiEnabled := input.DigestAIEnabled != nil && *input.DigestAIEnabled
-	if aiEnabled {
-		if service.aiConfiguration == nil {
-			return PublicSubscription{}, ErrAIConfigurationRequired
-		}
-		active, err := service.aiConfiguration.Active(ctx, userID)
-		if err != nil {
-			return PublicSubscription{}, err
-		}
-		if !active {
-			return PublicSubscription{}, ErrAIConfigurationRequired
-		}
-	}
-	subscription := Subscription{
-		UserID:           userID,
-		SourceID:         catalog.ID,
-		Name:             name,
-		Objective:        objective,
-		Enabled:          enabled,
-		Version:          InitialVersion,
-		DigestAIEnabled:  aiEnabled,
-		DigestAILanguage: language,
-	}
-	if input.MaxItemsPerDigest != nil {
-		subscription.MaxItemsPerDigest = *input.MaxItemsPerDigest
-	}
-	subscription.Category = normalizedRules.Category
-	subscription.KeywordsJSON, _ = json.Marshal(normalizedRules.Keywords)
+	enabled := subscription.Enabled
 	commandTime := service.now().UTC()
 	if err := service.createAtomic(ctx, &subscription, BackfillWindow{
 		From: commandTime.Add(-7 * 24 * time.Hour), To: commandTime, MatchedAt: commandTime,
@@ -378,4 +316,75 @@ func publicSubscription(row QueryResult) (PublicSubscription, error) {
 		item.Backfill.State = "complete"
 	}
 	return PublicSubscription{ID: item.ID, Source: source, Name: item.Name, Objective: item.Objective, Enabled: item.Enabled, Version: item.Version, MaxItemsPerDigest: item.MaxItemsPerDigest, DigestAIEnabled: item.DigestAIEnabled, DigestAILanguage: item.DigestAILanguage, Backfill: item.Backfill, Rules: RulesInput{Category: item.Category, Keywords: keywords}, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}, nil
+}
+
+func (service *Service) prepareCreate(ctx context.Context, userID uint64, input CreateInput) (Subscription, source.PublicSource, RulesInput, error) {
+	if userID == 0 {
+		return Subscription{}, source.PublicSource{}, RulesInput{}, ErrUserNotFound
+	}
+	if input.SourceID == 0 {
+		return Subscription{}, source.PublicSource{}, RulesInput{}, ErrInvalidSourceID
+	}
+
+	catalog, err := service.sources.Get(ctx, input.SourceID)
+	if err != nil {
+		return Subscription{}, source.PublicSource{}, RulesInput{}, fmt.Errorf("get source catalog entry: %w", err)
+	}
+
+	name := strings.TrimSpace(input.Name)
+	if name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > maxNameRunes {
+		return Subscription{}, source.PublicSource{}, RulesInput{}, ErrInvalidName
+	}
+	objective, err := normalizeObjective(input.Objective)
+	if err != nil {
+		return Subscription{}, source.PublicSource{}, RulesInput{}, err
+	}
+	normalizedRules, err := NormalizeRules(input.Rules, catalog)
+	if err != nil {
+		return Subscription{}, source.PublicSource{}, RulesInput{}, err
+	}
+
+	enabled := true
+	if input.Enabled != nil {
+		enabled = *input.Enabled
+	}
+	if input.MaxItemsPerDigest != nil && (*input.MaxItemsPerDigest < 1 || *input.MaxItemsPerDigest > 20) {
+		return Subscription{}, source.PublicSource{}, RulesInput{}, ErrInvalidDigestLimit
+	}
+	language := "zh"
+	if input.DigestAILanguage != nil {
+		language = *input.DigestAILanguage
+	}
+	if language != "zh" && language != "en" {
+		return Subscription{}, source.PublicSource{}, RulesInput{}, ErrInvalidAILanguage
+	}
+	aiEnabled := input.DigestAIEnabled != nil && *input.DigestAIEnabled
+	if aiEnabled {
+		if service.aiConfiguration == nil {
+			return Subscription{}, source.PublicSource{}, RulesInput{}, ErrAIConfigurationRequired
+		}
+		active, err := service.aiConfiguration.Active(ctx, userID)
+		if err != nil {
+			return Subscription{}, source.PublicSource{}, RulesInput{}, err
+		}
+		if !active {
+			return Subscription{}, source.PublicSource{}, RulesInput{}, ErrAIConfigurationRequired
+		}
+	}
+	subscription := Subscription{
+		UserID:           userID,
+		SourceID:         catalog.ID,
+		Name:             name,
+		Objective:        objective,
+		Enabled:          enabled,
+		Version:          InitialVersion,
+		DigestAIEnabled:  aiEnabled,
+		DigestAILanguage: language,
+	}
+	if input.MaxItemsPerDigest != nil {
+		subscription.MaxItemsPerDigest = *input.MaxItemsPerDigest
+	}
+	subscription.Category = normalizedRules.Category
+	subscription.KeywordsJSON, _ = json.Marshal(normalizedRules.Keywords)
+	return subscription, catalog, normalizedRules, nil
 }

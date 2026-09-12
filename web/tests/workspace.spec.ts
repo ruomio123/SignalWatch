@@ -93,36 +93,34 @@ test("closing paper modal cancels AI polling", async ({ page }) => {
   expect(calls).toBe(stopped);
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
-test("delete configuration uses lifecycle ETag and clears view", async ({
+test("delete API entry uses its lifecycle ETag and clears the list", async ({
   page,
 }) => {
   await setup(page);
   let deleted = false;
-  await page.route("**/api/v2/ai/configuration", async (route) => {
-    if (route.request().method() === "DELETE") {
-      expect(route.request().headers()["if-match"]).toBe('"lifecycle-A:4"');
-      deleted = true;
-      await route.fulfill({ status: 204 });
-      return;
-    }
-    await route.fulfill({
-      json: deleted
-        ? { configured: false, usable: false }
-        : {
-            configured: true,
-            usable: true,
-            provider: "qwen",
-            model: "qwen-plus",
-            masked_key: "••••1234",
-            generation: "lifecycle-A",
-            version: 4,
-          },
-    });
+  const c = {
+    id: "lifecycle-A",
+    name: "日常 API",
+    configured: true,
+    usable: true,
+    provider: "qwen",
+    model: "qwen-plus",
+    masked_key: "••••1234",
+    generation: "lifecycle-A",
+    version: 4,
+  };
+  await page.route("**/api/v2/ai/credentials", (r) =>
+    r.fulfill({ json: { items: deleted ? [] : [c] } }),
+  );
+  await page.route("**/api/v2/ai/credentials/lifecycle-A", (r) => {
+    expect(r.request().headers()["if-match"]).toBe('"lifecycle-A:4"');
+    deleted = true;
+    return r.fulfill({ status: 204 });
   });
-  await page.goto("/settings");
-  await page.getByRole("button", { name: "删除 AI 配置" }).click();
-  await page.getByRole("button", { name: "确认删除配置" }).click();
-  await expect(page.getByText("尚未配置供应商", { exact: true })).toBeVisible();
+  await page.goto("/api-keys");
+  await page.getByRole("button", { name: "删除", exact: true }).click();
+  await page.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect(page.getByText("还没有 API Key", { exact: true })).toBeVisible();
   expect(deleted).toBe(true);
 });
 

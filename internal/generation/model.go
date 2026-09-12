@@ -4,6 +4,7 @@ package generation
 import "time"
 
 type Result struct {
+	CallID       string
 	Content      []byte
 	InputTokens  int64
 	OutputTokens int64

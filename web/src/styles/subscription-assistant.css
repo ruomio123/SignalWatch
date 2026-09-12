@@ -1,0 +1,357 @@
+.subscriptions-page {
+  container: subscriptions / inline-size;
+  min-width: 0;
+}
+.subscriptions-workspace {
+  display: grid;
+  align-items: start;
+  gap: 24px;
+  min-width: 0;
+}
+.subscriptions-content {
+  container: subscription-list / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+.subscriptions-content .workspace-header {
+  flex-wrap: wrap;
+}
+@container subscriptions (min-width: 1080px) {
+  .subscriptions-workspace.has-assistant {
+    grid-template-columns: minmax(0, 1fr) clamp(440px, 42%, 560px);
+  }
+}
+.subscription-assistant-panel {
+  position: sticky;
+  top: 88px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  width: 100%;
+  max-width: none;
+  height: calc(100dvh - 112px);
+  max-height: none;
+  min-width: 0;
+  color: var(--ink);
+  background: var(--surface);
+  overflow: hidden;
+}
+.subscription-assistant-panel.is-fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+  border: 0;
+  border-radius: 0;
+}
+.subscription-assistant-panel::backdrop {
+  background: var(--background);
+}
+.subscription-assistant {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-size: 14px;
+}
+.subscription-assistant-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.subscription-assistant-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius);
+  background: var(--primary);
+  color: var(--surface);
+  flex-shrink: 0;
+}
+.subscription-assistant-heading {
+  flex: 1;
+  min-width: 0;
+}
+.subscription-assistant-heading p {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.subscription-assistant-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  padding: 20px;
+  scrollbar-gutter: stable;
+}
+.subscription-assistant-scroll > .notice,
+.subscription-assistant-scroll > .content-card {
+  margin-bottom: 16px;
+}
+.subscription-assistant-settings {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+  margin-bottom: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--background);
+}
+.subscription-assistant-settings .toolbar {
+  padding: 0;
+  margin: 0;
+}
+.subscription-assistant-settings .toolbar label {
+  width: 100%;
+}
+.subscription-assistant-settings label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.subscription-assistant-settings select {
+  width: 100%;
+  min-width: 0;
+}
+.subscription-assistant .agent-messages {
+  gap: 16px;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+}
+.subscription-assistant .agent-message {
+  border: 0;
+  background: var(--background);
+  border-radius: 12px 12px 12px 3px;
+  padding: 14px 16px;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  justify-self: start;
+}
+.subscription-assistant .agent-message.user {
+  justify-self: end;
+  max-width: 90%;
+  background: var(--primary);
+  color: var(--surface);
+  border-radius: 12px 12px 3px 12px;
+}
+.subscription-assistant .agent-message > strong {
+  display: none;
+}
+.subscription-assistant .agent-message > small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.subscription-draft {
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  background: var(--surface);
+  min-width: 0;
+  overflow: hidden;
+}
+.subscription-draft-header {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--background);
+}
+.subscription-draft-header > div {
+  flex: 1;
+  min-width: 0;
+}
+.subscription-draft-header > svg {
+  color: var(--primary);
+}
+.subscription-draft-header h3 {
+  font-size: 16px;
+}
+.subscription-draft-header p {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.subscription-draft-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  padding: 0 18px;
+  column-gap: 20px;
+}
+.subscription-draft-fields > div {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.subscription-draft-fields dt {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.subscription-draft-fields dd {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.subscription-draft-fields small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+.subscription-draft-objective {
+  grid-column: 1 / -1;
+}
+.subscription-draft-footer {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+}
+.subscription-draft-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+.subscription-draft-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.subscription-draft-actions .button {
+  padding-inline: 8px;
+}
+.subscription-draft-footer > .button {
+  justify-self: start;
+  font-size: 12px;
+}
+.subscription-draft-editor {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+.subscription-draft-editor label {
+  display: grid;
+  gap: 6px;
+}
+.subscription-draft-editor label:has(input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+}
+.subscription-assistant-bottom {
+  flex-shrink: 0;
+  padding: 12px 20px max(16px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.subscription-assistant-status {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  max-height: 100px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+.subscription-assistant-status > [role="status"] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.subscription-assistant-status .button {
+  font-size: 12px;
+  min-height: 30px;
+}
+.subscription-assistant-confirmation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 8px 0 12px;
+}
+.subscription-composer-field {
+  position: relative;
+}
+.subscription-composer-field textarea {
+  display: block;
+  width: 100%;
+  min-height: 88px;
+  max-height: 160px;
+  resize: none;
+  padding: 12px 64px 12px 12px;
+  border-radius: var(--card-radius);
+}
+.subscription-composer-field .button {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+}
+.subscription-composer-meta {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  padding-top: 8px;
+  overflow-wrap: anywhere;
+}
+.subscription-composer-meta > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+@media (max-width: 767px) {
+  .subscription-assistant-header {
+    padding: 14px 12px;
+    gap: 8px;
+  }
+  .subscription-assistant-mark {
+    width: 34px;
+    height: 34px;
+  }
+  .subscription-assistant-heading p {
+    font-size: 11px;
+  }
+  .subscription-assistant-scroll {
+    padding: 16px 12px;
+  }
+  .subscription-assistant-bottom {
+    padding-inline: 12px;
+  }
+  .subscription-draft-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .subscription-draft-header,
+  .subscription-draft-footer {
+    padding: 14px;
+  }
+  .subscription-draft-fields {
+    padding-inline: 14px;
+  }
+  .subscription-draft-actions .button {
+    font-size: 12px;
+  }
+  .subscription-assistant-confirmation {
+    font-size: 11px;
+  }
+}

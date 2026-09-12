@@ -1,3 +1,4 @@
+import { AgentDialog } from "../components/AgentChat";
 import { useCountdown } from "../lib/useCountdown";
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -164,7 +165,21 @@ export function Papers() {
           </>
         )
       )}
-      {selected > 0 && (
+      {selected > 0 && params.get("assistant") === "paper" && (
+        <AgentDialog
+          kind="paper"
+          paperID={selected}
+          onClose={() =>
+            setParams((p) => {
+              const n = new URLSearchParams(p);
+              n.delete("assistant");
+              n.delete("conversation");
+              return n;
+            })
+          }
+        />
+      )}
+      {selected > 0 && params.get("assistant") !== "paper" && (
         <PaperDetail
           key={selected}
           id={selected}
@@ -181,6 +196,7 @@ export function Papers() {
   );
 }
 function PaperDetail({ id, onClose }: { id: number; onClose: () => void }) {
+  const [, setParams] = useSearchParams();
   const { token } = useSession();
   const paper = useResource(
     useCallback(
@@ -235,6 +251,19 @@ function PaperDetail({ id, onClose }: { id: number; onClose: () => void }) {
                 </a>
               </div>
             </div>
+            <button
+              className="button button-primary"
+              onClick={() =>
+                setParams((p) => {
+                  const n = new URLSearchParams(p);
+                  n.set("assistant", "paper");
+                  n.delete("conversation");
+                  return n;
+                })
+              }
+            >
+              AI 全文对话
+            </button>
             <PaperSummary id={id} />
           </>
         )

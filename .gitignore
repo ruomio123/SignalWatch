@@ -12,12 +12,13 @@ coverage.out
 
 # Runtime output
 *.log
+/evals/
 
 # Editors and operating systems
 .vscode/
 .idea/
 .DS_Store
-document/
+/document/
 docs/*
 !docs/architecture-v2.md
 !docs/refactor-progress.md
@@ -26,5 +27,10 @@ web/test-results/
 web/playwright-report/
 
 # Local scripts and GitHub configuration (kept locally, not tracked)
-/scripts/
+/scripts/*
+!/scripts/check-architecture.py
+!/scripts/test-migrations.sh
+!/scripts/verify.sh
 /.github/
+
+!docs/agent-architecture.md

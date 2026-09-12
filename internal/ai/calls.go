@@ -13,11 +13,13 @@ import (
 // CallPolicy is shared by interactive validation and background generation.
 // Zero daily limits explicitly mean unlimited; intervals are independent of billing.
 type CallPolicy struct {
-	ConfigInterval     time.Duration
-	GenerationInterval time.Duration
-	ConfigDailyLimit   int
-	PaperDailyLimit    int
-	DigestDailyLimit   int
+	ConfigInterval              time.Duration
+	GenerationInterval          time.Duration
+	ConfigDailyLimit            int
+	PaperDailyLimit             int
+	DigestDailyLimit            int
+	SubscriptionAgentDailyLimit int
+	PaperQADailyLimit           int
 }
 
 func DefaultCallPolicy() CallPolicy {
@@ -27,6 +29,10 @@ func (p CallPolicy) limit(feature string) int {
 	switch feature {
 	case FeatureConfigTest:
 		return p.ConfigDailyLimit
+	case FeatureSubscriptionAgent:
+		return p.SubscriptionAgentDailyLimit
+	case FeaturePaperQA:
+		return p.PaperQADailyLimit
 	case FeaturePaper:
 		return p.PaperDailyLimit
 	default:
@@ -40,7 +46,7 @@ func (p CallPolicy) interval(feature string) time.Duration {
 	return p.GenerationInterval
 }
 func validFeature(f string) bool {
-	return f == FeatureConfigTest || f == FeaturePaper || f == FeatureDigest
+	return f == FeatureConfigTest || f == FeaturePaper || f == FeatureDigest || f == FeatureSubscriptionAgent || f == FeaturePaperQA
 }
 
 type CallError struct {
@@ -185,6 +191,7 @@ func (r *CallRunner) Run(ctx context.Context, req CallRequest) (generation.Resul
 	}
 	call, cancel := context.WithTimeout(ctx, 30*time.Second)
 	result, callErr := client.GenerateLimit(call, req.System, req.Input, req.MaxTokens)
+	result.CallID = c.ID
 	if call.Err() != nil && callErr == nil {
 		code := "timeout"
 		if errors.Is(call.Err(), context.Canceled) {
@@ -255,7 +262,7 @@ func (r *CallRunner) Today(ctx context.Context, u uint64) ([]FeatureUsage, error
 		return nil, err
 	}
 	out := []FeatureUsage{}
-	for _, f := range []string{FeatureConfigTest, FeaturePaper, FeatureDigest} {
+	for _, f := range []string{FeatureConfigTest, FeaturePaper, FeatureDigest, FeatureSubscriptionAgent, FeaturePaperQA} {
 		v := FeatureUsage{Feature: f, DailyLimit: r.policy.limit(f), MinIntervalSeconds: int(r.policy.interval(f) / time.Second)}
 		for _, row := range rows {
 			if row.Feature == f {

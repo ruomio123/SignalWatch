@@ -66,6 +66,12 @@ export interface Paper {
   matches: Match[];
 }
 export interface Configuration {
+  id?: string;
+  name?: string;
+  created_at?: string;
+  last_used_at?: string;
+  last_tested_at?: string;
+  is_default?: boolean;
   configured: boolean;
   usable: boolean;
   generation?: string;

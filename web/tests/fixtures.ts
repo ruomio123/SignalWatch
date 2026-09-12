@@ -10,8 +10,10 @@ export const profile = {
 };
 export const source = {
   id: 1,
+  source_key: "arxiv",
   name: "arXiv",
   kind: "arxiv",
+  rule_types: ["category", "include_keyword"],
   allowed_categories: ["cs.AI", "cs.CL"],
 };
 export const subscription = {
@@ -57,7 +59,7 @@ export async function setup(page: Page) {
     }
     const values: Record<string, unknown> = {
       "/api/v2/me": profile,
-      "/api/v2/sources": { items: [source] },
+      "/api/v2/sources": [source],
       "/api/v2/subscriptions": {
         items: [subscription],
         total: 1,

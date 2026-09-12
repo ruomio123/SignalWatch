@@ -35,7 +35,7 @@ func OpenAI(cfg config.Config, logger *slog.Logger, completion digest.Completion
 		close()
 		return nil, nil, err
 	}
-	calls := ai.NewCallRunner(ai.NewMySQLCallStore(database), ai.CallPolicy{ConfigInterval: cfg.AIConfigTestMinInterval, GenerationInterval: cfg.AIGenerationMinInterval, ConfigDailyLimit: cfg.AIConfigTestDailyLimit, PaperDailyLimit: cfg.AIPaperDailyLimit, DigestDailyLimit: cfg.AIDigestDailyLimit}, func(e []string, p, m, k string) (ai.Generator, error) { return llm.NewProviderClient(e, p, m, k) }, cfg.AIEnabledProviders, time.Now, logger)
+	calls := ai.NewCallRunner(ai.NewMySQLCallStore(database), ai.CallPolicy{ConfigInterval: cfg.AIConfigTestMinInterval, GenerationInterval: cfg.AIGenerationMinInterval, ConfigDailyLimit: cfg.AIConfigTestDailyLimit, PaperDailyLimit: cfg.AIPaperDailyLimit, DigestDailyLimit: cfg.AIDigestDailyLimit, SubscriptionAgentDailyLimit: cfg.AISubscriptionAgentDailyLimit, PaperQADailyLimit: cfg.AIPaperQADailyLimit}, func(e []string, p, m, k string) (ai.Generator, error) { return llm.NewProviderClient(e, p, m, k) }, cfg.AIEnabledProviders, time.Now, logger)
 	configurations := ai.NewConfigurationService(ai.NewMySQLConfigurationStore(database), keyring, cfg.AIEnabledProviders, time.Now, calls, llm.Catalog{})
 	service := ai.NewService(ai.Dependencies{Tasks: &ai.Repository{DB: database}, Configurations: configurations, Calls: calls, Users: user.NewRepository(database), Papers: paper.NewQueryService(paper.NewQueryRepository(database)), Digests: digest.NewRepository(database), Completion: completion}, cfg.AIWorkers, cfg.AIQueueCapacity, cfg.AIEnabledProviders, logger, time.Now)
 	return service, close, nil
