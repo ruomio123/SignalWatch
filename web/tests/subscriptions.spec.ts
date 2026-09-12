@@ -41,6 +41,9 @@ test("manual creation uses the source catalog array and saves the subscription",
   await expect(
     dialog.getByLabel("每日邮件 AI 导读", { exact: true }),
   ).not.toBeChecked();
+  await expect(
+    dialog.getByRole("checkbox", { name: "启用订阅", exact: true }),
+  ).toBeChecked();
   await dialog.getByLabel("订阅名称").fill("手动研究订阅");
   await dialog
     .getByRole("combobox", { name: "分类", exact: true })
@@ -89,7 +92,7 @@ for (const width of [1440, 390])
       fullPage: true,
     });
     await ai.click();
-    await expect(page.getByRole("dialog", { name: "订阅助手" })).toBeVisible();
+    await expect(page.locator(".subscription-assistant-panel")).toBeVisible();
   });
 
 test("an empty catalog disables creation with an explanation", async ({

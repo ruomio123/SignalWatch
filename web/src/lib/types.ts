@@ -97,26 +97,6 @@ export interface Usage {
   output_tokens: number;
   usage_missing: number;
 }
-export interface Summary {
-  summary: string;
-  contributions: string[];
-  method: string;
-  applications: { text: string; inferred: boolean }[];
-  evidence: { field: string; quote: string }[];
-  limitations: string;
-}
-export interface SummaryResponse {
-  items: {
-    state: string;
-    language: Language;
-    content?: Summary;
-    failure_code?: string;
-    retry_at?: string;
-  }[];
-  provider?: string;
-  model?: string;
-}
-
 export interface FeatureUsage {
   feature: string;
   daily_limit: number;

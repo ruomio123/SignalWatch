@@ -80,6 +80,16 @@ func (s *MySQLStore) History(ctx context.Context, id string) ([]Message, error) 
 	}
 	return rows, err
 }
+
+// Reports are queried independently of message pagination and prompt history.
+func latestPaperReport(db *gorm.DB, conversation string) (Message, error) {
+	var message Message
+	err := db.Table("agent_messages m").Select("m.*").Joins("JOIN agent_runs r ON r.id=m.run_id").Where("m.conversation_id=? AND m.role='assistant' AND r.task=? AND r.state='completed'", conversation, TaskPaperReport).Order("m.id DESC").Take(&message).Error
+	return message, notFound(err)
+}
+func (s *MySQLStore) LatestPaperReport(ctx context.Context, conversation string) (Message, error) {
+	return latestPaperReport(s.db.WithContext(ctx), conversation)
+}
 func (s *MySQLStore) Submit(ctx context.Context, r Run) (out Run, err error) {
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lockAccount(tx, r.UserID); err != nil {
@@ -103,10 +113,33 @@ func (s *MySQLStore) Submit(ctx context.Context, r Run) (out Run, err error) {
 		if c.ActiveRunID != nil {
 			return ErrConflict
 		}
+		if r.Task == TaskPaperFollowup {
+			if c.PaperID == nil {
+				return ErrInput
+			}
+			var current paper.Paper
+			if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).Where("id=?", *c.PaperID).Take(&current).Error; err != nil {
+				return err
+			}
+			message, err := latestPaperReport(tx, c.ID)
+			if errors.Is(err, ErrNotFound) {
+				return ErrReportRequired
+			}
+			if err != nil {
+				return err
+			}
+			if _, ok := validPaperReport(message, paperSnapshotHash(publicPaperSnapshot(current))); !ok {
+				return ErrReportRequired
+			}
+		}
 		if err := tx.Create(&r).Error; err != nil {
 			return err
 		}
-		m := Message{ConversationID: c.ID, RunID: r.ID, Role: "user", Content: r.Question, Provider: r.Provider, Model: r.Model, Citations: json.RawMessage("[]"), CreatedAt: r.CreatedAt}
+		content := r.Question
+		if r.Task == TaskPaperReport {
+			content = PaperReportMessage
+		}
+		m := Message{ConversationID: c.ID, RunID: r.ID, Role: "user", Content: content, Provider: r.Provider, Model: r.Model, Citations: json.RawMessage("[]"), CreatedAt: r.CreatedAt}
 		if err := tx.Create(&m).Error; err != nil {
 			return err
 		}
@@ -151,7 +184,7 @@ func (s *MySQLStore) Claim(ctx context.Context, owner string) (r Run, err error)
 		r.Epoch++
 		r.LeaseOwner = owner
 		r.State = "running"
-		if err := tx.Model(&Run{}).Where("id=?", r.ID).Updates(map[string]any{"state": "running", "lease_owner": owner, "epoch": r.Epoch, "lease_until": gorm.Expr("DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 30 SECOND)"), "deadline": gorm.Expr("COALESCE(deadline,DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 180 SECOND))"), "updated_at": gorm.Expr("UTC_TIMESTAMP(6)")}).Error; err != nil {
+		if err := tx.Model(&Run{}).Where("id=?", r.ID).Updates(map[string]any{"state": "running", "lease_owner": owner, "epoch": r.Epoch, "lease_until": gorm.Expr("DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 30 SECOND)"), "deadline": gorm.Expr("COALESCE(deadline,DATE_ADD(UTC_TIMESTAMP(6),INTERVAL ? SECOND))", int(runDuration(r).Seconds())), "updated_at": gorm.Expr("UTC_TIMESTAMP(6)")}).Error; err != nil {
 			return err
 		}
 		return tx.Where("id=?", r.ID).Take(&r).Error
@@ -184,8 +217,15 @@ func (s *MySQLStore) Renew(ctx context.Context, r Run) error {
 }
 func (s *MySQLStore) Save(ctx context.Context, r Run, cp Checkpoint, progress string, step *Step) error {
 	raw, _ := json.Marshal(cp)
+	updates := map[string]any{"checkpoint": string(raw), "progress": progress, "updated_at": gorm.Expr("UTC_TIMESTAMP(6)")}
+	if cp.Paper != nil {
+		updates["effective_context_mode"] = cp.Paper.Mode
+		updates["fallback_reason"] = cp.Paper.FallbackReason
+		updates["batch_total"] = cp.Paper.BatchTotal
+		updates["batch_completed"] = cp.Paper.BatchCompleted
+	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		q := owned(tx, r).Where("deadline>UTC_TIMESTAMP(6)").Updates(map[string]any{"checkpoint": string(raw), "progress": progress, "updated_at": gorm.Expr("UTC_TIMESTAMP(6)")})
+		q := owned(tx, r).Where("deadline>UTC_TIMESTAMP(6)").Updates(updates)
 		if q.Error != nil {
 			return q.Error
 		}
@@ -214,6 +254,19 @@ func (s *MySQLStore) Finish(ctx context.Context, r Run, state, code string, m *M
 				var p paper.Paper
 				if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).Where("id=?", *c.PaperID).Take(&p).Error; err != nil {
 					return err
+				}
+				if r.WorkflowVersion == PaperWorkflowVersion {
+					var snapshot Checkpoint
+					var stored Run
+					if err := tx.Where("id=?", r.ID).Take(&stored).Error; err != nil {
+						return err
+					}
+					if json.Unmarshal(stored.Checkpoint, &snapshot) != nil || snapshot.Paper == nil || snapshot.Paper.PaperHash != paperSnapshotHash(publicPaperSnapshot(p)) {
+						return ErrConflict
+					}
+					if stored.Deadline == nil || !stored.Deadline.After(time.Now()) {
+						return ErrBudget
+					}
 				}
 				// References are immutable snapshots. Check each against the current paper.
 				var refs []Citation

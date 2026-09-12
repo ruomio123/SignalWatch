@@ -7,6 +7,7 @@ import {
   type ErrorInfo,
   type HTMLAttributes,
   type ReactNode,
+  type Ref,
   type KeyboardEvent,
 } from "react";
 import {
@@ -153,17 +154,21 @@ export function EmptyState({
 }
 export function PageTitle({
   title,
+  headingRef,
   description,
   children,
 }: {
   title: string;
+  headingRef?: Ref<HTMLHeadingElement>;
   description?: string;
   children?: ReactNode;
 }) {
   return (
     <header className="workspace-header">
       <div>
-        <h1>{title}</h1>
+        <h1 ref={headingRef} tabIndex={headingRef ? -1 : undefined}>
+          {title}
+        </h1>
         {description && <p>{description}</p>}
       </div>
       {children}

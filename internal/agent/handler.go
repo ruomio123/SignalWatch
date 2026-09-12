@@ -192,6 +192,9 @@ func writeError(c *gin.Context, err error) {
 		if code == "AI_CONFIGURATION_REQUIRED" {
 			status = 409
 		}
+	case errors.Is(err, ErrReportRequired):
+		status = 409
+		code = "PAPER_REPORT_REQUIRED"
 	case errors.Is(err, ErrInput):
 		status = 400
 		code = "AGENT_INVALID_INPUT"

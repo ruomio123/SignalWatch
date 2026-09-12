@@ -86,7 +86,7 @@ func (s *MySQLStore) Complete(ctx context.Context, d Document, chunks []Chunk, h
 		if err := tx.CreateInBatches(chunks, 50).Error; err != nil {
 			return err
 		}
-		return tx.Model(&Document{}).Where("id=?", d.ID).Updates(map[string]any{"state": "ready", "content_hash": hash, "source_version": version, "page_count": chunks[len(chunks)-1].Page, "updated_at": gorm.Expr("UTC_TIMESTAMP(6)")}).Error
+		return tx.Model(&Document{}).Where("id=?", d.ID).Updates(map[string]any{"state": "ready", "content_hash": hash, "source_version": version, "page_count": d.PageCount, "text_complete": d.TextComplete, "sections": d.Sections, "updated_at": gorm.Expr("UTC_TIMESTAMP(6)")}).Error
 	})
 }
 

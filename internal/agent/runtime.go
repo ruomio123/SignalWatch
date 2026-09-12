@@ -32,12 +32,7 @@ list_subscription_options {} lists enabled sources/categories and rule semantics
 preview_subscription {"source_id":1,"rules":{"category":"cs.AI","keywords":["vision language"]}} previews only local recent papers.
 propose_subscription {"source_id":1,"name":"title","objective":"interest","rules":{"category":"cs.AI","keywords":[]},"max_items_per_digest":20,"digest_ai_enabled":false,"digest_ai_language":"zh"} saves a draft for user confirmation, never creates a subscription. Call this only when the user's intent is sufficiently clear. One proposal ends the turn. type=draft uses the same arguments.
 Only ONE category and keyword OR semantics are supported. Clarify requested AND, multi-category, author or exclusion constraints instead of silently broadening. Translate Chinese research interests to appropriate English keyword variants and explain the mapping in content. Empty keywords mean all papers in the category. Do not enable email AI unless explicitly requested. Omit max_items_per_digest unless specified; the user's default will be applied. Unknown categories must be checked with the options tool.
-Paper tools:
-get_document_outline {} returns page excerpts and evidence IDs. For broad overview inspect the outline first.
-search_document {"query":"English search terms"} retrieves full-text passages. Translate Chinese questions to English search terms and resolve references using conversation history.
-read_document_chunks {"numbers":[1,2]} reads at most 6 chunks of this document.
-Paper answers must cite evidence IDs in the content and include exact excerpts in citations. Ground substantive claims in the supplied evidence; state limitations and do not invent numerical results. If evidence is insufficient set insufficient_evidence=true and explain what cannot be established. In abstract mode never claim to have read the full text. Figures, complex tables and scanned content are outside current capabilities.
-When final_only=true you MUST finish with answer or clarify; no tools or drafts. If no supported conclusion is possible, explain the limitation. Never continue a tool loop after its budget is exhausted.`
+When final_only=true you MUST finish with answer or clarify; no tools or drafts.`
 
 func DecodeAction(raw []byte) (Action, error) {
 	var a Action
@@ -107,7 +102,7 @@ func (s *Service) worker(ctx context.Context) {
 	}
 }
 func (s *Service) process(ctx context.Context, r Run) {
-	deadline := time.Now().Add(180 * time.Second)
+	deadline := time.Now().Add(runDuration(r))
 	if r.Deadline != nil {
 		deadline = *r.Deadline
 	}
@@ -165,6 +160,9 @@ func (s *Service) process(ctx context.Context, r Run) {
 			if hex.EncodeToString(h[:]) != cp.Evidence[0].ContentHash {
 				return ErrConflict
 			}
+			if cp.Paper != nil && paperSnapshotHash(p) != cp.Paper.PaperHash {
+				return ErrConflict
+			}
 			if cp.DocumentID != "" && document.Identity(document.Source{PaperID: p.ID, ArXivID: p.ArXivID, PDFURL: p.PDFURL, UpdatedAt: p.ArXivUpdatedAt}) != cp.DocumentID {
 				return ErrConflict
 			}
@@ -182,13 +180,15 @@ func (s *Service) process(ctx context.Context, r Run) {
 		s.fail(r, "configuration_changed")
 		return
 	}
-	var doc document.Document
 	if c.Kind == "paper" {
-		doc, err = s.prepareDocument(work, r, c, &cp)
-		if err != nil {
-			s.fail(r, "document_unavailable")
+		if r.WorkflowVersion != PaperWorkflowVersion {
+			s.fail(r, "workflow_changed")
 			return
 		}
+		if err := s.processPaper(work, r, c, &cp, check); err != nil {
+			s.fail(r, paperFailureCode(err))
+		}
+		return
 	}
 	history, err := s.Store.History(work, c.ID)
 	if err != nil {
@@ -211,9 +211,6 @@ func (s *Service) process(ctx context.Context, r Run) {
 				return
 			}
 			feature := "subscription_agent"
-			if c.Kind == "paper" {
-				feature = "paper_qa"
-			}
 			started := time.Now()
 			var action Action
 			result, callErr := s.Gateway.Generate(work, ModelRequest{Run: r, Feature: feature, System: systemPrompt, Input: input,
@@ -267,23 +264,7 @@ func (s *Service) process(ctx context.Context, r Run) {
 		}
 		if a.Type == "answer" || a.Type == "clarify" {
 			citations := []Citation{}
-			if c.Kind == "paper" && a.Type == "answer" {
-				citations, err = ValidateCitations(*a, cp.Evidence)
-				if err != nil {
-					s.fail(r, "invalid_citation")
-					return
-				}
-				hasFulltext := false
-				for _, ref := range citations {
-					if ref.DocumentID == cp.DocumentID && ref.Page > 0 {
-						hasFulltext = true
-					}
-				}
-				if r.ContextMode == "fulltext" && !hasFulltext && !a.InsufficientEvidence {
-					s.fail(r, "missing_fulltext_evidence")
-					return
-				}
-			}
+
 			s.complete(work, r, a.Content, citations, cp.DraftID)
 			return
 		}
@@ -296,8 +277,6 @@ func (s *Service) process(ctx context.Context, r Run) {
 		}
 		toolProgress := "querying_options"
 		switch a.Tool {
-		case "search_document", "get_document_outline", "read_document_chunks":
-			toolProgress = "retrieving_evidence"
 		case "preview_subscription":
 			toolProgress = "previewing_subscription"
 		case "propose_subscription":
@@ -307,7 +286,7 @@ func (s *Service) process(ctx context.Context, r Run) {
 			return
 		}
 		started := time.Now()
-		result, evidence, draftID, toolErr := s.tool(work, r, c, doc, *a)
+		result, evidence, draftID, toolErr := s.tool(work, r, c, *a)
 		if toolErr != nil {
 			// Validation errors are observations, not instructions or raw storage errors.
 			result = map[string]string{"error": "invalid_tool_arguments_or_unavailable_data"}
@@ -379,14 +358,7 @@ func (s *Service) modelInput(ctx context.Context, r Run, c Conversation, cp Chec
 		budget -= len(m.Content)
 	}
 	data := map[string]any{"kind": c.Kind, "question": r.Question, "history": messages, "observations": cp.Observations, "final_only": cp.Calls >= 3, "context_mode": r.ContextMode}
-	if c.Kind == "paper" {
-		p, err := s.Papers.Get(ctx, r.UserID, *c.PaperID)
-		if err != nil {
-			return nil, err
-		}
-		data["paper"] = map[string]any{"title": p.Title, "abstract": p.Abstract}
-		data["abstract_evidence"] = cp.Evidence[0]
-	} else if c.LatestDraftID != "" {
+	if c.LatestDraftID != "" {
 		d, err := s.Store.Draft(ctx, r.UserID, c.LatestDraftID)
 		if err == nil {
 			data["current_draft"] = d

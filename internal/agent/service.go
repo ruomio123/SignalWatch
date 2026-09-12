@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"signalwatch/internal/subscription"
 	"strings"
 	"time"
@@ -38,8 +39,16 @@ func (s *Service) Conversation(ctx context.Context, uid uint64, id string) (Conv
 		return c, err
 	}
 	if c.PaperID != nil {
-		if _, err := s.Papers.Get(ctx, uid, *c.PaperID); err != nil {
+		p, err := s.Papers.Get(ctx, uid, *c.PaperID)
+		if err != nil {
 			return Conversation{}, ErrNotFound
+		}
+		report, err := s.Store.LatestPaperReport(ctx, c.ID)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return Conversation{}, err
+		}
+		if err == nil {
+			_, c.PaperReportReady = validPaperReport(report, paperSnapshotHash(p))
 		}
 	}
 	return c, nil
@@ -55,8 +64,13 @@ func (s *Service) Conversations(ctx context.Context, uid uint64, kind string, pi
 	out := []Conversation{}
 	for _, c := range rows {
 		if c.PaperID != nil {
-			if _, err := s.Papers.Get(ctx, uid, *c.PaperID); err != nil {
-				continue
+			var err error
+			c, err = s.Conversation(ctx, uid, c.ID)
+			if err != nil {
+				if errors.Is(err, ErrNotFound) {
+					continue
+				}
+				return nil, err
 			}
 		}
 		out = append(out, c)
@@ -64,6 +78,25 @@ func (s *Service) Conversations(ctx context.Context, uid uint64, kind string, pi
 	return out, nil
 }
 func (s *Service) Submit(ctx context.Context, uid uint64, id string, input SubmitInput) (Run, error) {
+	c, err := s.Conversation(ctx, uid, id)
+	if err != nil {
+		return Run{}, err
+	}
+	workflow := ""
+	if c.Kind == "paper" {
+		if input.Task == "" {
+			input.Task = TaskPaperFollowup
+		}
+		if input.Task != TaskPaperReport && input.Task != TaskPaperFollowup {
+			return Run{}, ErrInput
+		}
+		if input.Task == TaskPaperReport {
+			input.Question = PaperGoal
+		}
+		workflow = PaperWorkflowVersion
+	} else if input.Task != "" {
+		return Run{}, ErrInput
+	}
 	input.Question = strings.TrimSpace(input.Question)
 	for _, ch := range input.IdempotencyKey {
 		if ch < 33 || ch > 126 {
@@ -72,10 +105,6 @@ func (s *Service) Submit(ctx context.Context, uid uint64, id string, input Submi
 	}
 	if !utf8.ValidString(input.Question) || utf8.RuneCountInString(input.Question) < 1 || utf8.RuneCountInString(input.Question) > 2000 || len(input.IdempotencyKey) < 8 || len(input.IdempotencyKey) > 64 || len(input.Provider) > 32 || len(input.Model) > 64 || len(input.CredentialID) > 64 {
 		return Run{}, ErrInput
-	}
-	c, err := s.Conversation(ctx, uid, id)
-	if err != nil {
-		return Run{}, err
 	}
 	if input.ContextMode == "" {
 		input.ContextMode = "fulltext"
@@ -88,10 +117,13 @@ func (s *Service) Submit(ctx context.Context, uid uint64, id string, input Submi
 		return Run{}, err
 	}
 	now := time.Now().UTC()
-	raw, _ := json.Marshal(input)
+	raw, _ := json.Marshal(struct {
+		SubmitInput
+		WorkflowVersion string `json:"workflow_version,omitempty"`
+	}{input, workflow})
 	h := sha256.Sum256(raw)
 	cp, _ := json.Marshal(Checkpoint{Phase: "ready", Observations: []Observation{}, Evidence: []Citation{}})
-	r := Run{ID: rand.Text(), ConversationID: c.ID, UserID: uid, Question: input.Question, Provider: input.Provider, Model: input.Model, Generation: choice.Generation, Version: choice.Version, IdempotencyKey: input.IdempotencyKey, InputHash: hex.EncodeToString(h[:]), ContextMode: input.ContextMode, State: "pending", Progress: "queued", Checkpoint: cp, CreatedAt: now, UpdatedAt: now}
+	r := Run{Task: input.Task, WorkflowVersion: workflow, ID: rand.Text(), ConversationID: c.ID, UserID: uid, Question: input.Question, Provider: input.Provider, Model: input.Model, Generation: choice.Generation, Version: choice.Version, IdempotencyKey: input.IdempotencyKey, InputHash: hex.EncodeToString(h[:]), ContextMode: input.ContextMode, State: "pending", Progress: "queued", Checkpoint: cp, CreatedAt: now, UpdatedAt: now}
 	return s.Store.Submit(ctx, r)
 }
 func (s *Service) RunByID(ctx context.Context, uid uint64, id string) (Run, error) {
@@ -100,6 +132,10 @@ func (s *Service) RunByID(ctx context.Context, uid uint64, id string) (Run, erro
 		return r, err
 	}
 	_, err = s.Conversation(ctx, uid, r.ConversationID)
+	var cp Checkpoint
+	if err == nil && r.State == "failed" && json.Unmarshal(r.Checkpoint, &cp) == nil && cp.Paper != nil {
+		r.FailureDetail = cp.Paper.Failure
+	}
 	return r, err
 }
 func (s *Service) Confirm(ctx context.Context, uid uint64, id string, version uint32) (subscription.PublicSubscription, error) {

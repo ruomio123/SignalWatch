@@ -36,16 +36,24 @@ func (g agentGateway) Selection(ctx context.Context, u uint64, p, m, id string) 
 }
 func (g agentGateway) Generate(ctx context.Context, r agent.ModelRequest) (generation.Result, error) {
 	value, err := g.configuration.GenerateForCredential(ctx, r.Run.UserID, r.Run.Provider, r.Run.Model, r.Run.Generation, r.Run.Version, r.Feature, r.Run.ID, r.System, r.Input, r.Before, func(value generation.Result) error {
-		if err := r.Validate(value); err != nil {
-			return &generation.Failure{Code: "invalid_output"}
-		}
-		return nil
-	})
+		return agentValidationError(r.Validate(value))
+	}, r.Schema)
 	if err != nil {
 		return value, agentError(err)
 	}
 	return value, nil
 }
+func agentValidationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var output *generation.OutputError
+	if errors.As(err, &output) && generation.IsOutputFailure(output.Code) {
+		return &generation.Failure{Code: output.Code, ValidationPath: output.Path, ValidationRule: output.Rule}
+	}
+	return &generation.Failure{Code: "invalid_output"}
+}
+
 func agentError(err error) error {
 	var call *ai.CallError
 	if errors.As(err, &call) {

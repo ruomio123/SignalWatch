@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"signalwatch/internal/generation"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -273,5 +274,57 @@ func TestMySQLRejectedSavedCredentialMarksOnlyCurrentRevision(t *testing.T) {
 	mustAI(t, e)
 	if c.Usable || c.Status != ConfigurationInvalid {
 		t.Fatal("rejected saved key remained usable")
+	}
+}
+
+func TestMySQLCallPersistsSpecificValidationFailureWithoutReplay(t *testing.T) {
+	f := newAIIntegrationFixture(t)
+	runner := f.configurations.calls
+	runner.factory = func([]string, string, string, string) (Generator, error) {
+		return GeneratorFunc(func(context.Context, string, []byte, int) (generation.Result, error) {
+			f.calls.Add(1)
+			return generation.Result{Content: []byte(`{"problem":[]}`), InputTokens: 12, OutputTokens: 4, UsageKnown: true}, nil
+		}), nil
+	}
+	before := f.calls.Load()
+	result, err := runner.Run(t.Context(), CallRequest{
+		UserID: f.users[0].ID, Feature: FeaturePaperQA, Provider: "glm", Model: "glm-4.7-flash", Key: "valid-test-key", MaxTokens: 4096,
+		Validate: func(generation.Result) error {
+			return &generation.Failure{Code: "evidence_quote_mismatch", ValidationPath: "$.method[0].quote"}
+		},
+	})
+	var failure *CallError
+	if !errors.As(err, &failure) || failure.Code != "evidence_quote_mismatch" || failure.CallID != result.CallID || f.calls.Load() != before+1 {
+		t.Fatalf("%+v %v", result, err)
+	}
+	var saved CallRecord
+	mustAI(t, f.db.Where("id=?", result.CallID).Take(&saved).Error)
+	if saved.Status != "failed" || saved.FailureCode != failure.Code || !saved.UsageKnown {
+		t.Fatalf("diagnostic or metering lost: %+v", saved)
+	}
+}
+
+func TestCallRunnerCarriesSchemaThroughCredentialBoundary(t *testing.T) {
+	f := newAIIntegrationFixture(t)
+	schema := generation.SchemaFor[struct {
+		Status string `json:"status" enum:"supported,not_stated"`
+	}]()
+	invoked := 0
+	f.configurations.calls.factory = func([]string, string, string, string) (Generator, error) {
+		return GeneratorFunc(func(_ context.Context, system string, _ []byte, _ int) (generation.Result, error) {
+			invoked++
+			if strings.Contains(system, "Analyze paper") && !strings.Contains(system, schema.Instructions()) {
+				t.Fatal("schema missing from provider prompt")
+			}
+			return generation.Result{Content: []byte(`{"status":"not_stated"}`), UsageKnown: true}, nil
+		}), nil
+	}
+	cfg, err := f.configurations.Get(t.Context(), f.users[0].ID)
+	mustAI(t, err)
+	invoked = 0
+	_, err = f.configurations.GenerateForCredential(t.Context(), f.users[0].ID, "glm", "glm-4.7-flash", cfg.Generation, cfg.Version, FeaturePaperQA, "schema-fixture", "Analyze paper", []byte(`{}`), nil, func(r generation.Result) error { return schema.Validate(r.Content) }, schema)
+	mustAI(t, err)
+	if invoked != 1 {
+		t.Fatalf("calls=%d", invoked)
 	}
 }

@@ -14,50 +14,59 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("AGENT_NOT_FOUND")
-	ErrInput    = errors.New("AGENT_INVALID_INPUT")
-	ErrConflict = errors.New("AGENT_CONFLICT")
-	ErrLease    = errors.New("AGENT_LEASE_LOST")
-	ErrBudget   = errors.New("AGENT_BUDGET_EXHAUSTED")
-	ErrOutput   = errors.New("AGENT_INVALID_OUTPUT")
+	ErrNotFound       = errors.New("AGENT_NOT_FOUND")
+	ErrInput          = errors.New("AGENT_INVALID_INPUT")
+	ErrConflict       = errors.New("AGENT_CONFLICT")
+	ErrLease          = errors.New("AGENT_LEASE_LOST")
+	ErrBudget         = errors.New("AGENT_BUDGET_EXHAUSTED")
+	ErrOutput         = errors.New("AGENT_INVALID_OUTPUT")
+	ErrReportRequired = errors.New("PAPER_REPORT_REQUIRED")
 )
 
 type Conversation struct {
-	ID            string    `json:"id"`
-	UserID        uint64    `json:"-"`
-	Kind          string    `json:"kind"`
-	PaperID       *uint64   `json:"paper_id,omitempty"`
-	Title         string    `json:"title"`
-	ActiveRunID   *string   `json:"active_run_id,omitempty"`
-	LatestDraftID string    `json:"latest_draft_id,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	PaperReportReady bool      `json:"paper_report_ready" gorm:"-"`
+	ID               string    `json:"id"`
+	UserID           uint64    `json:"-"`
+	Kind             string    `json:"kind"`
+	PaperID          *uint64   `json:"paper_id,omitempty"`
+	Title            string    `json:"title"`
+	ActiveRunID      *string   `json:"active_run_id,omitempty"`
+	LatestDraftID    string    `json:"latest_draft_id,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 func (Conversation) TableName() string { return "agent_conversations" }
 
 type Run struct {
-	ID             string          `json:"id"`
-	ConversationID string          `json:"conversation_id"`
-	UserID         uint64          `json:"-"`
-	IdempotencyKey string          `json:"-"`
-	InputHash      string          `json:"-"`
-	Question       string          `json:"-"`
-	Provider       string          `json:"provider"`
-	Model          string          `json:"model"`
-	Generation     string          `json:"-"`
-	Version        uint64          `json:"-"`
-	ContextMode    string          `json:"context_mode"`
-	State          string          `json:"state"`
-	Progress       string          `json:"progress"`
-	FailureCode    string          `json:"failure_code,omitempty"`
-	Checkpoint     json.RawMessage `json:"-"`
-	LeaseOwner     string          `json:"-"`
-	Epoch          uint64          `json:"-"`
-	LeaseUntil     *time.Time      `json:"-"`
-	Deadline       *time.Time      `json:"deadline,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	FailureDetail        *PaperFailure   `json:"failure_detail,omitempty" gorm:"-"`
+	Task                 string          `json:"task,omitempty"`
+	WorkflowVersion      string          `json:"workflow_version,omitempty"`
+	EffectiveContextMode string          `json:"effective_context_mode,omitempty"`
+	FallbackReason       string          `json:"fallback_reason,omitempty"`
+	BatchTotal           int             `json:"batch_total"`
+	BatchCompleted       int             `json:"batch_completed"`
+	ID                   string          `json:"id"`
+	ConversationID       string          `json:"conversation_id"`
+	UserID               uint64          `json:"-"`
+	IdempotencyKey       string          `json:"-"`
+	InputHash            string          `json:"-"`
+	Question             string          `json:"-"`
+	Provider             string          `json:"provider"`
+	Model                string          `json:"model"`
+	Generation           string          `json:"-"`
+	Version              uint64          `json:"-"`
+	ContextMode          string          `json:"context_mode"`
+	State                string          `json:"state"`
+	Progress             string          `json:"progress"`
+	FailureCode          string          `json:"failure_code,omitempty"`
+	Checkpoint           json.RawMessage `json:"-"`
+	LeaseOwner           string          `json:"-"`
+	Epoch                uint64          `json:"-"`
+	LeaseUntil           *time.Time      `json:"-"`
+	Deadline             *time.Time      `json:"deadline,omitempty"`
+	CreatedAt            time.Time       `json:"created_at"`
+	UpdatedAt            time.Time       `json:"updated_at"`
 }
 
 func (Run) TableName() string { return "agent_runs" }
@@ -71,6 +80,7 @@ type Citation struct {
 	URL         string `json:"url"`
 }
 type Message struct {
+	Result         json.RawMessage `json:"result,omitempty"`
 	ID             uint64          `json:"id"`
 	ConversationID string          `json:"conversation_id"`
 	RunID          string          `json:"run_id"`
@@ -101,6 +111,7 @@ type Step struct {
 func (Step) TableName() string { return "agent_steps" }
 
 type SubmitInput struct {
+	Task           string `json:"task,omitempty"`
 	CredentialID   string `json:"credential_id,omitempty"`
 	Question       string `json:"question"`
 	Provider       string `json:"provider"`
@@ -113,6 +124,7 @@ type Selection struct {
 	Version    uint64
 }
 type ModelRequest struct {
+	Schema   *generation.Schema
 	Run      Run
 	Feature  string
 	System   string
@@ -144,6 +156,7 @@ type Store interface {
 	DeleteConversation(context.Context, uint64, string) error
 	Messages(context.Context, uint64, string, uint64) ([]Message, error)
 	History(context.Context, string) ([]Message, error)
+	LatestPaperReport(context.Context, string) (Message, error)
 	Submit(context.Context, Run) (Run, error)
 	RunByID(context.Context, uint64, string) (Run, error)
 	Cancel(context.Context, uint64, string) error
@@ -190,13 +203,14 @@ type Observation struct {
 	Result json.RawMessage `json:"result"`
 }
 type Checkpoint struct {
-	Calls        int           `json:"calls"`
-	Tools        int           `json:"tools"`
-	Phase        string        `json:"phase"`
-	Action       *Action       `json:"action,omitempty"`
-	Observations []Observation `json:"observations"`
-	Evidence     []Citation    `json:"evidence"`
-	DocumentID   string        `json:"document_id,omitempty"`
-	DraftID      string        `json:"draft_id,omitempty"`
-	Sequence     int           `json:"sequence"`
+	Paper        *PaperCheckpoint `json:"paper,omitempty"`
+	Calls        int              `json:"calls"`
+	Tools        int              `json:"tools"`
+	Phase        string           `json:"phase"`
+	Action       *Action          `json:"action,omitempty"`
+	Observations []Observation    `json:"observations"`
+	Evidence     []Citation       `json:"evidence"`
+	DocumentID   string           `json:"document_id,omitempty"`
+	DraftID      string           `json:"draft_id,omitempty"`
+	Sequence     int              `json:"sequence"`
 }

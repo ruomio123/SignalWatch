@@ -107,6 +107,7 @@ type CallStore interface {
 	List(context.Context, uint64, string, string, int, int) (CallPage, error)
 }
 type CallRequest struct {
+	Schema                                               *generation.Schema
 	UserID                                               uint64
 	Feature, Provider, Model, Key, Generation, RequestID string
 	Version                                              uint64
@@ -116,6 +117,12 @@ type CallRequest struct {
 	BeforeStart                                          func(context.Context) error
 	Validate                                             func(generation.Result) error
 	Commit                                               func(context.Context) error
+}
+
+// Optional transport capability; clients without native structured output still
+// receive the same schema in the prompt and undergo the same local validation.
+type structuredGenerator interface {
+	GenerateStructured(context.Context, string, []byte, int, *generation.Schema) (generation.Result, error)
 }
 type CallRunner struct {
 	store    CallStore
@@ -190,7 +197,17 @@ func (r *CallRunner) Run(ctx context.Context, req CallRequest) (generation.Resul
 		return generation.Result{}, err
 	}
 	call, cancel := context.WithTimeout(ctx, 30*time.Second)
-	result, callErr := client.GenerateLimit(call, req.System, req.Input, req.MaxTokens)
+	system := req.System
+	if req.Schema != nil {
+		system += req.Schema.Instructions()
+	}
+	var result generation.Result
+	var callErr error
+	if structured, ok := client.(structuredGenerator); ok && req.Schema != nil {
+		result, callErr = structured.GenerateStructured(call, system, req.Input, req.MaxTokens, req.Schema)
+	} else {
+		result, callErr = client.GenerateLimit(call, system, req.Input, req.MaxTokens)
+	}
 	result.CallID = c.ID
 	if call.Err() != nil && callErr == nil {
 		code := "timeout"
@@ -220,7 +237,7 @@ func (r *CallRunner) Run(ctx context.Context, req CallRequest) (generation.Resul
 	attrs := []any{"module", "ai", "call_id", c.ID, "request_id", req.RequestID, "feature", req.Feature, "provider", req.Provider, "model", req.Model, "outcome", code, "duration_ms", finished.Sub(now).Milliseconds()}
 	var failure *generation.Failure
 	if errors.As(callErr, &failure) {
-		attrs = append(attrs, "provider_code", failure.ProviderCode, "provider_request_id", failure.ProviderRequestID, "http_status", failure.HTTPStatus)
+		attrs = append(attrs, "validation_path", failure.ValidationPath, "validation_rule", failure.ValidationRule, "provider_code", failure.ProviderCode, "provider_request_id", failure.ProviderRequestID, "http_status", failure.HTTPStatus)
 	}
 	r.logger.Info("AI call completed", attrs...)
 	if settleErr != nil {
@@ -247,6 +264,9 @@ func (r *CallRunner) Run(ctx context.Context, req CallRequest) (generation.Resul
 func callFailure(err error) string {
 	var f *generation.Failure
 	if errors.As(err, &f) {
+		if generation.IsOutputFailure(f.Code) {
+			return f.Code
+		}
 		switch f.Code {
 		case "credential_rejected", "model_access_denied", "provider_rate_limited", "provider_unavailable", "provider_rejected", "transport_failed", "timeout", "result_unknown", "output_truncated", "invalid_response", "invalid_output":
 			return f.Code

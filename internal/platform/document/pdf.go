@@ -24,7 +24,14 @@ var identifier = regexp.MustCompile(`^(?:[0-9]{4}\.[0-9]{4,5}|[a-zA-Z][a-zA-Z0-9
 var versioned = regexp.MustCompile(`v[1-9][0-9]*$`)
 
 type Limiter interface{ Wait(context.Context) error }
+
+// OCR is optional. Implementations must honor cancellation and return one text
+// entry per PDF page; the adapter still checks all size and quality bounds.
+type OCR interface {
+	ExtractPages(context.Context, []byte) ([]string, error)
+}
 type Extractor struct {
+	OCR     OCR
 	Client  *http.Client
 	Limiter Limiter
 }
@@ -99,56 +106,96 @@ func (e *Extractor) resolve(ctx context.Context, s domain.Source) (string, error
 func (e *Extractor) Extract(ctx context.Context, s domain.Source) (domain.Extracted, error) {
 	id, err := e.resolve(ctx, s)
 	if err != nil {
-		return domain.Extracted{}, err
+		return domain.Extracted{}, &domain.ExtractionError{Code: "document_version_unavailable"}
 	}
 	raw, err := e.get(ctx, "https://arxiv.org/pdf/"+id, 25<<20)
-	if err != nil || !bytes.HasPrefix(raw, []byte("%PDF-")) {
-		return domain.Extracted{}, ErrPDF
+	if err != nil {
+		return domain.Extracted{}, &domain.ExtractionError{Code: "document_download_failed"}
+	}
+	if !bytes.HasPrefix(raw, []byte("%PDF-")) {
+		return domain.Extracted{}, &domain.ExtractionError{Code: "invalid_pdf"}
 	}
 	dir, err := os.MkdirTemp("", "signalwatch-pdf-")
 	if err != nil {
-		return domain.Extracted{}, ErrPDF
+		return domain.Extracted{}, &domain.ExtractionError{Code: "document_extraction_failed"}
 	}
 	defer os.RemoveAll(dir)
-	input := filepath.Join(dir, "input.pdf")
-	output := filepath.Join(dir, "text.txt")
+	input, output := filepath.Join(dir, "input.pdf"), filepath.Join(dir, "text.txt")
 	if os.WriteFile(input, raw, 0600) != nil {
-		return domain.Extracted{}, ErrPDF
+		return domain.Extracted{}, &domain.ExtractionError{Code: "document_extraction_failed"}
+	}
+	fallback := func(code string, count int) (domain.Extracted, error) {
+		if ctx.Err() != nil {
+			return domain.Extracted{}, ctx.Err()
+		}
+		if e.OCR == nil {
+			return domain.Extracted{}, &domain.ExtractionError{Code: code}
+		}
+		pages, err := e.OCR.ExtractPages(ctx, raw)
+		if err != nil || len(pages) == 0 || len(pages) > 200 || (count > 0 && len(pages) != count) || len(strings.Join(pages, "")) > 4<<20 || len(strings.TrimSpace(strings.Join(pages, ""))) < 80 {
+			return domain.Extracted{}, &domain.ExtractionError{Code: "ocr_failed"}
+		}
+		return domain.Extracted{Pages: pages, SourceVersion: id}, nil
 	}
 	info, err := run(ctx, "pdfinfo", input)
 	if err != nil {
-		return domain.Extracted{}, ErrPDF
+		return fallback("text_extraction_failed", 0)
 	}
-	pages := 0
+	count := 0
 	for _, line := range strings.Split(string(info), "\n") {
 		if strings.HasPrefix(line, "Pages:") {
-			pages, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "Pages:")))
+			count, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "Pages:")))
 		}
 	}
-	if pages < 1 || pages > 200 {
-		return domain.Extracted{}, ErrPDF
+	if count < 1 || count > 200 {
+		return domain.Extracted{}, &domain.ExtractionError{Code: "document_resource_limit"}
 	}
-	if _, err = run(ctx, "pdftotext", "-enc", "UTF-8", "-layout", input, output); err != nil {
-		return domain.Extracted{}, ErrPDF
+	// Use reading order. Physical layout places adjacent columns on the same
+	// line; flattening those lines would mix unrelated sentences in evidence.
+	if _, err = run(ctx, "pdftotext", "-enc", "UTF-8", input, output); err != nil {
+		return fallback("text_extraction_failed", count)
 	}
 	file, err := os.Open(output)
 	if err != nil {
-		return domain.Extracted{}, ErrPDF
+		return fallback("text_extraction_failed", count)
 	}
 	defer file.Close()
 	text, err := io.ReadAll(io.LimitReader(file, (4<<20)+1))
-	if err != nil || len(text) > 4<<20 {
-		return domain.Extracted{}, ErrPDF
+	if err != nil {
+		return fallback("text_extraction_failed", count)
 	}
-	values := strings.Split(string(text), "\f")
-	if len(values) > 0 && strings.TrimSpace(values[len(values)-1]) == "" {
-		values = values[:len(values)-1]
+	if len(text) > 4<<20 {
+		return domain.Extracted{}, &domain.ExtractionError{Code: "document_resource_limit"}
 	}
-	if len(values) != pages || len(strings.TrimSpace(string(text))) < 80 {
-		return domain.Extracted{}, ErrPDF
+	pages := strings.Split(string(text), "\f")
+	if len(pages) > 0 && strings.TrimSpace(pages[len(pages)-1]) == "" {
+		pages = pages[:len(pages)-1]
 	}
-	return domain.Extracted{Pages: values, SourceVersion: id}, nil
+	if len(pages) != count {
+		return fallback("text_extraction_failed", count)
+	}
+	if len(strings.TrimSpace(string(text))) < 80 {
+		return fallback("ocr_required", count)
+	}
+	// An empty page containing raster images may be a scanned page. Blank PDF
+	// pages without images are allowed, including trailing blank pages.
+	images, err := run(ctx, "pdfimages", "-list", input)
+	if err != nil {
+		return fallback("text_extraction_failed", count)
+	}
+	for _, line := range strings.Split(string(images), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		page, err := strconv.Atoi(fields[0])
+		if err == nil && page > 0 && page <= count && len(strings.TrimSpace(pages[page-1])) < 80 {
+			return fallback("ocr_required", count)
+		}
+	}
+	return domain.Extracted{Pages: pages, SourceVersion: id}, nil
 }
+
 func run(ctx context.Context, program string, args ...string) ([]byte, error) {
 	work, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

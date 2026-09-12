@@ -1,0 +1,91 @@
+.ai-activity-card {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.ai-activity-card .card-header {
+  padding: 16px 20px;
+  flex-wrap: wrap;
+}
+.ai-activity-card .card-header h2 {
+  font-size: 14px;
+  font-weight: 600;
+}
+.ai-activity-body {
+  padding: 16px 20px;
+  min-width: 0;
+}
+.ai-usage-summary {
+  display: grid;
+  gap: 6px;
+}
+.ai-activity-card .settings-description {
+  font-size: 12px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ai-usage-today {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.ai-call-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.ai-call-filters label {
+  font-size: 12px;
+  gap: 6px;
+  flex: 0 1 200px;
+}
+.ai-call-filters select {
+  font-size: 14px;
+  line-height: 1.6;
+}
+.ai-activity-card .usage-table table {
+  width: 100%;
+  table-layout: fixed;
+}
+.ai-activity-card .usage-table td {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+.ai-activity-card .usage-table th {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.ai-activity-card .usage-table td:first-child,
+.ai-activity-card .usage-table th:first-child {
+  padding-left: 20px;
+}
+.ai-activity-card .usage-table td:last-child,
+.ai-activity-card .usage-table th:last-child {
+  padding-right: 20px;
+}
+.ai-activity-card .usage-table td p {
+  margin-top: 6px;
+}
+.ai-call-pagination {
+  border-top: 1px solid var(--line);
+}
+@media (max-width: 767px) {
+  .ai-activity-card .card-header,
+  .ai-activity-body {
+    padding: 16px;
+  }
+  .ai-call-filters {
+    flex-direction: column;
+  }
+  .ai-call-filters label {
+    flex: auto;
+    width: 100%;
+  }
+  .ai-activity-card .usage-table td:first-child,
+  .ai-activity-card .usage-table th:first-child {
+    padding-left: 16px;
+  }
+  .ai-activity-card .usage-table td:last-child,
+  .ai-activity-card .usage-table th:last-child {
+    padding-right: 16px;
+  }
+}

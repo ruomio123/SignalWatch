@@ -18,7 +18,12 @@ const conversation = {
   title: "订阅助手",
   latest_draft_id: "run-one",
 };
-async function models(page: Page) {
+async function models(page: Page, kind = "subscription") {
+  const fixture = {
+    ...conversation,
+    kind,
+    ...(kind === "paper" ? { paper_id: 1, paper_report_ready: true } : {}),
+  };
   await page.route("**/api/v2/ai/credentials", (r) =>
     r.fulfill({
       json: {
@@ -56,10 +61,10 @@ async function models(page: Page) {
     }),
   );
   await page.route("**/api/v2/agent/conversations?**", (r) =>
-    r.fulfill({ json: { items: [conversation], page: 1 } }),
+    r.fulfill({ json: { items: [fixture], page: 1 } }),
   );
   await page.route("**/api/v2/agent/conversations/conversation-one", (r) =>
-    r.fulfill({ json: conversation }),
+    r.fulfill({ json: fixture }),
   );
 }
 for (const outcome of ["clarify", "draft", "paper", "retry", "fast"] as const) {
@@ -67,7 +72,7 @@ for (const outcome of ["clarify", "draft", "paper", "retry", "fast"] as const) {
     page,
   }) => {
     await setup(page);
-    await models(page);
+    await models(page, outcome === "paper" ? "paper" : "subscription");
     let completed = false;
     let confirmations = 0;
     let failedReads = 0;
@@ -85,6 +90,9 @@ for (const outcome of ["clarify", "draft", "paper", "retry", "fast"] as const) {
       r.fulfill({
         json: {
           ...conversation,
+          ...(outcome === "paper"
+            ? { kind: "paper", paper_id: 1, paper_report_ready: true }
+            : {}),
           ...(completed ? {} : { active_run_id: "run-one" }),
         },
       }),
@@ -210,8 +218,10 @@ test("paper assistant guides API setup and retains a return link", async ({
 }) => {
   await setup(page);
   await page.goto("/papers?paper_id=1");
-  await page.getByRole("button", { name: "AI 全文对话" }).click();
-  await expect(page.getByRole("dialog", { name: "AI 论文助手" })).toBeVisible();
+  await page.getByRole("button", { name: "AI 论文助手", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "AI 论文助手" }),
+  ).toBeVisible();
   await page.getByRole("link", { name: "配置 API" }).click();
   await expect(page.getByRole("link", { name: "返回原对话" })).toHaveAttribute(
     "href",
@@ -397,7 +407,7 @@ test("paper citations and unknown run outcomes recover on refresh", async ({
   page,
 }) => {
   await setup(page);
-  await models(page);
+  await models(page, "paper");
   await page.route(
     "**/api/v2/agent/conversations/conversation-one/messages",
     (r) =>
@@ -516,3 +526,265 @@ test("the first submitted question is visible while its run is pending", async (
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "停止本轮" })).toBeVisible();
 });
+
+for (const mode of ["fulltext", "abstract"] as const) {
+  test(`fixed report ${mode} needs a click and restores structured output`, async ({
+    page,
+    context,
+  }) => {
+    await setup(page);
+    await models(page, "paper");
+    if (mode === "abstract")
+      await page.setViewportSize({ width: 390, height: 844 });
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    let writes = 0;
+    let generated = false;
+    let lastTask = "";
+    await page.route("**/api/v2/agent/conversations/conversation-one", (r) =>
+      r.fulfill({
+        json: {
+          id: "conversation-one",
+          kind: "paper",
+          paper_id: 1,
+          title: "Paper",
+          paper_report_ready: generated,
+        },
+      }),
+    );
+    const report = {
+      problem: "解决检索准确性问题 [problem-1-1]",
+      method: "使用检索方法",
+      experiments: "使用独立测试集",
+      results: "当前材料不足以可靠回答",
+      limitations: "论文未明确说明",
+    };
+    await page.route(
+      "**/api/v2/agent/conversations/conversation-one/messages",
+      (r) => {
+        if (r.request().method() === "POST") {
+          writes++;
+          lastTask = r.request().postDataJSON().task;
+          generated = true;
+          return r.fulfill({
+            status: 202,
+            json: {
+              run_id: "report-run",
+              run: {
+                id: "report-run",
+                task: lastTask,
+                state: "pending",
+                progress: "queued",
+              },
+            },
+          });
+        }
+        return r.fulfill({
+          json: {
+            items: generated
+              ? [
+                  {
+                    id: 1,
+                    run_id: "report-run",
+                    role: "assistant",
+                    content: "## 论文问题\n\n解决检索准确性问题",
+                    provider: "glm",
+                    model: "glm-4.7-flash",
+                    result: {
+                      report,
+                      context_mode: mode,
+                      ...(mode === "abstract"
+                        ? { fallback_reason: "ocr_required" }
+                        : {}),
+                      coverage:
+                        mode === "abstract"
+                          ? "abstract_only"
+                          : "all_extracted_text",
+                      workflow_version: "paper-fixed-v1",
+                      fields: Object.fromEntries(
+                        Object.keys(report).map((field) => [
+                          field,
+                          {
+                            status:
+                              field === "limitations"
+                                ? "not_stated"
+                                : field === "results"
+                                  ? "insufficient_evidence"
+                                  : "supported",
+                            citation_ids:
+                              field === "problem" ? ["problem-1-1"] : [],
+                          },
+                        ]),
+                      ),
+                    },
+                    citations: [
+                      {
+                        id: "problem-1-1",
+                        page: mode === "abstract" ? 0 : 2,
+                        quote: "The retrieval method addresses accuracy.",
+                        url: "https://arxiv.org/pdf/1706.03762v1#page=2",
+                      },
+                    ],
+                  },
+                ]
+              : [],
+            next_before: 0,
+          },
+        });
+      },
+    );
+    await page.route("**/api/v2/agent/runs/report-run", (r) =>
+      r.fulfill({
+        json: {
+          run: {
+            id: "report-run",
+            task: lastTask,
+            state: "completed",
+            progress: "completed",
+            effective_context_mode: mode,
+          },
+          steps: [],
+        },
+      }),
+    );
+    await page.goto(
+      "/papers?paper_id=1&assistant=paper&conversation=conversation-one",
+    );
+    const generate = page.getByRole("button", {
+      name: "生成论文报告",
+      exact: true,
+    });
+    await expect(generate).toBeEnabled();
+    expect(writes).toBe(0);
+    await expect(
+      page.getByRole("textbox", { name: "你的问题" }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "发送", exact: true }),
+    ).toBeDisabled();
+    await generate.click();
+    await expect(page.getByRole("button", { name: "复制 JSON" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "你的问题" })).toBeEnabled();
+    expect(lastTask).toBe("paper_report");
+    expect(writes).toBe(1);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({
+      path: `/tmp/signalwatch-paper-report-${mode}.png`,
+      fullPage: true,
+    });
+    for (const label of [
+      "论文问题",
+      "核心方法",
+      "实验验证",
+      "主要结果",
+      "局限性",
+    ])
+      await expect(
+        page.getByRole("heading", { name: label, exact: true }),
+      ).toBeVisible();
+    if (mode === "abstract")
+      await expect(page.getByText(/扫描或图片页面需要 OCR/)).toBeVisible();
+    await page
+      .getByText(
+        `证据 problem-1-1 · ${mode === "abstract" ? "摘要" : "第 2 页"}`,
+      )
+      .click();
+    await expect(
+      page.getByText("The retrieval method addresses accuracy."),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "复制 JSON" }).click();
+    expect(
+      JSON.parse(await page.evaluate(() => navigator.clipboard.readText())),
+    ).toEqual(report);
+    await page.reload();
+    await expect(
+      page.getByRole("button", { name: "重新生成论文报告" }),
+    ).toBeEnabled();
+    expect(writes).toBe(1);
+    await page.getByRole("button", { name: "助手设置" }).click();
+    await page.getByRole("combobox", { name: "对话 API" }).selectOption("g2");
+    expect(writes).toBe(1);
+    await page
+      .getByRole("textbox", { name: "你的问题" })
+      .fill("实验有什么条件？");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    await expect.poll(() => lastTask).toBe("paper_followup");
+    expect(writes).toBe(2);
+  });
+}
+
+for (const [code, message] of [
+  ["evidence_quote_mismatch", "证据引文无法在本次提供的论文原文中精确定位。"],
+  ["output_schema_mismatch", "模型输出的字段、类型或结构不符合约定。"],
+]) {
+  test(`paper failure exposes stage and diagnosis for ${code}`, async ({
+    page,
+  }) => {
+    await setup(page);
+    await models(page, "paper");
+    let writes = 0;
+    page.on("request", (request) => {
+      if (request.url().includes("/agent/") && request.method() === "POST")
+        writes++;
+    });
+    await page.route(
+      "**/api/v2/agent/conversations/conversation-one/messages",
+      (route) =>
+        route.fulfill({
+          json: {
+            items: [
+              {
+                id: 1,
+                run_id: "failed-report",
+                role: "user",
+                content: "帮助用户快速了解当前论文",
+                citations: [],
+              },
+            ],
+            next_before: 0,
+          },
+        }),
+    );
+    await page.route("**/api/v2/agent/runs/failed-report", (route) =>
+      route.fulfill({
+        json: {
+          run: {
+            id: "failed-report",
+            state: "failed",
+            task: "paper_report",
+            failure_code: code,
+            failure_detail: {
+              code,
+              path: "$.claims[0].evidence",
+              rule: "expected_array",
+            },
+          },
+          steps: [
+            {
+              tool: "extracting_batch_1",
+              failure_code: code,
+              call_id: "diagnostic-one",
+            },
+          ],
+        },
+      }),
+    );
+    await page.goto(
+      "/papers?paper_id=1&assistant=paper&conversation=conversation-one",
+    );
+    await expect(page.getByText(message, { exact: true })).toBeVisible();
+    await page.getByText("失败详情", { exact: true }).click();
+    await expect(page.getByText("失败步骤：第 1 批全文证据提取")).toBeVisible();
+    await expect(page.getByText("诊断编号：diagnostic-one")).toBeVisible();
+    await expect(
+      page.getByText("校验位置：$.claims[0].evidence"),
+    ).toBeVisible();
+    await expect(page.getByText("校验要求：必须是数组")).toBeVisible();
+    await page.reload();
+    await expect(page.getByText(message, { exact: true })).toBeVisible();
+    expect(writes).toBe(0);
+  });
+}

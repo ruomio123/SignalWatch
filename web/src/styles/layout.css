@@ -238,6 +238,8 @@
     display: none;
   }
   .workspace {
+    /* A disappearing desktop sidebar must not squeeze the mobile viewport during its margin transition. */
+    transition: none;
     margin-left: 0;
   }
   .workspace-inner {

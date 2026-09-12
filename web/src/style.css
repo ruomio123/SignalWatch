@@ -4,3 +4,9 @@
 @import "./styles/pages.css";
 
 @import "./styles/subscription-assistant.css";
+
+@import "./styles/assistant.css";
+@import "./styles/paper-workspace.css";
+
+@import "./styles/split-workspace.css";
+@import "./styles/ai-usage.css";

@@ -303,7 +303,18 @@ func TestPaperConversationRetrievesVersionedEvidenceAndPreservesHistory(t *testi
 	t.Cleanup(func() { stop(); <-done })
 	c, err := f.s.CreateConversation(ctx, f.u.ID, "paper", &p.ID)
 	must(t, err)
-	f.gateway.actions = []string{`{"type":"tool_call","tool":"search_document","arguments":{"query":"retrieval experiment"}}`, `{"type":"answer","content":"论文在独立数据集上评估 [p1-c1]。","citations":[{"id":"p1-c1","quote":"held out evaluation dataset"}]}`, `{"type":"clarify","content":"还想了解哪些细节？"}`}
+	f.s.Gateway = &workflowGateway{}
+	report := submitReport(t, f, c, "fulltext")
+	f.s.process(ctx, f.claim(t, report.ID))
+	f.s.Gateway = f.gateway
+	f.gateway.actions = []string{
+		`{"question":"实验怎样设计？","query":"retrieval experiment"}`,
+		`{"status":"supported","claims":[{"text":"论文在独立数据集上评估。","evidence":[{"id":"p1-c1-s0"}]}]}`,
+		`{"verdicts":[{"id":"answer-1","supported":true}]}`,
+		`{"question":"实验怎样设计？继续说明","query":"retrieval experiment"}`,
+		`{"status":"not_stated","claims":[]}`,
+		`{"verdicts":[]}`,
+	}
 	r, err := f.s.Submit(ctx, f.u.ID, c.ID, SubmitInput{Question: "实验怎样设计？", Provider: "glm", Model: "glm-4.7-flash", IdempotencyKey: rand.Text(), ContextMode: "fulltext"})
 	must(t, err)
 	f.s.process(ctx, f.claim(t, r.ID))
@@ -317,22 +328,22 @@ func TestPaperConversationRetrievesVersionedEvidenceAndPreservesHistory(t *testi
 	}
 	messages, err := f.store.Messages(ctx, f.u.ID, c.ID, 0)
 	must(t, err)
-	if len(messages) != 2 {
+	if len(messages) != 4 {
 		t.Fatal(messages)
 	}
 	var refs []Citation
-	must(t, json.Unmarshal(messages[1].Citations, &refs))
+	must(t, json.Unmarshal(messages[3].Citations, &refs))
 	if len(refs) != 1 || refs[0].DocumentID != d.ID || refs[0].URL != "https://arxiv.org/pdf/1706.03762v1#page=1" {
 		t.Fatalf("bad reference: %+v", refs)
 	}
 	f.gateway.hook = func(req ModelRequest) {
-		if !strings.Contains(string(req.Input), "实验怎样设计") {
+		if strings.Contains(req.System, "Resolve pronouns") && !strings.Contains(string(req.Input), "实验怎样设计") {
 			t.Error("multi-turn context missing")
 		}
 	}
 	next := f.submit(t, c, "继续说明")
 	f.s.process(ctx, f.claim(t, next.ID))
-	if f.gateway.calls.Load() != 3 {
+	if f.gateway.calls.Load() != 6 {
 		t.Fatal("unexpected calls")
 	}
 	cached, err := f.s.Documents.Ensure(ctx, src)

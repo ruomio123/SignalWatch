@@ -184,7 +184,23 @@ export function configETag(c: { generation?: string; version?: number }) {
     : undefined;
 }
 
+const outputFailures: Record<string, string> = {
+  output_language_mismatch: "模型未按要求用中文撰写报告，本轮未发布。",
+  output_invalid_json: "模型返回的内容不是有效的 JSON。",
+  output_schema_mismatch: "模型输出的字段、类型或结构不符合约定。",
+  output_limit_exceeded: "模型输出的条目数量或文字长度超出上限。",
+  evidence_id_unknown: "模型引用了本次材料中不存在的证据片段。",
+  evidence_quote_mismatch: "证据引文无法在本次提供的论文原文中精确定位。",
+  evidence_quote_length: "证据引文的长度不符合要求。",
+  review_incomplete: "结论校验未完整覆盖全部论断。",
+};
+export function outputFailureMessage(code: string): string | undefined {
+  return outputFailures[code];
+}
+
 export function aiFailureMessage(code: string): string {
+  const output = outputFailureMessage(code);
+  if (output) return output;
   const codes: Record<string, string> = {
     rate_limited: "AI_RATE_LIMITED",
     daily_limit: "AI_DAILY_LIMIT_REACHED",

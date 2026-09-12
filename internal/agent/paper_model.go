@@ -1,0 +1,115 @@
+package agent
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"signalwatch/internal/paper"
+	"time"
+)
+
+const (
+	TaskPaperReport      = "paper_report"
+	TaskPaperFollowup    = "paper_followup"
+	PaperWorkflowVersion = "paper-fixed-v5"
+	PaperReportMessage   = "快速了解论文"
+	PaperGoal            = "帮助用户快速了解当前论文"
+	paperInputLimit      = 64 << 10
+)
+
+var paperFields = []string{"problem", "method", "experiments", "results", "limitations"}
+var paperLabels = map[string]string{"problem": "论文问题", "method": "核心方法", "experiments": "实验验证", "results": "主要结果", "limitations": "局限性", "answer": "回答"}
+
+func runDuration(r Run) time.Duration {
+	if r.Task == TaskPaperReport {
+		return 15 * time.Minute
+	}
+	return 180 * time.Second
+}
+
+type PaperContext struct {
+	Title    string   `json:"title"`
+	Authors  []string `json:"authors"`
+	Abstract string   `json:"abstract"`
+	ArXivID  string   `json:"arxiv_id"`
+}
+
+func contextOf(p paper.PublicPaper) PaperContext {
+	return PaperContext{p.Title, p.Authors, p.Abstract, p.ArXivID}
+}
+func paperSnapshotHash(p paper.PublicPaper) string {
+	raw, _ := json.Marshal(struct {
+		Context PaperContext
+		URL     string
+		Updated time.Time
+	}{contextOf(p), p.PDFURL, p.ArXivUpdatedAt.UTC()})
+	h := sha256.Sum256(raw)
+	return hex.EncodeToString(h[:])
+}
+func publicPaperSnapshot(p paper.Paper) paper.PublicPaper {
+	var authors []string
+	_ = json.Unmarshal(p.AuthorsJSON, &authors)
+	return paper.PublicPaper{Title: p.Title, Authors: authors, Abstract: p.Abstract, ArXivID: p.ArXivID, PDFURL: p.PDFURL, ArXivUpdatedAt: p.ArXivUpdatedAt}
+}
+
+type PaperFailure struct {
+	Code string `json:"code"`
+	Path string `json:"path"`
+	Rule string `json:"rule"`
+}
+
+type PaperCheckpoint struct {
+	Failure        *PaperFailure              `json:"failure,omitempty"`
+	Sections       json.RawMessage            `json:"sections,omitempty"`
+	Context        PaperContext               `json:"context"`
+	PaperHash      string                     `json:"paper_hash"`
+	Mode           string                     `json:"mode"`
+	FallbackReason string                     `json:"fallback_reason,omitempty"`
+	SourceVersion  string                     `json:"source_version,omitempty"`
+	ContentHash    string                     `json:"content_hash,omitempty"`
+	BatchTotal     int                        `json:"batch_total"`
+	BatchCompleted int                        `json:"batch_completed"`
+	Outputs        map[string]json.RawMessage `json:"outputs"`
+}
+
+type EvidenceRef struct {
+	ID    string `json:"id"`
+	Quote string `json:"quote"`
+}
+type PaperClaim struct {
+	Text     string        `json:"text"`
+	Evidence []EvidenceRef `json:"evidence"`
+}
+type FieldAnalysis struct {
+	Status string       `json:"status"`
+	Claims []PaperClaim `json:"claims"`
+}
+type PaperReport struct {
+	Problem     string `json:"problem"`
+	Method      string `json:"method"`
+	Experiments string `json:"experiments"`
+	Results     string `json:"results"`
+	Limitations string `json:"limitations"`
+}
+type PaperFieldResult struct {
+	Status      string   `json:"status"`
+	CitationIDs []string `json:"citation_ids"`
+}
+type PaperResult struct {
+	Report          *PaperReport                `json:"report,omitempty"`
+	Fields          map[string]PaperFieldResult `json:"fields"`
+	ContextMode     string                      `json:"context_mode"`
+	FallbackReason  string                      `json:"fallback_reason,omitempty"`
+	DocumentID      string                      `json:"document_id,omitempty"`
+	SourceVersion   string                      `json:"source_version,omitempty"`
+	ContentHash     string                      `json:"content_hash,omitempty"`
+	PaperHash       string                      `json:"paper_hash"`
+	WorkflowVersion string                      `json:"workflow_version"`
+	Coverage        string                      `json:"coverage"`
+}
+
+func validPaperReport(message Message, hash string) (PaperResult, bool) {
+	var result PaperResult
+	err := json.Unmarshal(message.Result, &result)
+	return result, err == nil && result.Report != nil && result.PaperHash == hash && (result.WorkflowVersion == PaperWorkflowVersion || result.WorkflowVersion == "paper-fixed-v1" || result.WorkflowVersion == "paper-fixed-v2" || result.WorkflowVersion == "paper-fixed-v3" || result.WorkflowVersion == "paper-fixed-v4") && (result.ContextMode == "abstract" || result.ContextMode == "fulltext")
+}

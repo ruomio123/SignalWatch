@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"signalwatch/internal/generation"
 	"strings"
 	"testing"
 	"time"
@@ -94,5 +95,59 @@ func TestTimeoutAndRedirect(t *testing.T) {
 		if _, err := New(url, "model", "key"); err == nil {
 			t.Fatal("unsafe config")
 		}
+	}
+}
+
+func TestPaperSchemaWireUsesProviderCapability(t *testing.T) {
+	type output struct {
+		Status string   `json:"status" enum:"supported,not_stated"`
+		Claims []string `json:"claims"`
+	}
+	schema := generation.SchemaFor[output]()
+	for _, provider := range []string{"qwen", "glm"} {
+		t.Run(provider, func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				var payload map[string]json.RawMessage
+				if json.NewDecoder(r.Body).Decode(&payload) != nil {
+					t.Fatal("bad request")
+				}
+				var format struct {
+					Type   string `json:"type"`
+					Schema struct {
+						Strict bool            `json:"strict"`
+						Schema json.RawMessage `json:"schema"`
+					} `json:"json_schema"`
+				}
+				if json.Unmarshal(payload["response_format"], &format) != nil {
+					t.Fatal("missing format")
+				}
+				if provider == "qwen" {
+					expected, _ := json.Marshal(schema)
+					if format.Type != "json_schema" || !format.Schema.Strict || string(format.Schema.Schema) != string(expected) {
+						t.Errorf("schema lost: %s", payload["response_format"])
+					}
+				} else if format.Type != "json_object" {
+					t.Error("sent unsupported GLM schema format")
+				}
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"status\":\"not_stated\",\"claims\":[]}"},"finish_reason":"stop"}]}`))
+			}))
+			defer server.Close()
+			model := "glm-5.2"
+			configure := configureThinkingWithMaxTokens
+			if provider == "qwen" {
+				model = "qwen3.8-flash"
+				configure = configureQwen
+			}
+			client, err := newClient(provider, server.URL, model, "fixture-key", configure, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.GenerateStructured(t.Context(), "Analyze paper."+schema.Instructions(), []byte(`{}`), 4096, schema)
+			if err != nil || requests != 1 {
+				t.Fatalf("%d %v", requests, err)
+			}
+		})
 	}
 }

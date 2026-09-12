@@ -5,29 +5,43 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"time"
 )
 
-const ParserVersion = "poppler-pages-v1"
+const ParserVersion = "poppler-reading-order-v3"
 
 var ErrUnavailable = errors.New("DOCUMENT_UNAVAILABLE")
 var ErrLeaseLost = errors.New("DOCUMENT_LEASE_LOST")
 
+// ExtractionError exposes a stable failure code without process output.
+type ExtractionError struct{ Code string }
+
+func (e *ExtractionError) Error() string { return e.Code }
+
+type Section struct {
+	Title string `json:"title"`
+	Page  int    `json:"page"`
+	Line  int    `json:"line"`
+}
+
 type Document struct {
-	ID            string     `json:"id"`
-	PaperID       uint64     `json:"paper_id"`
-	SourceVersion string     `json:"source_version"`
-	ParserVersion string     `json:"parser_version"`
-	ContentHash   string     `json:"content_hash"`
-	State         string     `json:"state"`
-	FailureCode   string     `json:"failure_code,omitempty"`
-	PageCount     int        `json:"page_count"`
-	LeaseOwner    string     `json:"-"`
-	Epoch         uint64     `json:"-"`
-	LeaseUntil    *time.Time `json:"-"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	Sections      json.RawMessage `json:"sections"`
+	TextComplete  bool            `json:"text_complete"`
+	ID            string          `json:"id"`
+	PaperID       uint64          `json:"paper_id"`
+	SourceVersion string          `json:"source_version"`
+	ParserVersion string          `json:"parser_version"`
+	ContentHash   string          `json:"content_hash"`
+	State         string          `json:"state"`
+	FailureCode   string          `json:"failure_code,omitempty"`
+	PageCount     int             `json:"page_count"`
+	LeaseOwner    string          `json:"-"`
+	Epoch         uint64          `json:"-"`
+	LeaseUntil    *time.Time      `json:"-"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
 }
 
 func (Document) TableName() string { return "paper_documents" }

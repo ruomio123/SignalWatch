@@ -368,31 +368,6 @@ for (const width of [1440, 768, 390, 320]) {
     await page.route("**/api/v2/papers/1", (route) =>
       route.fulfill({ json: longPaper }),
     );
-    await page.route("**/api/v2/papers/1/ai-summary**", (route) =>
-      route.fulfill({
-        json: {
-          items: [
-            {
-              state: "ready",
-              language: "zh",
-              content: {
-                summary: "本文研究语言模型智能体的长期规划与推理能力。".repeat(
-                  12,
-                ),
-                contributions: [
-                  "建立可复现的评估方法",
-                  "分析长期任务中的错误传播",
-                ],
-                method: "结合多阶段任务与对照实验。".repeat(12),
-                applications: [{ text: "科研工作流辅助", inferred: true }],
-                limitations: "当前结果限于文中实验设置。",
-                evidence: [{ field: "abstract", quote: longPaper.abstract }],
-              },
-            },
-          ],
-        },
-      }),
-    );
     const screenshots = async (name: string) => {
       await noOverflow(page);
       await page.screenshot({
@@ -465,15 +440,17 @@ for (const width of [1440, 768, 390, 320]) {
     await screenshots("subscription-editor");
     await page.keyboard.press("Escape");
     await page.goto("/papers?paper_id=1");
-    await expect(page.getByText("已生成", { exact: true })).toBeVisible();
-    const dialog = page.getByRole("dialog", { name: "论文详情" });
-    expect(
-      await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth),
-    ).toBe(true);
+    await expect(
+      page.getByRole("heading", { name: longPaper.title }),
+    ).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
     await screenshots("paper-detail");
     await page
-      .getByRole("heading", { name: "AI 论文解读" })
-      .scrollIntoViewIfNeeded();
+      .getByRole("button", { name: "AI 论文助手", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "AI 论文助手" }),
+    ).toBeVisible();
     await screenshots("paper-ai");
     expect(pageErrors).toEqual([]);
   });

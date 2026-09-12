@@ -1181,6 +1181,7 @@ components:
       - created_at
       - updated_at
       properties:
+        paper_report_ready: {type: boolean, description: A completed report for this paper version exists in this conversation; required before follow-up submissions.}
         id:
           type: string
         kind:
@@ -1214,6 +1215,12 @@ components:
       - created_at
       - updated_at
       properties:
+        task: {type: string, enum: [paper_report, paper_followup]}
+        workflow_version: {type: string}
+        effective_context_mode: {type: string, enum: [fulltext, abstract]}
+        fallback_reason: {type: string}
+        batch_total: {type: integer, minimum: 0, maximum: 18}
+        batch_completed: {type: integer, minimum: 0, maximum: 18}
         id:
           type: string
         conversation_id:
@@ -1238,8 +1245,17 @@ components:
           - cancelled
         progress:
           type: string
+        failure_detail:
+          type: object
+          additionalProperties: false
+          required: [code, path, rule]
+          properties:
+            code: {type: string}
+            path: {type: string, description: Server-defined JSON path; no model values or unknown field names.}
+            rule: {type: string}
         failure_code:
           type: string
+          description: Stable failure rule; output_invalid_json, output_language_mismatch, output_schema_mismatch, output_limit_exceeded, evidence_id_unknown and review_incomplete (legacy evidence_quote_mismatch and evidence_quote_length remain readable) distinguish paper validation failures.
         deadline: *id001
         created_at: *id001
         updated_at: *id001
@@ -1281,6 +1297,8 @@ components:
       - citations
       - created_at
       properties:
+        result:
+          $ref: '#/components/schemas/PaperWorkflowResult'
         id:
           type: integer
           minimum: 1
@@ -1306,6 +1324,40 @@ components:
         draft_id:
           type: string
         created_at: *id001
+    PaperWorkflowResult:
+      type: object
+      additionalProperties: false
+      required: [fields, context_mode, paper_hash, workflow_version, coverage]
+      properties:
+        report:
+          type: object
+          additionalProperties: false
+          required: [problem, method, experiments, results, limitations]
+          properties:
+            problem: {type: string}
+            method: {type: string}
+            experiments: {type: string}
+            results: {type: string}
+            limitations: {type: string}
+        fields:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: false
+            required: [status, citation_ids]
+            properties:
+              status: {type: string, enum: [supported, not_stated, insufficient_evidence]}
+              citation_ids:
+                type: array
+                items: {type: string}
+        context_mode: {type: string, enum: [fulltext, abstract]}
+        fallback_reason: {type: string}
+        document_id: {type: string}
+        source_version: {type: string}
+        content_hash: {type: string}
+        paper_hash: {type: string}
+        workflow_version: {type: string}
+        coverage: {type: string, enum: [all_extracted_text, retrieved_passages, abstract_only]}
     AgentStep:
       type: object
       additionalProperties: false
@@ -1343,19 +1395,30 @@ components:
           minimum: 0
         failure_code:
           type: string
+          description: Stable failure rule; output_invalid_json, output_language_mismatch, output_schema_mismatch, output_limit_exceeded, evidence_id_unknown and review_incomplete (legacy evidence_quote_mismatch and evidence_quote_length remain readable) distinguish paper validation failures.
         created_at: *id001
     SubmitAgentQuestion:
       type: object
       additionalProperties: false
       required:
-      - question
       - provider
       - model
       - idempotency_key
+      oneOf:
+      - required: [task]
+        properties:
+          task: {type: string, enum: [paper_report]}
+      - required: [question]
+        properties:
+          task: {type: string, enum: [paper_followup]}
+          question: {type: string, minLength: 1}
       properties:
+        task:
+          type: string
+          enum: [paper_report, paper_followup]
+          description: Paper conversations only. Omitted paper task means paper_followup. Follow-ups require a completed report for the current paper version in this conversation, otherwise HTTP 409 PAPER_REPORT_REQUIRED. Reports use the server-defined goal and ignore question text.
         question:
           type: string
-          minLength: 1
           maxLength: 2000
         provider:
           type: string

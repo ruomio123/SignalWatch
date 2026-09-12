@@ -161,6 +161,10 @@ func (c *Client) Generate(ctx context.Context, system string, input []byte) (Res
 }
 
 func (c *Client) GenerateLimit(ctx context.Context, system string, input []byte, maxTokens int) (Result, error) {
+	return c.GenerateStructured(ctx, system, input, maxTokens, nil)
+}
+
+func (c *Client) GenerateStructured(ctx context.Context, system string, input []byte, maxTokens int, schema *generation.Schema) (Result, error) {
 	if len(input) > 100000 {
 		return Result{}, &Failure{Code: "input_too_large"}
 	}
@@ -172,6 +176,11 @@ func (c *Client) GenerateLimit(ctx context.Context, system string, input []byte,
 		"messages":        []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": string(input)}},
 		"stream":          false,
 		"response_format": map[string]string{"type": "json_object"},
+	}
+	// Native JSON Schema is enabled only for the explicitly verified Qwen
+	// models. Other providers retain JSON Object and the shared schema prompt.
+	if schema != nil && c.provider == "qwen" && (c.model == "qwen3.8-flash" || c.model == "qwen3.8-max") {
+		payload["response_format"] = map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "paper_output", "strict": true, "schema": schema}}
 	}
 	c.configure(payload, maxTokens)
 	body, _ := json.Marshal(payload)

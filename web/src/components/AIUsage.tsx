@@ -19,27 +19,33 @@ export function UsageTable() {
     ),
   );
   return (
-    <Card className="card-flush">
+    <Card className="card-flush ai-activity-card">
       <header className="card-header">
         <h2>最近 30 天用量（UTC）</h2>
       </header>
-      <p className="settings-description">
-        按 UTC
-        日期统计调用尝试，包含失败和结果未知；这是应用记录，不是供应商账单。
-      </p>
-      {usage.data?.today?.map((u) => (
-        <p key={u.feature} className="settings-description">
-          {featureName(u.feature)}：今日 {u.calls} 次 ·{" "}
-          {u.daily_limit === 0 ? "每日不限次数" : `剩余 ${u.remaining} 次`} ·
-          最短间隔 {u.min_interval_seconds} 秒
-          {u.reset_at &&
-            ` · 恢复时间 ${new Date(u.reset_at).toLocaleString(undefined, { timeZone: account.data?.timezone ?? "UTC" })}`}
+      <div className="ai-activity-body ai-usage-summary">
+        <p className="settings-description">
+          按 UTC
+          日期统计调用尝试，包含失败和结果未知；这是应用记录，不是供应商账单。
         </p>
-      ))}
+        {usage.data?.today?.map((u) => (
+          <p key={u.feature} className="ai-usage-today">
+            {featureName(u.feature)}：今日 {u.calls} 次 ·{" "}
+            {u.daily_limit === 0 ? "每日不限次数" : `剩余 ${u.remaining} 次`} ·
+            最短间隔 {u.min_interval_seconds} 秒
+            {u.reset_at &&
+              ` · 恢复时间 ${new Date(u.reset_at).toLocaleString(undefined, { timeZone: account.data?.timezone ?? "UTC" })}`}
+          </p>
+        ))}
+      </div>
       {usage.loading ? (
-        <Loading />
+        <div className="ai-activity-body">
+          <Loading />
+        </div>
       ) : usage.error ? (
-        <ErrorNotice error={usage.error} retry={usage.reload} />
+        <div className="ai-activity-body">
+          <ErrorNotice error={usage.error} retry={usage.reload} />
+        </div>
       ) : (
         <div className="usage-table">
           <table>
@@ -112,14 +118,14 @@ export function CallHistory() {
     ),
   );
   return (
-    <Card className="card-flush">
+    <Card className="card-flush ai-activity-card">
       <header className="card-header">
         <h2>最近调用与诊断</h2>
         <button className="button" onClick={calls.reload}>
           重新查询
         </button>
       </header>
-      <div className="react-actions">
+      <div className="ai-activity-body ai-call-filters">
         <label>
           调用功能
           <select
@@ -161,9 +167,13 @@ export function CallHistory() {
         </label>
       </div>
       {calls.loading ? (
-        <Loading />
+        <div className="ai-activity-body">
+          <Loading />
+        </div>
       ) : calls.error ? (
-        <ErrorNotice error={calls.error} retry={calls.reload} />
+        <div className="ai-activity-body">
+          <ErrorNotice error={calls.error} retry={calls.reload} />
+        </div>
       ) : (
         <>
           <div className="usage-table">
@@ -229,7 +239,7 @@ export function CallHistory() {
               </tbody>
             </table>
           </div>
-          <div className="react-actions">
+          <div className="ai-activity-body react-actions ai-call-pagination">
             <button
               className="button"
               disabled={page === 1}

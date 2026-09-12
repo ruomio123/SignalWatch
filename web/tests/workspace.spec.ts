@@ -76,22 +76,21 @@ test("503 exposes retry and keeps navigation usable", async ({ page }) => {
     .click();
   await expect(page.getByRole("heading", { name: "阅读偏好" })).toBeVisible();
 });
-test("closing paper modal cancels AI polling", async ({ page }) => {
+test("paper detail is inline and never requests the legacy summary", async ({
+  page,
+}) => {
   await setup(page);
   let calls = 0;
-  await page.route("**/api/v2/papers/1/ai-summary**", (route) => {
-    calls++;
-    return route.fulfill({
-      json: { items: [{ state: "pending", language: "zh" }] },
-    });
+  page.on("request", (r) => {
+    if (r.url().includes("/ai-summary")) calls++;
   });
   await page.goto("/papers?paper_id=1");
-  await expect(page.getByText("正在生成…", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "关闭", exact: true }).click();
-  const stopped = calls;
-  await page.waitForTimeout(2800);
-  expect(calls).toBe(stopped);
+  await expect(page.getByRole("heading", { name: paper.title })).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByText("AI 论文解读", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "返回论文列表" }).click();
+  await expect(page.getByRole("heading", { name: "匹配论文" })).toBeVisible();
+  expect(calls).toBe(0);
 });
 test("delete API entry uses its lifecycle ETag and clears the list", async ({
   page,

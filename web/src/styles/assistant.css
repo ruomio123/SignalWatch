@@ -1,0 +1,225 @@
+.assistant {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-size: 14px;
+}
+.assistant-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.assistant-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius);
+  background: var(--primary);
+  color: var(--surface);
+  flex-shrink: 0;
+}
+.assistant-heading {
+  flex: 1;
+  min-width: 0;
+}
+.assistant-heading p {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.assistant-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  padding: 20px;
+  scrollbar-gutter: stable;
+}
+.assistant-scroll > .notice,
+.assistant-scroll > .content-card {
+  margin-bottom: 16px;
+}
+.assistant-settings {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+  margin-bottom: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--background);
+}
+.assistant-settings .toolbar {
+  padding: 0;
+  margin: 0;
+}
+.assistant-settings .toolbar label {
+  width: 100%;
+}
+.assistant-settings label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.assistant-settings select {
+  width: 100%;
+  min-width: 0;
+}
+.assistant .agent-messages {
+  gap: 16px;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+}
+.assistant .agent-message {
+  border: 0;
+  background: var(--background);
+  border-radius: 12px 12px 12px 3px;
+  padding: 14px 16px;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  justify-self: start;
+}
+.assistant .agent-message.user {
+  justify-self: end;
+  max-width: 90%;
+  background: var(--primary);
+  color: var(--surface);
+  border-radius: 12px 12px 3px 12px;
+}
+.assistant .agent-message > strong {
+  display: none;
+}
+.assistant .agent-message > small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.assistant-bottom {
+  flex-shrink: 0;
+  padding: 12px 20px max(16px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.assistant-status {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  max-height: 100px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+.assistant-status > [role="status"] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.assistant-status .button {
+  font-size: 12px;
+  min-height: 30px;
+}
+.assistant-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 8px 0 12px;
+}
+.assistant-composer-field {
+  position: relative;
+}
+.assistant-composer-field textarea {
+  display: block;
+  width: 100%;
+  min-height: 88px;
+  max-height: 160px;
+  resize: none;
+  padding: 12px 64px 12px 12px;
+  border-radius: var(--card-radius);
+}
+.assistant-composer-field .button {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+}
+.assistant-composer-meta {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  padding-top: 8px;
+  overflow-wrap: anywhere;
+}
+.assistant-composer-meta > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+@media (max-width: 767px) {
+  .assistant-header {
+    padding: 14px 12px;
+    gap: 8px;
+  }
+  .assistant-mark {
+    width: 34px;
+    height: 34px;
+  }
+  .assistant-heading p {
+    font-size: 11px;
+  }
+  .assistant-scroll {
+    padding: 16px 12px;
+  }
+  .assistant-bottom {
+    padding-inline: 12px;
+  }
+  .assistant-hint {
+    font-size: 11px;
+  }
+}
+
+.assistant-hint {
+  overflow-wrap: anywhere;
+}
+
+.paper-report-start {
+  display: grid;
+  gap: 12px;
+  padding: 12px 0;
+}
+.paper-report-start small,
+.paper-report-scope {
+  color: var(--muted);
+  line-height: 1.6;
+}
+.paper-report-field {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.paper-report-field h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+.paper-report .react-actions {
+  flex-wrap: wrap;
+}
+.paper-report {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

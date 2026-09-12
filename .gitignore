@@ -12,7 +12,11 @@ coverage.out
 
 # Runtime output
 *.log
-/evals/
+/evals/*
+!/evals/agent/
+/evals/agent/*
+!/evals/agent/README.md
+!/evals/agent/cases.jsonl
 
 # Editors and operating systems
 .vscode/
@@ -31,6 +35,7 @@ web/playwright-report/
 !/scripts/check-architecture.py
 !/scripts/test-migrations.sh
 !/scripts/verify.sh
+!/scripts/eval-agent.py
 /.github/
 
 !docs/agent-architecture.md

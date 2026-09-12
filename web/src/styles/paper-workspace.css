@@ -1,0 +1,59 @@
+.papers-list-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+.paper-detail-page {
+  container: paper-detail / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: calc(100dvh - 112px);
+  min-height: 440px;
+  min-width: 0;
+}
+.paper-detail-page > .workspace-header,
+.paper-detail-navigation {
+  flex-shrink: 0;
+}
+.paper-detail-navigation .button {
+  padding-left: 0;
+}
+.paper-content,
+.paper-assistant-panel {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+.paper-content {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 24px;
+  overflow-wrap: anywhere;
+}
+.paper-content .react-abstract {
+  white-space: pre-wrap;
+}
+
+@media (max-width: 767px) {
+  .papers-list-page {
+    gap: 20px;
+  }
+  .paper-detail-page {
+    height: calc(100dvh - 104px);
+    gap: 12px;
+  }
+  .paper-content {
+    padding: 16px;
+  }
+}
+
+.paper-assistant-panel .assistant-heading p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

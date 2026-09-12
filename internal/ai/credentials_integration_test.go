@@ -62,7 +62,7 @@ func TestNamedCredentialsOfSameProviderRemainIndependent(t *testing.T) {
 			return generation.Result{Content: []byte(`{"type":"answer","content":"ok"}`)}, nil
 		}), nil
 	}
-	_, err = f.configurations.GenerateForCredential(ctx, u, "glm", "glm-4.7-flash", updated.Generation, updated.Version, FeatureSubscriptionAgent, "named-run", "prompt", []byte(`{}`), func(context.Context) error { beforeCalls++; return nil }, nil)
+	_, err = f.configurations.GenerateForCredential(ctx, u, "glm", "glm-4.7-flash", updated.Generation, updated.Version, FeatureSubscriptionAgent, "named-run", "prompt", []byte(`{}`), func(context.Context) error { beforeCalls++; return nil }, nil, nil)
 	mustAI(t, err)
 	if beforeCalls != 1 {
 		t.Fatalf("call-start hook ran %d times", beforeCalls)
@@ -92,7 +92,7 @@ func TestNamedCredentialsOfSameProviderRemainIndependent(t *testing.T) {
 	if current.Configured {
 		t.Fatal("deleting default silently selected another credential")
 	}
-	if _, err := f.configurations.GenerateForCredential(ctx, u, "glm", "glm-4.7-flash", updated.Generation, updated.Version, FeatureSubscriptionAgent, "deleted-run", "prompt", nil, nil, nil); !errors.Is(err, ErrConfigurationRequired) {
+	if _, err := f.configurations.GenerateForCredential(ctx, u, "glm", "glm-4.7-flash", updated.Generation, updated.Version, FeatureSubscriptionAgent, "deleted-run", "prompt", nil, nil, nil, nil); !errors.Is(err, ErrConfigurationRequired) {
 		t.Fatal("deleted credential used another same-provider key")
 	}
 }
@@ -123,7 +123,7 @@ func TestMultipleCredentialsPreserveAADAndDefaultIsolation(t *testing.T) {
 			return generation.Result{Content: []byte(`{"type":"answer","content":"ok"}`)}, nil
 		}), nil
 	}
-	_, err = f.configurations.GenerateForCredential(ctx, uid, "qwen", "qwen3.8-max", other.Generation, other.Version, FeaturePaperQA, "run", "prompt", []byte(`{}`), nil, nil)
+	_, err = f.configurations.GenerateForCredential(ctx, uid, "qwen", "qwen3.8-max", other.Generation, other.Version, FeaturePaperQA, "run", "prompt", []byte(`{}`), nil, nil, nil)
 	mustAI(t, err)
 	c, err := f.configurations.Get(qctx, uid)
 	mustAI(t, err)
@@ -136,7 +136,7 @@ func TestMultipleCredentialsPreserveAADAndDefaultIsolation(t *testing.T) {
 	if !active {
 		t.Fatal("deleting nondefault disabled default")
 	}
-	_, err = f.configurations.GenerateForCredential(ctx, uid, "qwen", "qwen3.8-max", other.Generation, other.Version, FeaturePaperQA, "run", "prompt", []byte(`{}`), nil, nil)
+	_, err = f.configurations.GenerateForCredential(ctx, uid, "qwen", "qwen3.8-max", other.Generation, other.Version, FeaturePaperQA, "run", "prompt", []byte(`{}`), nil, nil, nil)
 	if !errors.Is(err, ErrConfigurationRequired) {
 		t.Fatalf("deleted key remained usable: %v", err)
 	}

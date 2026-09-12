@@ -35,14 +35,28 @@ mysql "$name" < "$work/before.sql"
 test "$(mysql -N "$name" -e 'SELECT version FROM subscriptions WHERE name="preserved"')" = 7
 goose -dir migrations mysql "$dsn" up-to 28
 credential_before=$(mysql -N "$name" -e 'SELECT CONCAT(generation,":",config_version,":",HEX(secret_ciphertext),":",HEX(secret_nonce),":",master_key_version,":",is_default) FROM user_ai_configurations WHERE user_id=1')
+goose -dir migrations mysql "$dsn" up-to 29
+mysql "$name" <<'SQL'
+INSERT INTO papers(source_id,arxiv_id,title,abstract,comments,authors_json,categories_json,arxiv_url,pdf_url,published_at,arxiv_updated_at,first_seen_at,created_at,updated_at)
+ SELECT id,'1706.03762','Migration paper','A test abstract','','[]','["cs.AI"]','https://arxiv.org/abs/1706.03762','https://arxiv.org/pdf/1706.03762',UTC_TIMESTAMP(),UTC_TIMESTAMP(),UTC_TIMESTAMP(),UTC_TIMESTAMP(),UTC_TIMESTAMP() FROM sources WHERE source_key='arxiv';
+INSERT INTO agent_conversations(id,user_id,kind,paper_id,title,active_run_id,created_at,updated_at)
+ SELECT 'migration-paper',1,'paper',id,'Old paper conversation','migration-run',UTC_TIMESTAMP(),UTC_TIMESTAMP() FROM papers WHERE arxiv_id='1706.03762';
+INSERT INTO agent_runs(id,conversation_id,user_id,idempotency_key,input_hash,question,provider,model,generation,version,context_mode,state,checkpoint,created_at,updated_at)
+ SELECT 'migration-run','migration-paper',1,'migration-key',REPEAT('a',64),'Old question',provider_id,model_id,generation,config_version,'fulltext','pending','{"phase":"ready"}',UTC_TIMESTAMP(),UTC_TIMESTAMP() FROM user_ai_configurations WHERE user_id=1;
+INSERT INTO agent_messages(conversation_id,run_id,role,content,citations,created_at)
+ VALUES('migration-paper','migration-run','user','Preserved question','[]',UTC_TIMESTAMP());
+SQL
 goose -dir migrations mysql "$dsn" up
 test "$(mysql -N "$name" -e 'SELECT CONCAT(generation,":",config_version,":",HEX(secret_ciphertext),":",HEX(secret_nonce),":",master_key_version,":",is_default) FROM user_ai_configurations WHERE user_id=1')" = "$credential_before"
 test "$(mysql -N "$name" -e 'SELECT name FROM user_ai_configurations WHERE user_id=1')" = 'glm API'
 test "$(mysql -N "$name" -e "SELECT generation<>'' AND config_version=3 FROM user_ai_configurations WHERE user_id=1")" = 1
 test "$(mysql -N "$name" -e 'SELECT revision FROM ai_configuration_counters WHERE user_id=1')" = 3
 test "$(mysql -N "$name" -e 'SELECT CONCAT(version,":",digest_ai_enabled,":",digest_ai_language) FROM subscriptions WHERE name="preserved"')" = '7:1:en'
+test "$(mysql -N "$name" -e "SELECT CONCAT(state,':',failure_code) FROM agent_runs WHERE id='migration-run'")" = 'failed:workflow_changed'
+test "$(mysql -N "$name" -e "SELECT active_run_id IS NULL FROM agent_conversations WHERE id='migration-paper'")" = 1
+test "$(mysql -N "$name" -e "SELECT content FROM agent_messages WHERE run_id='migration-run'")" = 'Preserved question'
 # Empty initialization has a separate database and exercises all historic migrations.
 mysql -e "DROP DATABASE $name; CREATE DATABASE $name"
 goose -dir migrations mysql "$dsn" up
-test "$(mysql -N "$name" -e 'SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1')" = 29
+test "$(mysql -N "$name" -e 'SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1')" = 30
 echo 'migration drill: empty initialization, upgrade, interrupted DDL, backup restoration passed'

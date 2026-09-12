@@ -152,15 +152,20 @@ for (const width of [1920, 1440, 1024, 768, 390, 320]) {
     await assistant(page);
     await page.setViewportSize({ width, height: width >= 1440 ? 1200 : 900 });
     await page.goto(url);
-    const panel = page.getByRole("dialog", { name: "订阅助手", exact: true });
+    const panel = page.locator(".subscription-assistant-panel");
     await expect(panel.getByText(payload.name, { exact: true })).toBeVisible();
     await expect(
       page.getByRole("button", { name: "助手设置" }),
     ).toHaveAttribute("aria-expanded", "false");
     await expect(page.getByLabel("历史对话")).toBeHidden();
-    expect(await panel.evaluate((el) => el.matches(":modal"))).toBe(
-      width < 1440,
-    );
+    await expect(
+      page.getByRole("dialog", { name: "订阅助手", exact: true }),
+    ).toHaveCount(0);
+    if (width < 1440)
+      await expect(
+        page.getByRole("tablist", { name: "订阅视图" }),
+      ).toBeVisible();
+    else await expect(page.getByRole("separator")).toBeVisible();
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
@@ -216,15 +221,13 @@ test("desktop list remains operable and Escape closes the topmost modal first", 
   await expect(
     page.getByRole("dialog", { name: "编辑订阅", exact: true }),
   ).toHaveCount(0);
-  await expect(
-    page.getByRole("dialog", { name: "订阅助手", exact: true }),
-  ).toBeVisible();
+  await expect(page.locator(".subscription-assistant-panel")).toBeVisible();
   await page.getByRole("button", { name: "关闭订阅助手" }).click();
   await expect(trigger).toBeFocused();
   await expect(page).not.toHaveURL(/assistant=/);
 });
 
-test("resizing preserves unsent text and draft edits, fullscreen traps focus", async ({
+test("resizing and compact tabs preserve unsent text and draft edits", async ({
   page,
 }) => {
   await assistant(page);
@@ -235,17 +238,16 @@ test("resizing preserves unsent text and draft edits, fullscreen traps focus", a
   await page.getByRole("button", { name: "编辑草案", exact: true }).click();
   await page.getByLabel("草案名称").fill("尚未保存的草案名称");
   await page.setViewportSize({ width: 390, height: 844 });
-  const panel = page.getByRole("dialog", { name: "订阅助手", exact: true });
-  await expect(panel).toHaveAttribute("aria-modal", "true");
+  const panel = page.locator(".subscription-assistant-panel");
+  await expect(page.getByRole("tablist", { name: "订阅视图" })).toBeVisible();
   await expect(input).toHaveValue("尚未发送的调整要求");
   await expect(page.getByLabel("草案名称")).toHaveValue("尚未保存的草案名称");
-  await page.getByRole("button", { name: "发送", exact: true }).focus();
-  await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: "助手设置" })).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
+  await page.getByRole("tab", { name: "订阅列表" }).click();
+  await expect(panel).toBeHidden();
   await expect(
-    page.getByRole("button", { name: "发送", exact: true }),
-  ).toBeFocused();
+    page.getByRole("combobox", { name: "状态", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("tab", { name: "AI 助手" }).click();
   await page.setViewportSize({ width: 1920, height: 1000 });
   await expect(panel).not.toHaveAttribute("aria-modal");
   await expect(page.getByLabel("草案名称")).toHaveValue("尚未保存的草案名称");
@@ -371,4 +373,153 @@ test("account failure shows unavailable schedule instead of an invented time", a
   await expect(
     page.getByRole("definition").filter({ hasText: "发送安排暂不可用" }),
   ).toBeVisible();
+});
+
+test("subscription split preserves list and draft state with independent preferences", async ({
+  page,
+}, info) => {
+  const state = await assistant(page);
+  const paperPreference = {
+    version: 1,
+    direction: "horizontal",
+    paperFirst: false,
+    horizontal: 0.55,
+    vertical: 0.5,
+  };
+  await page.addInitScript(
+    (value) =>
+      localStorage.setItem(
+        "signalwatch.paper-layout.v1",
+        JSON.stringify(value),
+      ),
+    paperPreference,
+  );
+  await page.route("**/api/v2/subscriptions?**", (r) =>
+    r.fulfill({
+      json: {
+        items: Array.from({ length: 20 }, (_, i) => ({
+          ...subscription,
+          id: i + 1,
+          name: `研究订阅 ${i + 1}`,
+        })),
+        total: 40,
+      },
+    }),
+  );
+  await page.setViewportSize({ width: 1920, height: 1200 });
+  await page.goto(url);
+  await page
+    .getByRole("combobox", { name: "状态", exact: true })
+    .selectOption("false");
+  await page.getByRole("button", { name: "下一页", exact: true }).click();
+  await page.getByRole("textbox", { name: "你的问题" }).fill("保留聊天草稿");
+  await page.getByRole("button", { name: "编辑草案", exact: true }).click();
+  const editor = page.getByLabel("草案名称");
+  await editor.fill("未保存的分栏草案");
+  await editor.evaluate((el) => el.setAttribute("data-instance", "original"));
+  await page
+    .locator(".subscriptions-list-panel")
+    .evaluate((el) => (el.scrollTop = 180));
+  const divider = page.getByRole("separator");
+  await divider.press("ArrowRight");
+  await expect(divider).toHaveAttribute("aria-valuenow", "62");
+  const box = (await divider.boundingBox())!;
+  await page.mouse.move(box.x + 6, box.y + 40);
+  await page.mouse.down();
+  await page.mouse.move(box.x - 80, box.y + 40);
+  await page.mouse.up();
+  await page.getByRole("button", { name: "交换位置" }).click();
+  await page.getByRole("button", { name: "上下排列" }).click();
+  await expect(divider).toHaveAttribute("aria-orientation", "horizontal");
+  await expect(editor).toHaveAttribute("data-instance", "original");
+  await expect(editor).toHaveValue("未保存的分栏草案");
+  await expect(page.getByRole("textbox", { name: "你的问题" })).toHaveValue(
+    "保留聊天草稿",
+  );
+  await expect(
+    page.getByRole("combobox", { name: "状态", exact: true }),
+  ).toHaveValue("false");
+  await expect(
+    page.getByRole("button", { name: "上一页", exact: true }),
+  ).toBeEnabled();
+  expect(
+    await page
+      .locator(".subscriptions-list-panel")
+      .evaluate((el) => el.scrollTop),
+  ).toBe(180);
+  expect(state.confirmations()).toBe(0);
+  expect(state.sent()).toBe("");
+  await page.screenshot({
+    path: info.outputPath("subscription-vertical-swapped.png"),
+    fullPage: true,
+  });
+  const stored = await page.evaluate(() =>
+    localStorage.getItem("signalwatch.subscription-layout.v1"),
+  );
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("signalwatch.paper-layout.v1")!),
+    ),
+  ).toEqual(paperPreference);
+  await page.setViewportSize({ width: 390, height: 900 });
+  await expect(page.getByRole("tab", { name: "AI 助手" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await page.getByRole("tab", { name: "订阅列表" }).click();
+  await expect(
+    page.getByRole("combobox", { name: "状态", exact: true }),
+  ).toHaveValue("false");
+  await page.getByRole("tab", { name: "AI 助手" }).click();
+  await expect(editor).toHaveValue("未保存的分栏草案");
+  await page.setViewportSize({ width: 1920, height: 1200 });
+  await expect(divider).toBeVisible();
+  await page.reload();
+  await expect(divider).toHaveAttribute("aria-orientation", "horizontal");
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("signalwatch.subscription-layout.v1"),
+    ),
+  ).toBe(stored);
+  await page.getByRole("button", { name: "左右排列" }).click();
+  await page.screenshot({
+    path: info.outputPath("subscription-horizontal-swapped.png"),
+    fullPage: true,
+  });
+  await page.getByRole("textbox", { name: "你的问题" }).press("Escape");
+  await expect(page.locator(".subscription-assistant-panel")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "AI 创建订阅" })).toBeFocused();
+  await expect(page.locator(".subscriptions-page")).not.toHaveClass(
+    /has-assistant/,
+  );
+});
+
+test("subscription layout changes do not resubmit an active run", async ({
+  page,
+}) => {
+  await assistant(page);
+  await page.route(`**/api/v2/agent/conversations/${conversationID}`, (r) =>
+    r.fulfill({ json: { id: conversationID, active_run_id: "active-layout" } }),
+  );
+  await page.route("**/api/v2/agent/runs/active-layout", (r) =>
+    r.fulfill({
+      json: {
+        run: { id: "active-layout", state: "running", progress: "generating" },
+        steps: [],
+      },
+    }),
+  );
+  let writes = 0;
+  page.on("request", (r) => {
+    if (r.method() === "POST" && r.url().includes("/agent/")) writes++;
+  });
+  await page.setViewportSize({ width: 1920, height: 1200 });
+  await page.goto(url);
+  await expect(page.getByRole("button", { name: "停止本轮" })).toBeVisible();
+  await page.getByRole("button", { name: "上下排列" }).click();
+  await page.getByRole("button", { name: "交换位置" }).click();
+  await page.getByRole("separator").press("ArrowDown");
+  await page.setViewportSize({ width: 390, height: 900 });
+  await expect(page.getByRole("button", { name: "停止本轮" })).toBeVisible();
+  expect(writes).toBe(0);
 });

@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 )
@@ -76,12 +78,19 @@ func (s *Service) process(ctx context.Context, d Document) {
 		cleanup, stop := context.WithTimeout(context.Background(), 3*time.Second)
 		defer stop()
 		code := "document_extraction_failed"
+		var failure *ExtractionError
+		if errors.As(err, &failure) {
+			code = failure.Code
+		}
 		if work.Err() != nil {
 			code = "document_timeout"
 		}
 		_ = s.Store.Fail(cleanup, d, code)
 		return
 	}
+	d.PageCount = len(pages)
+	d.TextComplete = true
+	d.Sections, _ = json.Marshal(IdentifySections(pages))
 	h := sha256.Sum256([]byte(strings.Join(pages, "\f")))
 	_ = s.Store.Complete(work, d, chunks, hex.EncodeToString(h[:]), extracted.SourceVersion)
 }

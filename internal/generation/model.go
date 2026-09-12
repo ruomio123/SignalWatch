@@ -17,6 +17,8 @@ type Failure struct {
 	HTTPStatus        int
 	RetryAfter        time.Duration
 	Retryable         bool
+	ValidationPath    string
+	ValidationRule    string
 }
 
 func (e *Failure) Error() string { return e.Code }
