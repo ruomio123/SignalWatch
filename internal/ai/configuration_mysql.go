@@ -24,7 +24,7 @@ func (s *MySQLConfigurationStore) Read(ctx context.Context, uid uint64) (c Confi
 }
 func lockConfigurationUser(tx *gorm.DB, uid uint64) error {
 	var row struct{ ID uint64 }
-	return tx.Table("users").Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").Where("id=? AND status='active' AND role='user'", uid).Take(&row).Error
+	return tx.Table("users").Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").Where("id=? AND status='active'", uid).Take(&row).Error
 }
 func (s *MySQLConfigurationStore) Mutate(ctx context.Context, uid uint64, expected *uint64, fn func(Configuration, uint64) (Configuration, error)) (saved Configuration, err error) {
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

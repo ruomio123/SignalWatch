@@ -168,7 +168,6 @@ const messages: Record<string, string> = {
   AI_DISABLED: "AI 功能暂未开放。",
   AI_DAILY_LIMIT_REACHED: "今日调用已达上限。",
   AI_CALL_IN_PROGRESS: "另一个 AI 调用正在进行，请稍后重试。",
-  AUTH_FORBIDDEN: "当前账户没有此功能的访问权限。",
 };
 export function errorMessage(error: unknown): string {
   if (error instanceof ApiError)

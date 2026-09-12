@@ -38,7 +38,7 @@ func (repository *repository) ListActiveSchedules(ctx context.Context) ([]Schedu
 	err := repository.db.WithContext(ctx).
 		Table("users u").Joins("JOIN subscriptions s ON s.user_id=u.id").
 		Select(`u.id AS user_id, s.id AS subscription_id, u.email, u.timezone, TIME_FORMAT(u.digest_time, '%H:%i:%s') AS digest_time, s.max_items_per_digest`).
-		Where("u.status=? AND u.role=? AND s.enabled=1 AND s.deleted_at IS NULL", userpkg.StatusActive, userpkg.RoleUser).Order("u.id ASC,s.id ASC").
+		Where("u.status=? AND s.enabled=1 AND s.deleted_at IS NULL", userpkg.StatusActive).Order("u.id ASC,s.id ASC").
 		Scan(&schedules).Error
 	if err != nil {
 		return nil, fmt.Errorf("list active digest users: %w", err)
@@ -63,7 +63,7 @@ func (repository *repository) FindActiveUser(ctx context.Context, userID, subscr
 	}
 	err := repository.db.WithContext(ctx).Table("users u").Joins("JOIN subscriptions s ON s.user_id=u.id").
 		Select("u.id, u.email, u.timezone, s.max_items_per_digest, s.digest_ai_enabled, s.digest_ai_language, s.id AS subscription_id, s.name AS subscription_name").
-		Where("u.id=? AND s.id=? AND u.status=? AND u.role=? AND s.enabled=1 AND s.deleted_at IS NULL", userID, subscriptionID, userpkg.StatusActive, userpkg.RoleUser).
+		Where("u.id=? AND s.id=? AND u.status=? AND s.enabled=1 AND s.deleted_at IS NULL", userID, subscriptionID, userpkg.StatusActive).
 		Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return User{}, ErrUserNotFound

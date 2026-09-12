@@ -176,7 +176,7 @@ func TestM3MatcherRulesAndConcurrentIdempotency(t *testing.T) {
 	userRecord := user.User{
 		Email: "m3-" + nonce + "@example.test", PasswordHash: "not-used-in-this-test",
 		Timezone: "UTC", DigestTime: "08:00:00", MaxItemsPerDigest: 50,
-		Status: user.StatusActive, Role: user.RoleUser, CreatedAt: now, UpdatedAt: now,
+		Status: user.StatusActive, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := database.Create(&userRecord).Error; err != nil {
 		t.Fatalf("create user: %v", err)

@@ -82,7 +82,7 @@ func newFixture(t *testing.T) *fixture {
 	sqlDB, _ := db.DB()
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	now := time.Now().UTC()
-	u := user.User{Email: "agent-" + rand.Text() + "@example.test", PasswordHash: "fixture", Timezone: "UTC", DigestTime: "08:00:00", MaxItemsPerDigest: 10, Status: "active", Role: "user", AILanguage: "zh", CreatedAt: now, UpdatedAt: now}
+	u := user.User{Email: "agent-" + rand.Text() + "@example.test", PasswordHash: "fixture", Timezone: "UTC", DigestTime: "08:00:00", MaxItemsPerDigest: 10, Status: "active", AILanguage: "zh", CreatedAt: now, UpdatedAt: now}
 	must(t, db.Create(&u).Error)
 	t.Cleanup(func() {
 		db.Where("user_id=?", u.ID).Delete(&Conversation{})

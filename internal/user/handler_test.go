@@ -35,7 +35,6 @@ func TestHandlerRegisterReturnsCreatedPublicUser(t *testing.T) {
 		DigestTime:        DefaultDigestTime,
 		MaxItemsPerDigest: DefaultMaxItemsPerDigest,
 		Status:            StatusActive,
-		Role:              RoleUser,
 		CreatedAt:         createdAt,
 		UpdatedAt:         updatedAt,
 	}

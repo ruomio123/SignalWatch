@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	mysqldriver "github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 
@@ -538,8 +537,8 @@ func assertM1Schema(t *testing.T, database *gorm.DB) {
 	if !database.Migrator().HasColumn(&user.User{}, "max_items_per_digest") {
 		t.Fatal("M1 test database is not migrated: users.max_items_per_digest is missing")
 	}
-	if !database.Migrator().HasColumn(&user.User{}, "role") {
-		t.Fatal("test database is not migrated: users.role is missing")
+	if database.Migrator().HasColumn(&user.User{}, "role") {
+		t.Fatal("test database must be migrated through 00031: users.role still exists")
 	}
 }
 
@@ -590,17 +589,13 @@ func newM1TestAPIWithClock(t *testing.T, database *gorm.DB, mysqlCheck server.De
 
 			GetProfileHandler:    userHandler.GetProfile,
 			UpdateProfileHandler: userHandler.UpdateProfile}, Authorization: server.AuthorizationRoutes{AuthMiddleware: auth.Middleware(tokenService),
-			ActiveRoleMiddleware:      auth.RequireRoles(userRepository, logger, user.RoleUser, user.RoleOperator),
-			UserRoleMiddleware:        auth.RequireRoles(userRepository, logger, user.RoleUser),
-			OperatorRoleMiddleware:    auth.RequireRoles(userRepository, logger, user.RoleOperator),
-			OperationsAuditMiddleware: func(c *gin.Context) { c.Next() }}, Sources: server.SourcesRoutes{ListSourcesHandler: sourceHandler.List,
+			ActiveAccountMiddleware: auth.RequireActiveAccount(userRepository, logger)}, Sources: server.SourcesRoutes{ListSourcesHandler: sourceHandler.List,
 			GetSourceHandler: sourceHandler.Get}, Subscriptions: server.SubscriptionsRoutes{CreateSubscriptionHandler: subscriptionHandler.Create,
 			ListSubscriptionsHandler:  subscriptionHandler.List,
 			GetSubscriptionHandler:    subscriptionHandler.Get,
 			UpdateSubscriptionHandler: subscriptionHandler.Update,
 			DeleteSubscriptionHandler: subscriptionHandler.Delete}, Papers: server.PapersRoutes{ListPapersHandler: paperQueryHandler.List,
-			GetPaperHandler: paperQueryHandler.Get}, Operations: server.OperationsRoutes{OperationsStatusHandler: func(c *gin.Context) { c.Status(http.StatusOK) },
-			OperationsSourcesHandler: func(c *gin.Context) { c.Status(http.StatusOK) }},
+			GetPaperHandler: paperQueryHandler.Get},
 	})
 	if err != nil {
 		t.Fatalf("create in-process M1 API: %v", err)

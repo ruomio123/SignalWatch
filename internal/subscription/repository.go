@@ -117,7 +117,7 @@ type mysqlTx struct{ db *gorm.DB }
 
 func (t mysqlTx) LockUser(ctx context.Context, uid uint64) (uint16, error) {
 	var row struct{ MaxItemsPerDigest uint16 }
-	err := t.db.WithContext(ctx).Table("users").Clauses(clause.Locking{Strength: "UPDATE"}).Select("max_items_per_digest").Where("id=? AND status='active' AND role='user'", uid).Take(&row).Error
+	err := t.db.WithContext(ctx).Table("users").Clauses(clause.Locking{Strength: "UPDATE"}).Select("max_items_per_digest").Where("id=? AND status='active'", uid).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, ErrUserNotFound
 	}

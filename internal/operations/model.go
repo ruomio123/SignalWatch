@@ -21,15 +21,13 @@ type QueueSnapshot struct {
 }
 
 type WorkerSnapshot struct {
-	InstanceID        string        `json:"instance_id"`
-	State             string        `json:"state"`
-	StartedAt         time.Time     `json:"started_at"`
-	LastHeartbeatAt   time.Time     `json:"last_heartbeat_at"`
-	HeartbeatInterval time.Duration `json:"-"`
-	HeartbeatSeconds  int64         `json:"heartbeat_interval_seconds"`
-	MatcherQueue      QueueSnapshot `json:"matcher_queue"`
-	MailQueue         QueueSnapshot `json:"mail_queue"`
-	OnlineState       string        `json:"online_state,omitempty"`
+	InstanceID       string        `json:"instance_id"`
+	State            string        `json:"state"`
+	StartedAt        time.Time     `json:"started_at"`
+	LastHeartbeatAt  time.Time     `json:"last_heartbeat_at"`
+	HeartbeatSeconds int64         `json:"heartbeat_interval_seconds"`
+	MatcherQueue     QueueSnapshot `json:"matcher_queue"`
+	MailQueue        QueueSnapshot `json:"mail_queue"`
 }
 
 type TaskSnapshot struct {
@@ -60,45 +58,4 @@ type SourceAttempt struct {
 	LastSuccessAt *time.Time     `json:"last_success_at,omitempty"`
 	Metrics       map[string]int `json:"metrics,omitempty"`
 	Failure       *Failure       `json:"failure,omitempty"`
-}
-
-type DependencyStatus struct {
-	Status    string `json:"status"`
-	LatencyMS int64  `json:"latency_ms"`
-}
-
-type StatusResponse struct {
-	AI           map[string]any              `json:"ai,omitempty"`
-	GeneratedAt  time.Time                   `json:"generated_at"`
-	Status       string                      `json:"status"`
-	Dependencies map[string]DependencyStatus `json:"dependencies"`
-	Workers      []WorkerSnapshot            `json:"workers"`
-	Tasks        []TaskSnapshot              `json:"tasks"`
-	Sources      SourceSummary               `json:"sources"`
-}
-
-type SourceSummary struct {
-	Enabled     int64 `json:"enabled"`
-	Current     int64 `json:"current"`
-	Stale       int64 `json:"stale"`
-	NeverSynced int64 `json:"never_synced"`
-}
-
-type SourceStatus struct {
-	ID                   uint64         `json:"id"`
-	SourceKey            string         `json:"source_key"`
-	Name                 string         `json:"name"`
-	Enabled              bool           `json:"enabled"`
-	AllowedCategories    []string       `json:"allowed_categories"`
-	PaperCount           int64          `json:"paper_count"`
-	LatestPaperAt        *time.Time     `json:"latest_paper_at,omitempty"`
-	LastSuccessfulSyncAt *time.Time     `json:"last_successful_sync_at,omitempty"`
-	CheckpointState      string         `json:"checkpoint_state"`
-	OperationalState     string         `json:"operational_state"`
-	LatestAttempt        *SourceAttempt `json:"latest_attempt,omitempty"`
-}
-
-type SourcesResponse struct {
-	GeneratedAt time.Time      `json:"generated_at"`
-	Items       []SourceStatus `json:"items"`
 }

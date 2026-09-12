@@ -78,7 +78,7 @@ func newAIIntegrationFixture(t *testing.T) *aiIntegrationFixture {
 		database.Unscoped().Delete(&src)
 	})
 	for i := 0; i < 2; i++ {
-		u := user.User{Email: fmt.Sprintf("byok-%s-%d@example.test", nonce, i), PasswordHash: "unused", Timezone: "UTC", DigestTime: "08:20:00", MaxItemsPerDigest: 20, Status: user.StatusActive, Role: user.RoleUser, AIEnabled: true, AILanguage: "zh", CreatedAt: f.now, UpdatedAt: f.now}
+		u := user.User{Email: fmt.Sprintf("byok-%s-%d@example.test", nonce, i), PasswordHash: "unused", Timezone: "UTC", DigestTime: "08:20:00", MaxItemsPerDigest: 20, Status: user.StatusActive, AIEnabled: true, AILanguage: "zh", CreatedAt: f.now, UpdatedAt: f.now}
 		mustAI(t, database.Create(&u).Error)
 		f.users = append(f.users, u)
 	}

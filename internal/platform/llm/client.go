@@ -100,7 +100,7 @@ func enabledProvider(enabled []string, provider string) bool {
 	return false
 }
 
-// SelectionAvailability distinguishes an operator-disabled provider from a
+// SelectionAvailability distinguishes a deployment-disabled provider from a
 // model that was saved while it was allowlisted but has since been retired.
 func SelectionAvailability(enabled []string, provider, model string) (bool, string) {
 	p, known := providers[provider]

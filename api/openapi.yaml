@@ -8,9 +8,8 @@ info:
     catalog, subscription CRUD, and the current user's matched arXiv papers.
     Background local matching provides explainable match reasons. M4 adds the
     subscription-scoped daily Digest (scheduled in the user timezone) and email delivery Worker; mail delivery operations
-    are intentionally not exposed as public endpoints. User-supplied provider credentials provide optional paper summaries and cached Digest enrichment; Bounded Agents provide persistent subscription drafting and evidence-based paper conversations. Read-only operations endpoints expose safe runtime
-    status to database-authorized operator accounts; no administrative mutation
-    or log-download endpoint is exposed.
+    are intentionally not exposed as public endpoints. User-supplied provider credentials provide optional paper summaries and cached Digest enrichment; Bounded Agents provide persistent subscription drafting and evidence-based paper conversations.
+    No administrative mutation or log-download endpoint is exposed.
 tags:
   - name: System
   - name: Authentication
@@ -18,7 +17,6 @@ tags:
   - name: Sources
   - name: Subscriptions
   - name: Papers
-  - name: Operations
 security:
   - bearerAuth: []
 paths:
@@ -502,7 +500,6 @@ paths:
               schema: {$ref: "#/components/schemas/AISummaryResponse"}
         "400": {$ref: "#/components/responses/ValidationError"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "403": {description: Operator accounts cannot access user AI endpoints.}
         "404": {description: Paper is not visible to the current user.}
         "503": {description: AI_DISABLED or AI_UNAVAILABLE; original paper remains available.}
     post:
@@ -531,7 +528,6 @@ paths:
               schema: {$ref: "#/components/schemas/AISummaryResponse"}
         "400": {$ref: "#/components/responses/ValidationError"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "403": {description: Operator accounts cannot access user AI endpoints.}
         "404": {description: Paper is not visible to the current user.}
         "503": {description: AI_DISABLED or AI_UNAVAILABLE.}
   /api/v2/ai/providers:
@@ -1074,42 +1070,6 @@ paths:
           $ref: "#/components/responses/MethodNotAllowed"
         "500":
           $ref: "#/components/responses/InternalError"
-  /api/v2/ops/status:
-    get:
-      tags: [Operations]
-      operationId: getOperationsStatus
-      description: Read-only dependency, Worker, queue, and task status for operators.
-      responses:
-        "200":
-          description: Best-effort status. Component outages are represented in the body.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OperationsStatus"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-  /api/v2/ops/sources:
-    get:
-      tags: [Operations]
-      operationId: listOperationsSources
-      description: Read-only arXiv source checkpoints and safe latest-attempt summaries for operators.
-      responses:
-        "200":
-          description: Source synchronization status.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OperationsSources"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "503":
-          $ref: "#/components/responses/Unavailable"
 components:
   securitySchemes:
     sessionCookie:
@@ -1988,155 +1948,6 @@ components:
       format: date-time
       description: UTC RFC3339 timestamp.
       example: "2026-09-05T08:30:00Z"
-    OperationsFailure:
-      type: object
-      additionalProperties: false
-      required: [stage, summary, at]
-      properties:
-        stage:
-          type: string
-          minLength: 1
-        summary:
-          type: string
-          minLength: 1
-          description: Sanitized summary that excludes credentials and raw internal errors.
-        at:
-          $ref: "#/components/schemas/UTCTimestamp"
-    OperationsQueue:
-      type: object
-      additionalProperties: false
-      required: [depth, capacity, workers, processing, succeeded, failed]
-      properties:
-        skipped: {type: integer, minimum: 0}
-        lease_conflicts: {type: integer, minimum: 0}
-        retried: {type: integer, minimum: 0}
-        depth: {type: integer, minimum: 0}
-        capacity: {type: integer, minimum: 0}
-        workers: {type: integer, minimum: 0}
-        processing: {type: integer, format: int64, minimum: 0}
-        succeeded: {type: integer, format: int64, minimum: 0}
-        failed: {type: integer, format: int64, minimum: 0}
-    OperationsWorker:
-      type: object
-      additionalProperties: false
-      required: [instance_id, state, started_at, last_heartbeat_at, heartbeat_interval_seconds, matcher_queue, mail_queue]
-      properties:
-        instance_id: {type: string, minLength: 1}
-        state: {type: string, enum: [running, stopped]}
-        started_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        last_heartbeat_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        heartbeat_interval_seconds: {type: integer, format: int64, minimum: 0}
-        matcher_queue: {$ref: "#/components/schemas/OperationsQueue"}
-        mail_queue: {$ref: "#/components/schemas/OperationsQueue"}
-        online_state: {type: string, enum: [online, stale, stopped]}
-    OperationsTask:
-      type: object
-      additionalProperties: false
-      required: [task, state, updated_at]
-      properties:
-        task: {type: string, enum: [collector, matcher, digest, mail, ai, backfill]}
-        worker_instance_id: {type: string}
-        state: {type: string, enum: [idle, running, succeeded, failed, retry_wait, cancelled]}
-        trigger: {type: string, enum: [startup, daily]}
-        mode: {type: string, enum: [bootstrap, recovery, daily]}
-        attempt_id: {type: string}
-        due_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        started_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        updated_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        last_success_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        next_retry_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        metrics:
-          type: object
-          additionalProperties: {type: integer}
-        failure: {$ref: "#/components/schemas/OperationsFailure"}
-    OperationsDependency:
-      type: object
-      additionalProperties: false
-      required: [status, latency_ms]
-      properties:
-        status: {type: string, enum: [available, unavailable]}
-        latency_ms: {type: integer, format: int64, minimum: 0}
-    OperationsStatus:
-      type: object
-      additionalProperties: false
-      required: [generated_at, status, dependencies, workers, tasks, sources]
-      properties:
-        ai:
-          type: object
-          description: Safe AI configuration, daily usage and local cache counters; per-Worker queue metrics are in AI task snapshots.
-          additionalProperties: true
-        generated_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        status: {type: string, enum: [healthy, degraded, unavailable]}
-        dependencies:
-          type: object
-          additionalProperties: false
-          required: [mysql, redis]
-          properties:
-            mysql: {$ref: "#/components/schemas/OperationsDependency"}
-            redis: {$ref: "#/components/schemas/OperationsDependency"}
-        workers:
-          type: array
-          items: {$ref: "#/components/schemas/OperationsWorker"}
-        tasks:
-          type: array
-          items: {$ref: "#/components/schemas/OperationsTask"}
-        sources:
-          $ref: "#/components/schemas/OperationsSourceSummary"
-    OperationsSourceSummary:
-      type: object
-      additionalProperties: false
-      required: [enabled, current, stale, never_synced]
-      properties:
-        enabled: {type: integer, format: int64, minimum: 0}
-        current: {type: integer, format: int64, minimum: 0}
-        stale: {type: integer, format: int64, minimum: 0}
-        never_synced: {type: integer, format: int64, minimum: 0}
-    OperationsSourceAttempt:
-      type: object
-      additionalProperties: false
-      required: [source_id, state, mode, attempt_id, started_at]
-      properties:
-        source_id: {type: integer, format: int64, minimum: 1}
-        state: {type: string, enum: [running, succeeded, failed, cancelled]}
-        mode: {type: string, enum: [bootstrap, recovery, daily]}
-        attempt_id: {type: string, minLength: 1}
-        window_from: {$ref: "#/components/schemas/UTCTimestamp"}
-        window_to: {$ref: "#/components/schemas/UTCTimestamp"}
-        started_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        completed_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        last_success_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        metrics:
-          type: object
-          additionalProperties: {type: integer}
-        failure: {$ref: "#/components/schemas/OperationsFailure"}
-    OperationsSource:
-      type: object
-      additionalProperties: false
-      required: [id, source_key, name, enabled, allowed_categories, paper_count, checkpoint_state, operational_state]
-      properties:
-        id: {type: integer, format: int64, minimum: 1}
-        source_key: {type: string, minLength: 1}
-        name: {type: string, minLength: 1}
-        enabled: {type: boolean}
-        allowed_categories:
-          type: array
-          uniqueItems: true
-          items: {type: string}
-        paper_count: {type: integer, format: int64, minimum: 0}
-        latest_paper_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        last_successful_sync_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        checkpoint_state: {type: string, enum: [current, stale, never_synced, disabled]}
-        operational_state: {type: string, enum: [available, unavailable]}
-        latest_attempt: {$ref: "#/components/schemas/OperationsSourceAttempt"}
-    OperationsSources:
-      type: object
-      additionalProperties: false
-      required: [generated_at, items]
-      properties:
-        generated_at: {$ref: "#/components/schemas/UTCTimestamp"}
-        items:
-          type: array
-          items: {$ref: "#/components/schemas/OperationsSource"}
     AIProviderPage:
       type: object
       additionalProperties: false
@@ -2328,7 +2139,7 @@ components:
             message: request is invalid
             request_id: req_01j_example
     Unauthorized:
-      description: Missing, invalid, expired, or tampered bearer token.
+      description: Missing, invalid, expired, or tampered bearer token, or an inactive or missing account.
       content:
         application/json:
           schema:
@@ -2336,16 +2147,6 @@ components:
           example:
             code: AUTH_UNAUTHORIZED
             message: unauthorized
-            request_id: req_01j_example
-    Forbidden:
-      description: The authenticated account does not have the required role.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/ErrorResponse"
-          example:
-            code: AUTH_FORBIDDEN
-            message: forbidden
             request_id: req_01j_example
     Unavailable:
       description: Authorization or operational status assembly could not be completed.

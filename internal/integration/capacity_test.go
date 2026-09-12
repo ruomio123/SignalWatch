@@ -67,7 +67,7 @@ func TestCapacityWorkload(t *testing.T) {
 		checkRecovery(t, db.Delete(&src).Error)
 	}()
 	for i := range users {
-		users[i] = user.User{Email: fmt.Sprintf("capacity-%s-%d@example.test", tag, i), PasswordHash: "unused", Timezone: "UTC", DigestTime: "00:00:00", MaxItemsPerDigest: 10, Status: user.StatusActive, Role: user.RoleUser, CreatedAt: now, UpdatedAt: now}
+		users[i] = user.User{Email: fmt.Sprintf("capacity-%s-%d@example.test", tag, i), PasswordHash: "unused", Timezone: "UTC", DigestTime: "00:00:00", MaxItemsPerDigest: 10, Status: user.StatusActive, CreatedAt: now, UpdatedAt: now}
 	}
 	checkRecovery(t, db.CreateInBatches(&users, 500).Error)
 	for _, u := range users {

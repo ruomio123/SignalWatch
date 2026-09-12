@@ -18,9 +18,9 @@ import (
 	"signalwatch/internal/user"
 )
 
-type roleLoaderFunc func(context.Context, uint64) (user.User, error)
+type identityLoaderFunc func(context.Context, uint64) (user.User, error)
 
-func (loader roleLoaderFunc) FindActiveByID(ctx context.Context, id uint64) (user.User, error) {
+func (loader identityLoaderFunc) FindActiveByID(ctx context.Context, id uint64) (user.User, error) {
 	return loader(ctx, id)
 }
 
@@ -187,43 +187,54 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 	}
 }
 
-func TestNewRouterKeepsUserAndOperatorRoutesMutuallyExclusive(t *testing.T) {
-	dependencies := validTestDependencies()
-	role := user.RoleUser
-	loader := roleLoaderFunc(func(_ context.Context, id uint64) (user.User, error) {
-		return user.User{ID: id, Status: user.StatusActive, Role: role}, nil
+func TestNewRouterRequiresActiveAccountOnceForAllProtectedRoutes(t *testing.T) {
+	d := validTestDependencies()
+	active := true
+	reads := 0
+	loader := identityLoaderFunc(func(_ context.Context, id uint64) (user.User, error) {
+		reads++
+		if !active {
+			return user.User{}, user.ErrNotFound
+		}
+		return user.User{ID: id, Status: user.StatusActive}, nil
 	})
-	dependencies.Authorization.AuthMiddleware = func(c *gin.Context) {
-		httpx.SetCurrentUserID(c, 42)
-		c.Next()
-	}
-	dependencies.Authorization.ActiveRoleMiddleware = auth.RequireRoles(loader, dependencies.Logger, user.RoleUser, user.RoleOperator)
-	dependencies.Authorization.UserRoleMiddleware = auth.RequireRoles(loader, dependencies.Logger, user.RoleUser)
-	dependencies.Authorization.OperatorRoleMiddleware = auth.RequireRoles(loader, dependencies.Logger, user.RoleOperator)
-	router, err := NewRouter(dependencies)
+	d.Authorization.AuthMiddleware = func(c *gin.Context) { httpx.SetCurrentUserID(c, 42); c.Next() }
+	d.Authorization.ActiveAccountMiddleware = auth.RequireActiveAccount(loader, d.Logger)
+	d.AI.GetAIUsageHandler = func(c *gin.Context) { c.Status(http.StatusOK) }
+	d.AgentHandler = func(c *gin.Context) { c.Status(http.StatusOK) }
+	router, err := NewRouter(d)
 	if err != nil {
-		t.Fatalf("create router: %v", err)
+		t.Fatal(err)
 	}
+	for _, path := range []string{"/api/v2/me", "/api/v2/auth/probe", "/api/v2/subscriptions", "/api/v2/papers", "/api/v2/ai/usage", "/api/v2/agent/conversations"} {
+		for _, state := range []bool{true, false} {
+			active = state
+			before := reads
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			want := http.StatusOK
+			if !active {
+				want = http.StatusUnauthorized
+			}
+			if response.Code != want || reads-before != 1 {
+				t.Fatalf("%s active=%v: status=%d lookups=%d", path, active, response.Code, reads-before)
+			}
+		}
+	}
+}
 
-	requestStatus := func(path string) int {
-		request := httptest.NewRequest(http.MethodGet, path, nil)
-		response := httptest.NewRecorder()
-		router.ServeHTTP(response, request)
-		return response.Code
-	}
-	if status := requestStatus("/api/v2/me"); status != http.StatusOK {
-		t.Fatalf("expected user to access product route, got %d", status)
-	}
-	if status := requestStatus("/api/v2/ops/status"); status != http.StatusForbidden {
-		t.Fatalf("expected user to be forbidden from operations route, got %d", status)
-	}
-
-	role = user.RoleOperator
-	if status := requestStatus("/api/v2/ops/status"); status != http.StatusOK {
-		t.Fatalf("expected operator to access operations route, got %d", status)
-	}
-	if status := requestStatus("/api/v2/me"); status != http.StatusForbidden {
-		t.Fatalf("expected operator to be forbidden from product route, got %d", status)
+func TestRemovedOperationsRoutesReturnJSONNotFound(t *testing.T) {
+	router := newTestRouter(t)
+	for _, path := range []string{"/api/v2/ops/status", "/api/v2/ops/sources", "/api/v2/ops/status/"} {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			for _, token := range []string{"", "Bearer obsolete-token"} {
+				response := httptest.NewRecorder()
+				request := httptest.NewRequest(method, path, nil)
+				request.Header.Set("Authorization", token)
+				router.ServeHTTP(response, request)
+				assertErrorResponse(t, response, http.StatusNotFound, httpx.CodeNotFound, "route not found")
+			}
+		}
 	}
 }
 
@@ -619,6 +630,10 @@ func TestNewRouterValidatesDependencies(t *testing.T) {
 			},
 		},
 		{
+			name:   "missing active account middleware",
+			mutate: func(dependencies *Dependencies) { dependencies.Authorization.ActiveAccountMiddleware = nil },
+		},
+		{
 			name: "missing get profile handler",
 			mutate: func(dependencies *Dependencies) {
 				dependencies.Accounts.GetProfileHandler = nil
@@ -736,18 +751,7 @@ func validTestDependencies() Dependencies {
 			}}, Authorization: AuthorizationRoutes{AuthMiddleware: func(c *gin.Context) {
 			c.Next()
 		},
-			ActiveRoleMiddleware: func(c *gin.Context) {
-				c.Next()
-			},
-			UserRoleMiddleware: func(c *gin.Context) {
-				c.Next()
-			},
-			OperatorRoleMiddleware: func(c *gin.Context) {
-				c.Next()
-			},
-			OperationsAuditMiddleware: func(c *gin.Context) {
-				c.Next()
-			}}, Sources: SourcesRoutes{ListSourcesHandler: func(c *gin.Context) {
+			ActiveAccountMiddleware: func(c *gin.Context) { c.Next() }}, Sources: SourcesRoutes{ListSourcesHandler: func(c *gin.Context) {
 			c.Status(http.StatusOK)
 		},
 			GetSourceHandler: func(c *gin.Context) {
@@ -770,11 +774,6 @@ func validTestDependencies() Dependencies {
 			c.Status(http.StatusOK)
 		},
 			GetPaperHandler: func(c *gin.Context) {
-				c.Status(http.StatusOK)
-			}}, Operations: OperationsRoutes{OperationsStatusHandler: func(c *gin.Context) {
-			c.Status(http.StatusOK)
-		},
-			OperationsSourcesHandler: func(c *gin.Context) {
 				c.Status(http.StatusOK)
 			}},
 	}

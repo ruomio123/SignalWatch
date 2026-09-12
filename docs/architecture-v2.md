@@ -15,7 +15,7 @@
 | `internal/platform/llm` | 供应商目录及协议适配；客户端由启动层注入配置用例与执行器共用的工厂 |
 | `internal/collector`、`internal/paper` | 来源采集、可续租的带代次锁、论文更新及 checkpoint |
 | `internal/bootstrap`、`cmd/*` | 外部资源创建、依赖装配和进程生命周期 |
-| `internal/operations` | 读取业务与按 Worker 实例保存的状态；人工写操作通过明确的本地 CLI 执行 |
+| `internal/operations` | 按 Worker 实例采集并保存 Redis 状态快照；没有账号角色或专属 HTTP 接口，人工重试仍通过本地 CLI 执行 |
 | `web/src` | React 页面、类型化请求、会话、请求作用域、弹窗与页面错误边界 |
 
 架构检查脚本阻止领域/应用用例导入 Gin、GORM、Redis、数据库连接或供应商适配器，以及在业务用例中构造 Repository。接口按使用方需要定义，不要求只读查询为联表读取引入额外层级。
@@ -83,3 +83,9 @@ SIGNALWATCH_CAPACITY=1 go test -v -count=1 -run '^TestCapacityWorkload$' ./inter
 ```
 
 需要显式设置独立 `M1_TEST_MYSQL_DSN`。测试创建并清理 1,000 用户、每用户 20 个订阅、100,000 篇论文，测量全量调度、单任务完整回填、20,000 个持久邮件任务、队列等待和 Go 堆使用。SMTP 使用本地假发送器，大部分投递为空；它不验证真实邮件供应商吞吐、2 万个回填任务同时运行或生产磁盘性能。生产容量承诺必须在目标机器上补充混合负载与持续运行测试。
+
+## 活动账号鉴权与角色清理
+
+迁移 00031 删除 `users.role` 及约束、索引；历史迁移保持原样。受保护路由按 JWT → 活动账号检查 → 业务处理执行，每条路由只装配一次活动账号中间件。账号不存在/禁用返回 401，查询故障返回 `503 AUTHORIZATION_UNAVAILABLE`；各用例继续检查资源归属、账号状态、凭据和租约。聊天消息的 role 字段不属于账号权限体系。
+
+移除 `/api/v2/ops/*`、角色 CLI 和专属汇总响应，保留 Reporter、Redis 快照、健康检查和手动重试。原活动运维账号成为普通账号，可访问自己的数据；原禁用状态不变。升级必须停止旧 API/Worker 并备份后执行迁移；Down 不恢复历史运维身份，恢复身份需使用原备份。

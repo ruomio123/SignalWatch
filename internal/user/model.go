@@ -10,8 +10,6 @@ const (
 	DefaultDigestTime               = "08:00:00"
 	DefaultMaxItemsPerDigest uint16 = 20
 	StatusActive                    = "active"
-	RoleUser                        = "user"
-	RoleOperator                    = "operator"
 )
 
 type User struct {
@@ -25,7 +23,6 @@ type User struct {
 	DigestTime        string    `gorm:"column:digest_time" json:"digest_time"`
 	MaxItemsPerDigest uint16    `gorm:"column:max_items_per_digest" json:"max_items_per_digest"`
 	Status            string    `gorm:"column:status" json:"status"`
-	Role              string    `gorm:"column:role" json:"-"`
 	CreatedAt         time.Time `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt         time.Time `gorm:"column:updated_at" json:"updated_at"`
 }
@@ -55,7 +52,6 @@ func NewUser(email, passwordHash string) User {
 		DigestTime:        DefaultDigestTime,
 		MaxItemsPerDigest: DefaultMaxItemsPerDigest,
 		Status:            StatusActive,
-		Role:              RoleUser,
 	}
 }
 

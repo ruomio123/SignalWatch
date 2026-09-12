@@ -196,7 +196,7 @@ func owned(db *gorm.DB, r Run) *gorm.DB {
 }
 func (s *MySQLStore) Check(ctx context.Context, r Run) error {
 	var n int64
-	err := owned(s.db.WithContext(ctx), r).Where("deadline>UTC_TIMESTAMP(6)").Where("EXISTS (SELECT 1 FROM users WHERE users.id=agent_runs.user_id AND users.status='active' AND users.role='user')").Count(&n).Error
+	err := owned(s.db.WithContext(ctx), r).Where("deadline>UTC_TIMESTAMP(6)").Where("EXISTS (SELECT 1 FROM users WHERE users.id=agent_runs.user_id AND users.status='active')").Count(&n).Error
 	if err != nil {
 		return err
 	}

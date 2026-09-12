@@ -90,17 +90,13 @@ func TestOpenAPIContractMatchesRegisteredRouterOperations(t *testing.T) {
 
 			GetProfileHandler:    noop,
 			UpdateProfileHandler: noop}, Authorization: server.AuthorizationRoutes{AuthMiddleware: noop,
-			ActiveRoleMiddleware:      noop,
-			UserRoleMiddleware:        noop,
-			OperatorRoleMiddleware:    noop,
-			OperationsAuditMiddleware: noop}, Sources: server.SourcesRoutes{ListSourcesHandler: noop,
+			ActiveAccountMiddleware: noop}, Sources: server.SourcesRoutes{ListSourcesHandler: noop,
 			GetSourceHandler: noop}, Subscriptions: server.SubscriptionsRoutes{CreateSubscriptionHandler: noop,
 			ListSubscriptionsHandler:  noop,
 			GetSubscriptionHandler:    noop,
 			UpdateSubscriptionHandler: noop,
 			DeleteSubscriptionHandler: noop}, Papers: server.PapersRoutes{ListPapersHandler: noop,
-			GetPaperHandler: noop}, Operations: server.OperationsRoutes{OperationsStatusHandler: noop,
-			OperationsSourcesHandler: noop},
+			GetPaperHandler: noop},
 	})
 	if err != nil {
 		t.Fatalf("create router for contract comparison: %v", err)
@@ -266,7 +262,5 @@ func currentOperations() map[string][]string {
 		"/api/v2/ai/configuration/test":   {"POST"},
 		"/api/v2/ai/calls":                {"GET"},
 		"/api/v2/ai/usage":                {"GET"},
-		"/api/v2/ops/status":              {"GET"},
-		"/api/v2/ops/sources":             {"GET"},
 	}
 }

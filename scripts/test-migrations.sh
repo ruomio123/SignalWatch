@@ -46,7 +46,45 @@ INSERT INTO agent_runs(id,conversation_id,user_id,idempotency_key,input_hash,que
 INSERT INTO agent_messages(conversation_id,run_id,role,content,citations,created_at)
  VALUES('migration-paper','migration-run','user','Preserved question','[]',UTC_TIMESTAMP());
 SQL
+goose -dir migrations mysql "$dsn" up-to 30
+# Preserve ordinary users and both active and disabled former operators.
+mysql "$name" <<'SQL'
+INSERT INTO users(email,password_hash,timezone,digest_time,max_items_per_digest,status,role,created_at,updated_at)
+ VALUES ('former-operator@example.test','preserved-hash','Asia/Shanghai','09:10:00',12,'active','operator',UTC_TIMESTAMP(),UTC_TIMESTAMP()),
+        ('disabled-operator@example.test','disabled-hash','UTC','10:00:00',9,'disabled','operator',UTC_TIMESTAMP(),UTC_TIMESTAMP());
+INSERT INTO auth_sessions(token_hash,user_id,expires_at,created_at)
+ SELECT REPEAT('c',64),id,UTC_TIMESTAMP()+INTERVAL 1 DAY,UTC_TIMESTAMP() FROM users WHERE email='former-operator@example.test';
+SQL
+# All user attributes except the intentionally removed role must survive unchanged.
+users_query='SELECT JSON_ARRAY(id,email,password_hash,timezone,digest_time,max_items_per_digest,status,ai_enabled,ai_language,created_at,updated_at) FROM users ORDER BY id'
+users_before=$(mysql -N "$name" -e "$users_query")
+sessions_before=$(mysql -N "$name" -e 'SELECT * FROM auth_sessions ORDER BY token_hash')
+"${compose[@]}" exec -T -e MYSQL_PWD=isolated-test-only mysql mysqldump -uroot --single-transaction --skip-comments --set-gtid-purged=OFF --no-tablespaces "$name" > "$work/before-role-removal.sql"
 goose -dir migrations mysql "$dsn" up
+assert_role_removal(){
+  test "$(mysql -N "$name" -e "$users_query")" = "$users_before"
+  test "$(mysql -N "$name" -e 'SELECT * FROM auth_sessions ORDER BY token_hash')" = "$sessions_before"
+  test "$(mysql -N "$name" -e "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='$name' AND TABLE_NAME='users' AND COLUMN_NAME='role'")" = 0
+  test "$(mysql -N "$name" -e "SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA='$name' AND TABLE_NAME='users' AND CONSTRAINT_NAME='chk_users_role'")" = 0
+  test "$(mysql -N "$name" -e "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA='$name' AND TABLE_NAME='users' AND INDEX_NAME='idx_users_role_status'")" = 0
+}
+assert_role_removal
+# Down restores only the schema, with user as the default for every account.
+goose -dir migrations mysql "$dsn" down
+test "$(mysql -N "$name" -e 'SELECT COUNT(*) FROM users WHERE role<>"user"')" = 0
+test "$(mysql -N "$name" -e "$users_query")" = "$users_before"
+if mysql "$name" -e "UPDATE users SET role='invalid' WHERE id=1" 2>/dev/null; then
+  echo 'role CHECK was not restored by Down' >&2; exit 1
+fi
+test "$(mysql -N "$name" -e "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA='$name' AND TABLE_NAME='users' AND INDEX_NAME='idx_users_role_status'")" = 2
+goose -dir migrations mysql "$dsn" up
+assert_role_removal
+# Rehearse restoring historical assignments from the backup, then upgrading again.
+mysql -e "DROP DATABASE $name; CREATE DATABASE $name"
+mysql "$name" < "$work/before-role-removal.sql"
+test "$(mysql -N "$name" -e 'SELECT COUNT(*) FROM users WHERE role="operator"')" = 2
+goose -dir migrations mysql "$dsn" up
+assert_role_removal
 test "$(mysql -N "$name" -e 'SELECT CONCAT(generation,":",config_version,":",HEX(secret_ciphertext),":",HEX(secret_nonce),":",master_key_version,":",is_default) FROM user_ai_configurations WHERE user_id=1')" = "$credential_before"
 test "$(mysql -N "$name" -e 'SELECT name FROM user_ai_configurations WHERE user_id=1')" = 'glm API'
 test "$(mysql -N "$name" -e "SELECT generation<>'' AND config_version=3 FROM user_ai_configurations WHERE user_id=1")" = 1
@@ -58,5 +96,5 @@ test "$(mysql -N "$name" -e "SELECT content FROM agent_messages WHERE run_id='mi
 # Empty initialization has a separate database and exercises all historic migrations.
 mysql -e "DROP DATABASE $name; CREATE DATABASE $name"
 goose -dir migrations mysql "$dsn" up
-test "$(mysql -N "$name" -e 'SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1')" = 30
-echo 'migration drill: empty initialization, upgrade, interrupted DDL, backup restoration passed'
+test "$(mysql -N "$name" -e 'SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1')" = 31
+echo 'migration drill: empty initialization, upgrade, interrupted DDL, backup restoration, role removal and rollback passed'

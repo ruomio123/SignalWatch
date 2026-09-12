@@ -26,7 +26,6 @@ type Dependencies struct {
 	Sources       SourcesRoutes
 	Subscriptions SubscriptionsRoutes
 	Papers        PapersRoutes
-	Operations    OperationsRoutes
 	Authorization AuthorizationRoutes
 }
 type AIRoutes struct {
@@ -68,16 +67,9 @@ type PapersRoutes struct {
 	ListPapersHandler gin.HandlerFunc
 	GetPaperHandler   gin.HandlerFunc
 }
-type OperationsRoutes struct {
-	OperationsStatusHandler  gin.HandlerFunc
-	OperationsSourcesHandler gin.HandlerFunc
-}
 type AuthorizationRoutes struct {
-	AuthMiddleware            gin.HandlerFunc
-	ActiveRoleMiddleware      gin.HandlerFunc
-	UserRoleMiddleware        gin.HandlerFunc
-	OperatorRoleMiddleware    gin.HandlerFunc
-	OperationsAuditMiddleware gin.HandlerFunc
+	AuthMiddleware          gin.HandlerFunc
+	ActiveAccountMiddleware gin.HandlerFunc
 }
 
 // NewRouter 创建并配置 SignalWatch API 的 Gin Router。
@@ -149,7 +141,7 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 	registerAPIV2Routes(apiV2, dependencies)
 
 	aiRoutes := apiV2.Group("")
-	aiRoutes.Use(dependencies.Authorization.AuthMiddleware, dependencies.Authorization.ActiveRoleMiddleware, dependencies.Authorization.UserRoleMiddleware)
+	aiRoutes.Use(dependencies.Authorization.AuthMiddleware, dependencies.Authorization.ActiveAccountMiddleware)
 	disabled := func(c *gin.Context) { httpx.WriteError(c, 503, "AI_DISABLED", "AI enrichment is disabled") }
 	getAI, requestAI := dependencies.AI.GetAISummaryHandler, dependencies.AI.RequestAISummaryHandler
 	if getAI == nil {
@@ -249,10 +241,10 @@ func validateDependencies(dependencies Dependencies) error {
 	if dependencies.Authorization.AuthMiddleware == nil {
 		return errors.New("auth middleware is required")
 	}
-	if dependencies.Authorization.ActiveRoleMiddleware == nil || dependencies.Authorization.UserRoleMiddleware == nil ||
-		dependencies.Authorization.OperatorRoleMiddleware == nil || dependencies.Authorization.OperationsAuditMiddleware == nil {
-		return errors.New("role and operations middleware are required")
+	if dependencies.Authorization.ActiveAccountMiddleware == nil {
+		return errors.New("active account middleware is required")
 	}
+
 	if dependencies.Accounts.GetProfileHandler == nil {
 		return errors.New("get profile handler is required")
 	}
@@ -286,9 +278,6 @@ func validateDependencies(dependencies Dependencies) error {
 	if dependencies.Papers.GetPaperHandler == nil {
 		return errors.New("get paper handler is required")
 	}
-	if dependencies.Operations.OperationsStatusHandler == nil || dependencies.Operations.OperationsSourcesHandler == nil {
-		return errors.New("operations handlers are required")
-	}
 
 	return nil
 }
@@ -302,14 +291,14 @@ func registerAPIV2Routes(apiV2 *gin.RouterGroup, d Dependencies) {
 	auth.POST("/logout", d.Accounts.LogoutHandler)
 
 	protectedAuth := auth.Group("")
-	protectedAuth.Use(d.Authorization.AuthMiddleware, d.Authorization.ActiveRoleMiddleware)
+	protectedAuth.Use(d.Authorization.AuthMiddleware, d.Authorization.ActiveAccountMiddleware)
 	protectedAuth.GET("/probe", func(c *gin.Context) {
 		userID, _ := httpx.CurrentUserID(c)
 		c.JSON(http.StatusOK, gin.H{"user_id": userID})
 	})
 
 	protected := apiV2.Group("")
-	protected.Use(d.Authorization.AuthMiddleware, d.Authorization.UserRoleMiddleware)
+	protected.Use(d.Authorization.AuthMiddleware, d.Authorization.ActiveAccountMiddleware)
 	protected.GET("/me", d.Accounts.GetProfileHandler)
 	protected.PATCH("/me", d.Accounts.UpdateProfileHandler)
 	protected.GET("/sources", d.Sources.ListSourcesHandler)
@@ -322,8 +311,4 @@ func registerAPIV2Routes(apiV2 *gin.RouterGroup, d Dependencies) {
 	protected.GET("/papers", d.Papers.ListPapersHandler)
 	protected.GET("/papers/:id", d.Papers.GetPaperHandler)
 
-	operations := apiV2.Group("/ops")
-	operations.Use(d.Authorization.AuthMiddleware, d.Authorization.OperatorRoleMiddleware, d.Authorization.OperationsAuditMiddleware)
-	operations.GET("/status", d.Operations.OperationsStatusHandler)
-	operations.GET("/sources", d.Operations.OperationsSourcesHandler)
 }

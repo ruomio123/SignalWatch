@@ -23,12 +23,12 @@ func (r *Repository) PaperEligible(ctx context.Context, t Task) (bool, error) {
 		return false, nil
 	}
 	var count int64
-	err := r.DB.WithContext(ctx).Table("subscription_papers sp").Joins("JOIN subscriptions sub ON sub.id=sp.subscription_id JOIN users u ON u.id=sub.user_id JOIN user_ai_configurations ac ON ac.user_id=u.id AND ac.is_default=1").Where("sp.paper_id=? AND u.id=? AND u.status='active' AND u.role='user' AND u.ai_enabled=1 AND ac.status='active' AND ac.generation=? AND ac.config_version=? AND ac.provider_id=? AND ac.model_id=?", p.ID, t.OwnerUserID, t.ConfigGeneration, t.ConfigVersion, t.ProviderID, t.ModelID).Count(&count).Error
+	err := r.DB.WithContext(ctx).Table("subscription_papers sp").Joins("JOIN subscriptions sub ON sub.id=sp.subscription_id JOIN users u ON u.id=sub.user_id JOIN user_ai_configurations ac ON ac.user_id=u.id AND ac.is_default=1").Where("sp.paper_id=? AND u.id=? AND u.status='active' AND u.ai_enabled=1 AND ac.status='active' AND ac.generation=? AND ac.config_version=? AND ac.provider_id=? AND ac.model_id=?", p.ID, t.OwnerUserID, t.ConfigGeneration, t.ConfigVersion, t.ProviderID, t.ModelID).Count(&count).Error
 	return count > 0, err
 }
 func (r *Repository) DemandUsers(ctx context.Context, after uint64) ([]user.User, error) {
 	var rows []user.User
-	err := r.DB.WithContext(ctx).Table("users u").Select("u.*").Joins("JOIN user_ai_configurations ac ON ac.user_id=u.id AND ac.is_default=1 AND ac.status='active'").Where("u.id>? AND u.status='active' AND u.role='user'", after).Order("u.id").Limit(100).Scan(&rows).Error
+	err := r.DB.WithContext(ctx).Table("users u").Select("u.*").Joins("JOIN user_ai_configurations ac ON ac.user_id=u.id AND ac.is_default=1 AND ac.status='active'").Where("u.id>? AND u.status='active'", after).Order("u.id").Limit(100).Scan(&rows).Error
 	return rows, err
 }
 func (r *Repository) DemandSubscriptions(ctx context.Context, uid uint64) ([]subscription.Subscription, error) {

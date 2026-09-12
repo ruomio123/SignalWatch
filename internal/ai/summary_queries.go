@@ -5,7 +5,6 @@ import (
 	"errors"
 	"signalwatch/internal/digest"
 	"signalwatch/internal/insight"
-	"signalwatch/internal/user"
 	"sync/atomic"
 	"time"
 )
@@ -47,9 +46,6 @@ func (s *SummaryQueries) Summary(ctx context.Context, userID, paperID uint64, la
 	u, err := s.users.FindActiveByID(ctx, userID)
 	if err != nil {
 		return SummaryResponse{}, err
-	}
-	if u.Role != user.RoleUser {
-		return SummaryResponse{}, user.ErrNotFound
 	}
 	p, err := s.papers.Get(ctx, userID, paperID)
 	if err != nil {

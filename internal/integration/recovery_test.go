@@ -42,7 +42,7 @@ func newRecoveryFixture(t *testing.T) *recoveryFixture {
 	f := &recoveryFixture{db: db, now: now}
 	f.src = source.Source{SourceKey: "recovery-" + tag, Kind: source.KindArXiv, Name: "Recovery", Enabled: true, ConfigJSON: json.RawMessage(`{"allowed_categories":["cs.AI"],"rule_types":["category","include_keyword"]}`), CreatedAt: now, UpdatedAt: now}
 	checkRecovery(t, db.Create(&f.src).Error)
-	f.u = user.User{Email: "recovery-" + tag + "@example.test", PasswordHash: "unused", Timezone: "UTC", DigestTime: "00:00:00", MaxItemsPerDigest: 1, Status: user.StatusActive, Role: user.RoleUser, CreatedAt: now, UpdatedAt: now}
+	f.u = user.User{Email: "recovery-" + tag + "@example.test", PasswordHash: "unused", Timezone: "UTC", DigestTime: "00:00:00", MaxItemsPerDigest: 1, Status: user.StatusActive, CreatedAt: now, UpdatedAt: now}
 	checkRecovery(t, db.Create(&f.u).Error)
 	f.sub = subscription.Subscription{UserID: f.u.ID, SourceID: f.src.ID, Name: "Recovery", Category: "cs.AI", KeywordsJSON: json.RawMessage(`[]`), Enabled: true, Version: 1, MaxItemsPerDigest: 1, DigestAILanguage: "en", CreatedAt: now, UpdatedAt: now}
 	checkRecovery(t, db.Create(&f.sub).Error)
