@@ -1,155 +1,259 @@
 # SignalWatch
 
-论文订阅与每日邮件服务：按 arXiv 分类和关键词匹配论文，在网页阅读或通过邮件接收更新，可选接入用户自带 API Key 的 AI 论文解读与邮件导读。
+SignalWatch 是一个面向 arXiv 的论文订阅与阅读工具。你可以按分类和关键词订阅论文，在网页查看匹配结果，并按自己的时区接收每日邮件。接入个人模型 API Key 后，还可以使用 AI 创建订阅、生成论文报告、追问论文内容和生成邮件导读。
 
-技术栈：Go、MySQL、Redis、React / TypeScript。React/Vite 独立提供前端，Gin API 只提供 HTTP JSON 接口，Worker 负责采集、匹配、AI 任务和邮件发送。生产由 Nginx 统一提供网页与 API 入口，前端更新无需重启后端。
+## 架构
+
+项目使用 React / TypeScript / Vite、Go / Gin、MySQL 和 Redis，前端、HTTP API 与后台 Worker 独立运行。
+
+```mermaid
+flowchart TD
+    Browser[浏览器 · React] --> Gateway[Nginx · HTTPS]
+    Gateway --> Static[前端静态资源]
+    Gateway -->|/api/v2/* · HTTP / JSON| API[Gin API · 8080]
+    API --> MySQL[(MySQL)]
+    API --> Redis[(Redis)]
+    API -->|凭据验证等同步调用| AI[模型服务]
+    Worker[Worker] --> MySQL
+    Worker --> Redis
+    Worker --> Arxiv[arXiv]
+    Worker --> AI
+    Worker --> SMTP[SMTP 邮件服务]
+```
+
+| 组件 | 职责 | 代码位置 |
+| --- | --- | --- |
+| 前端 | 页面展示、交互、会话管理、任务进度查询 | `web/src/` |
+| API | 鉴权、业务校验、数据读写、创建后台任务 | `cmd/api/`、`internal/` |
+| Worker | 论文采集、订阅匹配、历史回填、AI 处理、邮件调度与发送 | `cmd/worker/`、`internal/` |
+| MySQL | 保存用户、订阅、论文及持久任务状态 | `migrations/` |
+| Redis | 限速与运行状态 | `internal/platform/redis/` |
+| Nginx | 提供静态页面，将 API 请求转发到后端 | `deploy/nginx/` |
+
+本地由 Vite 提供页面并代理 API 请求，生产环境由 Nginx 提供同域入口。API 不包含前端资源；修改和发布前端无需重启 API 或 Worker。
 
 ## 本地启动
 
-需要 Go（版本见 [go.mod](go.mod)）、Docker Compose、Make；本地运行前端还需 Node.js 22 和 npm（版本声明见 `.nvmrc`）。
+以下命令均在项目根目录执行。
 
-安装迁移工具，并在项目根目录创建配置（已有 `.env` 时不要覆盖）：
+### 1. 准备环境
+
+需要 Go 1.26.5（以 [go.mod](go.mod) 为准）、Node.js 22.x、npm、Make 和 Docker Compose v2。先确认当前终端的版本：
 
 ```bash
-go install github.com/pressly/goose/v3/cmd/goose@v3.24.3
-cp .env.example .env
+go version
+node --version
+docker compose version
 ```
 
-确保 `goose` 在 `PATH` 中。按需修改 `.env` 中的数据库、Redis 密码及 `JWT_SECRET`；修改数据库密码时，同步更新 `MYSQL_DSN`。完整配置见 [.env.example](.env.example)，不要提交真实密钥。
+如果使用 nvm，可以通过项目中的 `.nvmrc` 切换 Node：
 
 ```bash
-make deps-up          # 启动 MySQL、Redis、Mailpit
+nvm install
+nvm use
 ```
 
-首次启动需等待 MySQL 初始化完成，再执行迁移：
+新开的前端终端也需要使用 Node 22。Worker 启用论文全文解析时还需 `pdftotext`、`pdfinfo`、`pdfimages` 和 `prlimit`；Debian / Ubuntu 可安装 `poppler-utils` 和 `util-linux`。生产后端镜像已包含这些工具。
+
+### 2. 创建配置
 
 ```bash
+test -f .env || cp .env.example .env
+chmod 600 .env
+```
+
+编辑 `.env`，完整选项见 [.env.example](.env.example)。本地配置重点如下：
+
+| 配置 | 说明 |
+| --- | --- |
+| `MYSQL_PASSWORD`、`MYSQL_ROOT_PASSWORD` | MySQL 应用账号和 root 密码 |
+| `MYSQL_DSN` | 数据库连接串；账号、密码和库名需与上述配置一致 |
+| `REDIS_PASSWORD` | Redis 密码 |
+| `JWT_SECRET` | 至少 32 字符的随机密钥，可用 `openssl rand -hex 32` 生成 |
+| `APP_PUBLIC_URL` | 本地可设为 `http://127.0.0.1:5173`，用于邮件中的站内链接 |
+| `SMTP_*` | 默认投递到本地 Mailpit；发送真实邮件时填写 SMTP 服务配置 |
+| `AI_ENABLED` | 默认 `false`，普通订阅和邮件功能无需模型服务 |
+
+`make api` 和 `make worker` 会读取根目录 `.env`。真实配置与密钥不提交仓库。
+
+### 3. 安装迁移工具并初始化数据库
+
+已有可用的 `goose` 命令时可跳过安装。以下方式将工具保存在项目内：
+
+```bash
+make prepare-cache
+mkdir -p .tools/bin
+GOBIN="$PWD/.tools/bin" \
+GOCACHE="$PWD/.cache/go-build" \
+GOTMPDIR="$PWD/.cache/tmp" \
+TMPDIR="$PWD/.cache/tmp" \
+go install -tags=no_sqlite3 github.com/pressly/goose/v3/cmd/goose@v3.24.3
+
+export PATH="$PWD/.tools/bin:$PATH"
+make deps-up
 make migrate-up
 make migrate-status
 ```
 
-安装前端依赖，并分别在三个终端启动服务：
+`make deps-up` 启动 MySQL、Redis、Mailpit，并等待服务健康检查通过。迁移需在 API 和 Worker 首次启动前执行。
+
+### 4. 启动前端、API 和 Worker
+
+先安装前端依赖并完成一次构建：
 
 ```bash
-npm --prefix web ci
-make api             # 终端一：HTTP API
-make worker          # 终端二：后台业务
-make web-dev         # 终端三：前端热更新
+make web-build
 ```
 
-- 网页：<http://127.0.0.1:5173>，注册后创建订阅。
-- 开发邮件：<http://127.0.0.1:8025>（Mailpit）。
-- 就绪检查：<http://127.0.0.1:8080/readyz>。
+然后在三个终端中分别进入项目根目录并运行：
 
-Worker 首次启动会采集最近七天论文，匹配结果需要等待采集与回填完成。邮件按用户时区和发送时间调度，每个订阅独立设置篇数上限。
+```bash
+# 终端一：HTTP API
+make api
+```
 
-浏览器默认保持登录 7 天，短期访问凭证自动续期。默认邮件仅进入本地 Mailpit；发送真实邮件需配置 `SMTP_*`。
+```bash
+# 终端二：后台任务
+make worker
+```
 
-## 可选 AI 配置
+```bash
+# 终端三：前端页面与热更新
+make web-dev
+```
 
-默认关闭 AI。启用时先生成用于加密用户 API Key 的主密钥：
+| 入口 | 地址 |
+| --- | --- |
+| 网页 | <http://127.0.0.1:5173> |
+| 开发邮件收件箱 | <http://127.0.0.1:8025> |
+| API 存活检查 | <http://127.0.0.1:8080/healthz> |
+| API 依赖就绪检查 | <http://127.0.0.1:8080/readyz> |
+
+Vite 固定使用 5173 端口，端口占用时会报错。修改 React 或 CSS 后页面自动更新，API 和 Worker 可以持续运行。需要连接其他 API 地址时执行：
+
+```bash
+DEV_API_TARGET=http://127.0.0.1:8081 make web-dev
+```
+
+各终端使用 `Ctrl+C` 停止对应进程；`make deps-down` 停止依赖容器并保留数据卷。
+
+## 编译
+
+前后端可以分别构建，无需启动 API、Worker 或数据库。
+
+```bash
+make backend-build   # 输出 bin/api、bin/worker、bin/ops
+make web-build       # 安装前端依赖、检查类型，输出 web/dist
+```
+
+`make frontend` 是 `make web-build` 的别名。Go 构建不需要 Node 或前端产物。`web/dist` 用于 Nginx 静态部署；本地开发使用 Vite，不能直接双击 HTML 文件运行页面。
+
+后端二进制读取进程环境变量，不会自动加载 `.env`。直接运行 `bin/api`、`bin/worker` 时，应由进程管理器注入相应配置；本地运行可以继续使用 Makefile，容器运行则由 Compose 注入配置。`bin/ops` 用于重试失败的邮件投递或回填任务。
+
+Makefile 默认将 Go 编译缓存、npm 缓存和临时文件放在项目 `.cache/` 下，权限为仅当前用户可访问。`.cache/`、`.tools/`、`bin/` 和 `web/dist/` 均不提交仓库。
+
+也可以通过 Docker 构建，使用容器内的 Go 或 Node 环境：
+
+```bash
+docker build -f deploy/Dockerfile.backend -t signalwatch-backend:local .
+docker build --output type=local,dest=web/dist web
+```
+
+## 使用
+
+1. 打开网页，注册账号并登录。
+2. 在「订阅」中新建订阅，选择 arXiv 分类、填写关键词，并设置每日论文上限。订阅可编辑、暂停或删除。
+3. 在「设置」中选择时区和每日邮件时间，例如 `Asia/Shanghai`、`09:00`。
+4. 等待 Worker 完成采集和匹配，在论文列表查看结果、打开论文详情。新订阅会后台回填最近七天的本地论文；首次采集需要时间，Worker 必须保持运行。
+5. 默认邮件在 Mailpit 中查看；配置真实 SMTP 后，邮件发送到账号邮箱。
+
+### 可选：启用 AI
+
+先生成服务端加密主密钥：
 
 ```bash
 openssl rand -base64 32
 ```
 
-将生成结果填入 `.env`（`<生成结果>` 替换为实际值）：
+将结果填入 API 和 Worker 共用的配置：
 
 ```dotenv
 AI_ENABLED=true
-AI_CREDENTIAL_KEYS=v1:<生成结果>
+AI_CREDENTIAL_KEYS=v1:<上一步生成的值>
 AI_CREDENTIAL_ACTIVE_KEY_VERSION=v1
 AI_ENABLED_PROVIDERS=glm,qwen,deepseek,kimi,openai
-
-AI_CONFIG_TEST_MIN_INTERVAL=10s
-AI_GENERATION_MIN_INTERVAL=2s
-AI_CONFIG_TEST_DAILY_LIMIT=0
-AI_PAPER_DAILY_LIMIT=0
-AI_DIGEST_DAILY_LIMIT=0
 ```
 
-间隔必须带时间单位，如 `10s`；每日上限 `0` 表示不限，启用上限时按 UTC 日统计。API 与 Worker 使用相同配置，修改后重启两个进程。
+该主密钥用于加密用户提交的模型 API Key，需备份并保持稳定。修改配置后重启 API 和 Worker。
 
-在侧栏「API 管理」点击「新建 API Key」，填写名称、供应商、模型和已有 Key，再点击「验证并保存」。同一家供应商可保存多条，列表支持编辑、验证、设为默认和删除。编辑时密钥留空保留该条目的原 Key；验证失败保留原配置。主密钥用于服务端加密，不是供应商 Key，需妥善备份。
+在网页「API 管理」中新建 API Key，填写名称、供应商、模型和个人 Key，验证并保存。可以保存多个条目，并选择默认条目供摘要和邮件使用。
 
-模型调用最多等待 30 秒，失败不自动重试。论文解读可手动重试；AI 导读失败时仍发送普通论文邮件。
+- **订阅助手**：点击「AI 创建订阅」，描述研究兴趣，检查草案后确认创建。
+- **论文助手**：在论文详情打开「AI 论文助手」，选择模型并生成报告。报告包括问题、方法、实验、结果和局限；成功生成后可以继续追问。
+- **邮件导读**：在订阅中启用「每日邮件 AI 导读」。
 
-## 开发与检查
+全文获取或解析失败时，论文报告会降级为明确标注的摘要版。AI 任务依赖 Worker，调用次数和间隔可通过 `.env.example` 中的 `AI_*` 配置调整。
 
-前端开发使用 `make web-dev`，修改页面自动热更新；API、Worker 保持运行。开发代理默认指向 8080，可通过 `DEV_API_TARGET` 覆盖。浏览器始终使用同源 `/api/v2`。
+## Docker Compose 部署
+
+生产编排见 [deploy/compose.prod.yaml](deploy/compose.prod.yaml)。Nginx 对外开放 80 / 443，HTTP 自动跳转 HTTPS；API、Worker、MySQL 和 Redis 通过容器网络通信。
+
+### 1. 准备生产配置
 
 ```bash
-make web-build       # 独立构建到 web/dist，不依赖正在运行的后端
-make frontend        # web-build 的兼容别名
+test -f deploy/.env.production || cp deploy/.env.example deploy/.env.production
+chmod 600 deploy/.env.production
+mkdir -p .deploy/web .deploy/certs
 ```
 
-API 已移除内嵌页面，构建前端后无需重新编译或重启 API。正式部署由常驻 Nginx 读取独立资源，通过 `make web-publish`、`make web-rollback` 原子切换版本。生产 Compose、HTTPS、首次切换与发布命令见 [前后端分离手册](docs/frontend-backend-separation.md)。
+编辑 `deploy/.env.production`：
 
-常用检查：
+- 将 `SERVER_NAME`、`APP_PUBLIC_URL` 改为实际域名和 HTTPS 站点地址。
+- 将 `WEB_ROOT`、`TLS_CERT_DIR` 分别设为项目 `.deploy/web`、`.deploy/certs` 的**绝对路径**。准备与域名匹配的 `fullchain.pem` 和 `privkey.pem`，放入证书目录。
+- 设置数据库、Redis、JWT 和真实 SMTP 配置。`MYSQL_DSN` 使用容器地址 `mysql:3306`，并与数据库账号配置一致。
+- 设置 `BACKEND_VERSION` 作为本次后端镜像标签。API 和 Worker 共用该镜像及配置。
+- 将 `MYSQL_VOLUME_NAME`、`REDIS_VOLUME_NAME` 填为要使用的数据卷名。已有环境使用实际已有的卷；全新环境先用 `docker volume create <卷名>` 显式创建这两个卷。
+
+### 2. 启动服务并发布页面
+
+在项目根目录定义命令简写，然后构建后端、启动依赖并执行迁移：
 
 ```bash
-make vet
-make test
-make test-race
-make openapi-check
-npm --prefix web run typecheck
-npm --prefix web run format:check
-(cd web && npx playwright install chromium)
-npm --prefix web test
+dc() {
+  docker compose --env-file deploy/.env.production -f deploy/compose.prod.yaml "$@"
+}
+
+dc config --quiet
+dc build api
+dc up -d --wait mysql redis
+dc run --rm migrate up
+dc up -d api worker nginx
 ```
 
-Go 测试在未配置依赖时会跳过部分集成测试。数据库集成测试需单独设置 `M1_TEST_MYSQL_DSN`（库名以 `_test` 结尾），以及测试专用邮件、Redis 服务；不得指向业务数据库。
+接着构建并发布前端。将检查地址换成实际站点，`WEB_ROOT` 必须与生产配置中的路径一致：
 
-## 常用维护
+```bash
+make web-build
+make web-publish RELEASE=v1 \
+  WEB_ROOT="$PWD/.deploy/web" \
+  WEB_CHECK_URL=https://signalwatch.example.com
+```
 
-| 操作 | 命令 / 说明 |
-| --- | --- |
-| 查看迁移状态 | `make migrate-status` |
-| 应用新增迁移 | `make migrate-up` |
-| 停止依赖服务 | `make deps-down`，保留数据卷 |
+Nginx 在首次发布前可以启动，此时页面暂时返回 404。发布检查需要能够通过该 HTTPS 地址访问本机 Nginx；使用私有 CA 时，通过 `WEB_CA_FILE=/绝对路径/ca.pem` 提供证书。完成后访问站点，使用 `dc ps`、`dc logs --tail=100 api worker nginx` 查看运行状态。
 
-涉及不兼容后端或数据库迁移的升级时，先停止 API 和 Worker，备份数据库及 AI 加密主密钥，再执行迁移并启动新版本；不要混用新旧 Worker。保留数据的环境不要随意执行 `migrate-down`。
+### 3. 更新与回滚前端
 
-生产部署使用 HTTPS、独立强密码和真实 SMTP。设置 `APP_PUBLIC_URL=https://你的域名` 可让邮件链接跳转到站内论文详情。SMTP 不确定结果会重试，因此邮件可能重复。
+每次发布使用新的版本号，例如 `v2`；已发布的版本可以直接回滚：
 
-## 参考
+```bash
+make web-build
+make web-publish RELEASE=v2 \
+  WEB_ROOT="$PWD/.deploy/web" \
+  WEB_CHECK_URL=https://signalwatch.example.com
 
-- [前后端分离与独立发布](docs/frontend-backend-separation.md)。
-- [API 契约](api/openapi.yaml)：公开接口统一使用 `/api/v2`。
-- [架构与切换恢复手册](docs/architecture-v2.md)。
-- [重构验收记录](docs/refactor-progress.md)。
-- [前端 UI 预览](web/UI-REVIEW.md)。
+make web-rollback RELEASE=v1 \
+  WEB_ROOT="$PWD/.deploy/web" \
+  WEB_CHECK_URL=https://signalwatch.example.com
+```
 
-## Agent 助手
-
-在「API 管理」保存所需供应商 Key，可为同一家供应商创建多个具名条目。默认条目用于邮件与摘要，对话中的 API 条目和模型单独选择。
-
-- 订阅页点击「AI 创建订阅」，描述研究兴趣，检查或编辑草案后确认创建。
-- 论文详情点击「AI 论文助手」，选择模型后点击「生成论文报告」。按问题、方法、实验、结果、局限五项展示，可展开证据、复制 JSON/Markdown。当前会话成功生成报告后才能追问；报告失败、取消或论文版本变化时需先生成有效报告。打开面板和切换模型不会自动调用。
-- 对话记录保存到服务端，刷新后可恢复。界面显示进度，也可停止本轮；模型失败不会自动重复调用。
-
-全文解析需要 Worker 主机安装 Poppler 的 `pdftotext`、`pdfinfo`、`pdfimages` 和 util-linux 的 `prlimit`。首次解读按需准备文字全文并识别章节；全文获取或解析失败时自动生成显著标记的摘要版。OCR 本期仅预留接口，扫描页或文字提取不完整时降级；图片、公式和复杂表格可能无法可靠表达。摘要版追问继续只依据摘要，重新生成全文报告可再次尝试解析。
-
-现有环境升级需停止 API/Worker、备份后应用至迁移 00031，并同步发布服务和前端。旧版未完成论文任务会明确终止，历史记录保留。报告通常 6 次模型调用，长文逐批读取，最多 24 次、15 分钟；追问最多 3 次、180 秒。订阅助手仍为 4 次模型调用、3 次工具、180 秒。日限额按实际调用计数，报告与追问共用 `AI_PAPER_QA_DAILY_LIMIT`。
-
-架构与恢复说明见 [Agent 架构](docs/agent-architecture.md)。
-
-论文助手全文校验排查与修复：PDF 使用阅读顺序解析，双栏正文不再按物理版式交错；模型只选择服务端提供的原文片段编号，引文与来源元数据由服务端读取，避免模型重抄 PDF 文字导致定位失败。前端「失败详情」显示步骤、规则和诊断编号。当前工作流为 `paper-fixed-v5`、解析器为 `poppler-reading-order-v3`，需同步更新 API、Worker 与前端；无需新增数据库迁移，旧缓存自动失效，历史报告保留。验证范围与真实调用的排查记录见 [Agent 架构与运维](docs/agent-architecture.md)。
-
-论文输出结构由 Go 输出类型统一生成 JSON Schema，Qwen3.8 的论文任务使用原生严格 Schema；其他供应商接收同一 Schema 提示并由服务端校验。失败时可查看持久化的校验位置和规则，失败后仍显示实际依据范围。已有历史错误无法补回当时未保存的细节；升级不需要新增迁移。
-
-论文报告语言：五项解释统一要求简体中文，模型/数据集名称、缩写、公式和原文证据可保留原文。整条无中文的报告论断以 `output_language_mismatch` 终止，不自动翻译或重试。追问按用户原问题的语言回答；已有报告保留原样，重新生成才应用当前规则。
-
-论文双面板支持拖动分隔线调节大小、左右/上下排列、交换位置和恢复默认；布局在当前浏览器跨论文保存，小屏自动切换标签页。分隔线支持方向键、Shift 加速、Home/End 和双击均分。布局变化保留聊天草稿、会话和运行状态。新报告消息显示“快速了解论文”，历史消息保留原样。交互及截图见 [UI 验收记录](web/UI-REVIEW.md)。无需数据库迁移；前端独立构建发布即可生效。
-
-订阅页也使用同一分栏组件，支持相同的拖动、键盘、方向与顺序调整。打开助手后列表与对话独立滚动，空间不足时切换「订阅列表 / AI 助手」标签页；关闭助手恢复列表页面滚动并返回打开按钮。订阅偏好保存于 `signalwatch.subscription-layout.v1`，与论文偏好独立；调整布局保留筛选、分页、输入及未保存草案，创建订阅仍需明确确认。
-
-API 管理的「用量与调用记录」统一了字体层级、内容内边距和筛选布局，手机上筛选纵向排列、表格在自身区域横向滚动，长模型名称与诊断编号可换行。本次订阅布局和用量样式更新仅涉及前端，无新增接口、迁移或工作流版本。
-
-## 移除系统运维角色
-
-迁移 `00031_remove_user_roles.sql` 移除账号角色字段，原运维账号按普通账号使用，保留账号 ID、密码、启用/禁用状态、会话及业务数据。登录后的接口仍实时检查账号有效性，资源归属和任务权限检查继续生效。`/api/v2/ops/status` 与 `/api/v2/ops/sources` 已移除并返回 JSON 404，角色授予、撤销和查询命令已删除。
-
-健康检查、日志及 Worker 的 Redis 状态快照保持可用；任务恢复继续使用 `go run ./cmd/ops retry digest --id ID` 和 `go run ./cmd/ops retry backfill --id ID`。
-
-已有环境应停止 API/Worker，备份数据库后应用迁移 00031，再启动匹配的新版本，避免旧代码继续查询已删除的角色列。本次变更无需调整 Agent 工作流版本或重新生成报告。Down 只恢复角色列、约束和索引，全部账号默认为 `user`；若要恢复旧运维身份，必须使用升级前备份。
+发布工具校验构建产物后原子切换版本，网页或资源检查失败时恢复原入口。发布和回滚均不重启 Nginx、API 或 Worker，也不执行数据库迁移。旧版本及哈希资源会保留，便于回滚和继续加载旧页面。迁移已有数据或升级不兼容的后端时，应单独安排备份和服务切换。
