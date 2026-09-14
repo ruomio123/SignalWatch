@@ -1,0 +1,23 @@
+log_format signalwatch '$remote_addr $request_method $uri $status '
+                       'request_id=$upstream_http_x_request_id gateway_id=$request_id '
+                       'duration=$request_time upstream=$upstream_response_time';
+
+server {
+    listen 80;
+    server_name ${SERVER_NAME};
+    return 308 https://${SERVER_NAME}$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name ${SERVER_NAME};
+    ssl_certificate /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    access_log /var/log/nginx/access.log signalwatch;
+
+    # Resolve the Compose service again after API container replacement.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $signalwatch_api "${API_UPSTREAM}";
+    include /etc/nginx/snippets/routes.conf;
+}

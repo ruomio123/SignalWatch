@@ -1,0 +1,122 @@
+name: signalwatch-production
+
+x-backend: &backend
+  image: signalwatch-backend:${BACKEND_VERSION:?set BACKEND_VERSION}
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.backend
+  env_file: ${BACKEND_ENV_FILE:-.env.production}
+  environment:
+    APP_ENV: production
+    HTTP_ADDR: 0.0.0.0:8080
+    REDIS_ADDR: redis:6379
+  networks: [signalwatch]
+  restart: unless-stopped
+
+services:
+  nginx:
+    image: nginx:1.28-alpine
+    environment:
+      SERVER_NAME: ${SERVER_NAME:?set SERVER_NAME}
+      API_UPSTREAM: api:8080
+      NGINX_ENVSUBST_FILTER: ^(SERVER_NAME|API_UPSTREAM)$$
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./nginx/routes.conf:/etc/nginx/snippets/routes.conf:ro
+      - ./nginx/proxy.conf:/etc/nginx/snippets/proxy.conf:ro
+      - type: bind
+        source: ${WEB_ROOT:?set absolute WEB_ROOT and create it before startup}
+        target: /srv/signalwatch-web
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${TLS_CERT_DIR:?set TLS_CERT_DIR containing fullchain.pem and privkey.pem}
+        target: /etc/nginx/certs
+        read_only: true
+        bind: {create_host_path: false}
+    networks: [signalwatch]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  api:
+    <<: *backend
+    command: ["api"]
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  worker:
+    <<: *backend
+    command: ["worker"]
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    stop_grace_period: 60s
+
+  migrate:
+    <<: *backend
+    profiles: [tools]
+    restart: "no"
+    entrypoint: ["goose", "-dir", "/app/migrations"]
+    # Goose reads GOOSE_DBSTRING, keeping the DSN out of process arguments.
+    environment:
+      GOOSE_DRIVER: mysql
+      GOOSE_DBSTRING: ${MYSQL_DSN:?set MYSQL_DSN with mysql:3306}
+    command: ["status"]
+    depends_on:
+      mysql: {condition: service_healthy}
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?set MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER:?set MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes: ["mysql_data:/var/lib/mysql"]
+    networks: [signalwatch]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql --protocol=TCP -h127.0.0.1 -u"$$MYSQL_USER" "$$MYSQL_DATABASE" -e "SELECT 1"']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  redis:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    command: ["sh", "-c", 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
+    volumes: ["redis_data:/data"]
+    networks: [signalwatch]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+networks:
+  signalwatch:
+    driver: bridge
+
+volumes:
+  mysql_data:
+    external: true
+    name: ${MYSQL_VOLUME_NAME:?set the existing MySQL volume name}
+  redis_data:
+    external: true
+    name: ${REDIS_VOLUME_NAME:?set the existing Redis volume name}

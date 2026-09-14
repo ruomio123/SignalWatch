@@ -2,11 +2,11 @@
 
 论文订阅与每日邮件服务：按 arXiv 分类和关键词匹配论文，在网页阅读或通过邮件接收更新，可选接入用户自带 API Key 的 AI 论文解读与邮件导读。
 
-技术栈：Go、MySQL、Redis、React / TypeScript。API 提供接口和内嵌前端，Worker 负责采集、匹配、AI 任务和邮件发送。
+技术栈：Go、MySQL、Redis、React / TypeScript。React/Vite 独立提供前端，Gin API 只提供 HTTP JSON 接口，Worker 负责采集、匹配、AI 任务和邮件发送。生产由 Nginx 统一提供网页与 API 入口，前端更新无需重启后端。
 
 ## 本地启动
 
-需要 Go（版本见 [go.mod](go.mod)）、Docker Compose、Make；修改前端还需 Node.js 22 和 npm。
+需要 Go（版本见 [go.mod](go.mod)）、Docker Compose、Make；本地运行前端还需 Node.js 22 和 npm（版本声明见 `.nvmrc`）。
 
 安装迁移工具，并在项目根目录创建配置（已有 `.env` 时不要覆盖）：
 
@@ -28,14 +28,16 @@ make migrate-up
 make migrate-status
 ```
 
-分别在两个终端启动服务：
+安装前端依赖，并分别在三个终端启动服务：
 
 ```bash
-make api             # 终端一
-make worker          # 终端二
+npm --prefix web ci
+make api             # 终端一：HTTP API
+make worker          # 终端二：后台业务
+make web-dev         # 终端三：前端热更新
 ```
 
-- 网页：<http://127.0.0.1:8080>，注册后创建订阅。
+- 网页：<http://127.0.0.1:5173>，注册后创建订阅。
 - 开发邮件：<http://127.0.0.1:8025>（Mailpit）。
 - 就绪检查：<http://127.0.0.1:8080/readyz>。
 
@@ -74,20 +76,14 @@ AI_DIGEST_DAILY_LIMIT=0
 
 ## 开发与检查
 
-前端开发（需同时运行 API，默认代理到 8080）：
+前端开发使用 `make web-dev`，修改页面自动热更新；API、Worker 保持运行。开发代理默认指向 8080，可通过 `DEV_API_TARGET` 覆盖。浏览器始终使用同源 `/api/v2`。
 
 ```bash
-npm --prefix web ci
-npm --prefix web run dev
+make web-build       # 独立构建到 web/dist，不依赖正在运行的后端
+make frontend        # web-build 的兼容别名
 ```
 
-发布前端修改：
-
-```bash
-make frontend
-```
-
-随后重新编译或重启 API；前端产物嵌入 Go 程序，运行时无需额外启动前端服务器。
+API 已移除内嵌页面，构建前端后无需重新编译或重启 API。正式部署由常驻 Nginx 读取独立资源，通过 `make web-publish`、`make web-rollback` 原子切换版本。生产 Compose、HTTPS、首次切换与发布命令见 [前后端分离手册](docs/frontend-backend-separation.md)。
 
 常用检查：
 
@@ -112,12 +108,13 @@ Go 测试在未配置依赖时会跳过部分集成测试。数据库集成测�
 | 应用新增迁移 | `make migrate-up` |
 | 停止依赖服务 | `make deps-down`，保留数据卷 |
 
-升级时先停止 API 和 Worker，备份数据库及 AI 加密主密钥，再执行迁移并启动新版本；不要混用新旧 Worker。保留数据的环境不要随意执行 `migrate-down`。
+涉及不兼容后端或数据库迁移的升级时，先停止 API 和 Worker，备份数据库及 AI 加密主密钥，再执行迁移并启动新版本；不要混用新旧 Worker。保留数据的环境不要随意执行 `migrate-down`。
 
 生产部署使用 HTTPS、独立强密码和真实 SMTP。设置 `APP_PUBLIC_URL=https://你的域名` 可让邮件链接跳转到站内论文详情。SMTP 不确定结果会重试，因此邮件可能重复。
 
 ## 参考
 
+- [前后端分离与独立发布](docs/frontend-backend-separation.md)。
 - [API 契约](api/openapi.yaml)：公开接口统一使用 `/api/v2`。
 - [架构与切换恢复手册](docs/architecture-v2.md)。
 - [重构验收记录](docs/refactor-progress.md)。
@@ -143,7 +140,7 @@ Go 测试在未配置依赖时会跳过部分集成测试。数据库集成测�
 
 论文报告语言：五项解释统一要求简体中文，模型/数据集名称、缩写、公式和原文证据可保留原文。整条无中文的报告论断以 `output_language_mismatch` 终止，不自动翻译或重试。追问按用户原问题的语言回答；已有报告保留原样，重新生成才应用当前规则。
 
-论文双面板支持拖动分隔线调节大小、左右/上下排列、交换位置和恢复默认；布局在当前浏览器跨论文保存，小屏自动切换标签页。分隔线支持方向键、Shift 加速、Home/End 和双击均分。布局变化保留聊天草稿、会话和运行状态。新报告消息显示“快速了解论文”，历史消息保留原样。交互及截图见 [UI 验收记录](web/UI-REVIEW.md)。无需数据库迁移；使用内嵌前端时需重新构建并重启 API 才能生效。
+论文双面板支持拖动分隔线调节大小、左右/上下排列、交换位置和恢复默认；布局在当前浏览器跨论文保存，小屏自动切换标签页。分隔线支持方向键、Shift 加速、Home/End 和双击均分。布局变化保留聊天草稿、会话和运行状态。新报告消息显示“快速了解论文”，历史消息保留原样。交互及截图见 [UI 验收记录](web/UI-REVIEW.md)。无需数据库迁移；前端独立构建发布即可生效。
 
 订阅页也使用同一分栏组件，支持相同的拖动、键盘、方向与顺序调整。打开助手后列表与对话独立滚动，空间不足时切换「订阅列表 / AI 助手」标签页；关闭助手恢复列表页面滚动并返回打开按钮。订阅偏好保存于 `signalwatch.subscription-layout.v1`，与论文偏好独立；调整布局保留筛选、分页、输入及未保存草案，创建订阅仍需明确确认。
 

@@ -1,0 +1,22 @@
+ARG GO_VERSION=1.26.5
+FROM golang:${GO_VERSION}-bookworm AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 go build -trimpath -o /out/api ./cmd/api && \
+    CGO_ENABLED=0 go build -trimpath -o /out/worker ./cmd/worker && \
+    CGO_ENABLED=0 go build -trimpath -o /out/ops ./cmd/ops
+RUN CGO_ENABLED=0 GOBIN=/out go install -tags=no_sqlite3 github.com/pressly/goose/v3/cmd/goose@v3.24.3
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates tzdata poppler-utils util-linux curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --system --uid 10001 --create-home signalwatch
+COPY --from=build /out/ /usr/local/bin/
+COPY migrations /app/migrations
+WORKDIR /app
+USER 10001:10001
+CMD ["api"]

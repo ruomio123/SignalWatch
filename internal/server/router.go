@@ -10,7 +10,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"signalwatch/internal/platform/httpx"
-	"signalwatch/web"
 )
 
 // Dependencies 包含创建 HTTP Router 所需的全部依赖。
@@ -91,8 +90,8 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 	// 返回 405 而不是 404。
 	router.HandleMethodNotAllowed = true
 
-	// 当前部署不依赖可信反向代理，因此不接受客户端通过
-	// X-Forwarded-For 伪造来源 IP。
+	// 实际客户端地址由入口 Nginx 记录，API 不依赖转发地址。
+	// 保持禁用可信代理，避免接受客户端伪造的 X-Forwarded-For。
 	if err := router.SetTrustedProxies(nil); err != nil {
 		return nil, fmt.Errorf("disable trusted proxies: %w", err)
 	}
@@ -187,7 +186,6 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 	aiRoutes.DELETE("/ai/configuration", orDisabled(dependencies.AI.DeleteAIConfigurationHandler))
 	aiRoutes.GET("/ai/calls", orDisabled(dependencies.AI.ListAICallsHandler))
 	aiRoutes.GET("/ai/usage", orDisabled(dependencies.AI.GetAIUsageHandler))
-	web.RegisterRoutes(router)
 
 	return router, nil
 }

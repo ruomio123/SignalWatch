@@ -40,23 +40,31 @@ func (s *DemandScanner) Scan(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	now := s.now().UTC()
+	// Cool down only between complete sweeps, without consuming any pages.
+	if s.scanUser == 0 && !s.lastDigest.IsZero() && now.Sub(s.lastDigest) < 5*time.Minute {
+		s.cleanup(ctx, now)
+		return
+	}
 	users, err := s.repo.DemandUsers(ctx, s.scanUser)
 	if err != nil {
 		s.warn("demand_users")
 		return
 	}
-	prepare := s.lastDigest.IsZero() || now.Sub(s.lastDigest) >= 5*time.Minute
 	for _, u := range users {
-		s.scanUser = u.ID
-		if prepare {
-			s.prepareDigest(ctx, u, now)
+		if ctx.Err() != nil {
+			return
 		}
+		s.prepareDigest(ctx, u, now)
+		// Retry an interrupted user on the next tick. Ensure preserves the
+		// identity and paid attempts of any tasks already prepared for them.
+		if ctx.Err() != nil {
+			return
+		}
+		s.scanUser = u.ID
 	}
 	if len(users) < 100 {
 		s.scanUser = 0
-		if prepare {
-			s.lastDigest = now
-		}
+		s.lastDigest = now
 	}
 	s.cleanup(ctx, now)
 }

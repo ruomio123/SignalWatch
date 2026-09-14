@@ -1,41 +1,88 @@
-# Local secrets
+# Track application source, build inputs, deployment files and the root README.
+/*
+!/.gitignore
+!/.dockerignore
+!/.env.example
+!/.nvmrc
+!/Makefile
+!/go.mod
+!/go.sum
+!/cmd/
+!/internal/
+!/migrations/
+!/deploy/
+!/scripts/
+!/web/
+
+# Service entry points; acceptance executables stay local.
+/cmd/*
+!/cmd/api/
+!/cmd/worker/
+!/cmd/ops/
+
+# Operational scripts only.
+/scripts/*
+!/scripts/web-release.py
+
+# Runtime deployment inputs.
+/deploy/*
+!/deploy/.env.example
+!/deploy/Dockerfile.backend
+!/deploy/compose.yaml
+!/deploy/compose.prod.yaml
+!/deploy/nginx/
+
+# Frontend source and build inputs; no generated bundles or review tools.
+/web/*
+!/web/.dockerignore
+!/web/.env.example
+!/web/.npmrc
+!/web/.nvmrc
+!/web/Dockerfile
+!/web/index.html
+!/web/package.json
+!/web/package-lock.json
+!/web/tsconfig.json
+!/web/vite.config.ts
+!/web/src/
+!/web/scripts/
+/web/scripts/*
+!/web/scripts/check-node.cjs
+
+# Other documentation and tests remain available locally, outside the repository.
+*.md
+*.MD
+*.markdown
+*.rst
+*.adoc
+!/README.md
+*_test.go
+*.test.*
+*.spec.*
+testdata/
+tests/
+__tests__/
+/internal/contract/
+/internal/integration/
+/internal/platform/testguard/
+
+# Secrets, private toolchains, caches and runtime/build artifacts.
 .env
 .env.*
 !.env.example
-
-# Go build and test artifacts
-bin/
+.cache/
+.tools/
+.deploy/
+node_modules/
 dist/
+bin/
 tmp/
 coverage/
 coverage.out
-
-# Runtime output
+test-results/
+playwright-report/
+__pycache__/
+*.pyc
 *.log
-/evals/*
-!/evals/agent/
-/evals/agent/*
-!/evals/agent/README.md
-!/evals/agent/cases.jsonl
-
-# Editors and operating systems
-.vscode/
-.idea/
+*.tsbuildinfo
 .DS_Store
-/document/
-docs/*
-!docs/architecture-v2.md
-!docs/refactor-progress.md
-web/node_modules/
-web/test-results/
-web/playwright-report/
-
-# Local scripts and GitHub configuration (kept locally, not tracked)
-/scripts/*
-!/scripts/check-architecture.py
-!/scripts/test-migrations.sh
-!/scripts/verify.sh
-!/scripts/eval-agent.py
-/.github/
-
-!docs/agent-architecture.md
