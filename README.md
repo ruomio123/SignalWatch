@@ -97,6 +97,8 @@ make migrate-status
 
 `make deps-up` 启动 MySQL、Redis、Mailpit，并等待服务健康检查通过。迁移需在 API 和 Worker 首次启动前执行。
 
+迁移 `00032` 仅删除已停用的 `ai_daily_usage`、`ai_user_call_leases`，完成后保留 24 张应用表（不含 Goose 版本表）。现有用量统计和调用控制继续使用 `ai_user_daily_usage`、`ai_call_admission`。已有数据库升级前请备份这两张旧表；`Down` 只恢复空表结构，历史数据需从备份恢复。`scripts/repair-00017-partial.sql` 仅用于第 17 次迁移失败的历史状态，不适用于已升级的数据库，也不参与正常启动或升级。
+
 ### 4. 启动前端、API 和 Worker
 
 先安装前端依赖并完成一次构建：

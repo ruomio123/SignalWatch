@@ -1,0 +1,22 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: isolated-test-only
+      MYSQL_DATABASE: signalwatch_test
+    ports: ["127.0.0.1:13306:3306"]
+    tmpfs: ["/var/lib/mysql"]
+    healthcheck:
+      # Initialization uses a socket-only temporary server. Require the final
+      # TCP server, valid credentials and the test database before migrations.
+      test: ["CMD", "mysql", "--protocol=TCP", "-h", "127.0.0.1", "-uroot", "-pisolated-test-only", "--database=signalwatch_test", "--execute=SELECT 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+  redis:
+    image: redis:7.4-alpine
+    ports: ["127.0.0.1:16379:6379"]
+  mailpit:
+    image: axllent/mailpit:v1.27
+    command: ["--smtp-disable-rdns", "--disable-version-check"]
+    ports: ["127.0.0.1:11025:1025", "127.0.0.1:18025:8025"]
