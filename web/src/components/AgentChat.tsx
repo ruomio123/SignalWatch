@@ -75,7 +75,13 @@ type FailureDetail = {
 };
 type Run = {
   failure_detail?: FailureDetail;
+  failure_stage?: string;
   review_progress?: { completed: number; total: number };
+  repair_summary?: {
+    field: string;
+    state: "pending" | "calling" | "completed" | "failed" | "budget_exceeded";
+    attempted: boolean;
+  };
   failedStep?: FailedStep;
   task?: "paper_report" | "paper_followup";
   effective_context_mode?: "abstract" | "fulltext";
@@ -111,6 +117,14 @@ const progress: Record<string, string> = {
   waiting_for_model_slot: "正在等待模型调用空闲",
   completed: "已完成",
   running: "正在处理",
+};
+const paperFields: Record<string, string> = {
+  problem: "论文问题",
+  method: "核心方法",
+  experiments: "实验验证",
+  results: "主要结果",
+  limitations: "局限性",
+  answer: "追问回答",
 };
 const validationRules: Record<string, string> = {
   chinese_text_required: "报告论断需要使用中文叙述，专业名称与公式可保留原文",
@@ -148,6 +162,8 @@ function outputLimitDetail(detail: FailureDetail): string | undefined {
   return undefined;
 }
 function runProgress(run: Run): string {
+  if (run.progress.startsWith("repairing_"))
+    return `正在整理${paperFields[run.progress.slice("repairing_".length)] ?? "论文输出"}`;
   if (
     /^validating_paper(?:_\d+)?$/.test(run.progress) &&
     run.review_progress &&
@@ -163,20 +179,49 @@ function runProgress(run: Run): string {
       : "正在处理")
   );
 }
+function repairSummary(run: Run): string | undefined {
+  const repair = run.repair_summary;
+  if (!repair) return undefined;
+  const field = paperFields[repair.field] ?? "论文输出";
+  if (repair.state === "budget_exceeded")
+    return "自动整理输入超出 64 KiB 预算，未发起整理。";
+  if (repair.state === "completed") return `已完成一次自动整理：${field}。`;
+  if (["pending", "running"].includes(run.state)) {
+    if (repair.state === "calling") return "本轮正在进行唯一一次自动整理。";
+    if (repair.state === "pending") return `已安排一次自动整理：${field}。`;
+  }
+  return repair.attempted
+    ? "本轮已尝试自动整理一次。"
+    : "自动整理未开始。";
+}
 function failedStepLabel(tool: string): string {
+  if (tool.startsWith("repairing_"))
+    return `整理${paperFields[tool.slice("repairing_".length)] ?? "论文输出"}`;
   if (tool.startsWith("extracting_batch_"))
     return `第 ${tool.slice("extracting_batch_".length)} 批全文证据提取`;
   if (/^validating_paper_\d+$/.test(tool))
     return `第 ${tool.slice("validating_paper_".length)} 批证据审核`;
   return progress[tool]?.replace(/^正在/, "") ?? tool;
 }
+function finalFailedStep(run: Run, steps: FailedStep[] = []): FailedStep | undefined {
+  if (!run.failure_stage)
+    return steps.filter((step) => step.failure_code).at(-1);
+  const matched = steps
+    .filter((step) => step.tool === run.failure_stage && step.failure_code === run.failure_code)
+    .at(-1);
+  return {
+    tool: run.failure_stage,
+    failure_code: run.failure_code,
+    call_id: matched?.call_id,
+  };
+}
 const failures: Record<string, string> = {
   document_unavailable: "全文不可用。",
   context_too_large: "论文或汇总证据超出本次输入上限，未输出部分报告。",
   invalid_output: "本次输出或证据校验未通过，未发布报告。请手动重试。",
   workflow_changed: "论文助手已升级，旧任务已停止。请重新提问，或手动生成论文报告。",
-  result_unknown: "模型调用结果未知，未自动重试。你可以手动重新发送。",
-  timeout: "模型响应超时，未自动重试。",
+  result_unknown: "模型调用结果未知，本次调用未再次执行。你可以手动重新发送。",
+  timeout: "模型响应超时，本次调用未重试。",
   invalid_citation: "本次回答的证据校验未通过，请手动重试。",
   budget_exhausted:
     "本轮已达到执行上限，未发布部分结果。可以调整资料模式或缩小问题范围后重试。",
@@ -346,7 +391,7 @@ function AgentChatView({
         );
         latest = {
           ...result.run,
-          failedStep: result.steps?.filter((step) => step.failure_code).at(-1),
+          failedStep: finalFailedStep(result.run, result.steps),
         };
         // Completion may commit between the message read and the run read.
         // Read again after that commit before stopping the poller.
@@ -908,7 +953,8 @@ function AgentChatView({
                   failures[run.failure_code ?? run.state] ??
                   `本轮未完成（${run.failure_code ?? run.state}），请手动重试。`)}
           </p>
-          {run.state === "failed" && run.failedStep && (
+          {repairSummary(run) && <p>{repairSummary(run)}</p>}
+          {!active && run.state !== "completed" && run.failedStep && (
             <details>
               <summary>失败详情</summary>
               <p>
@@ -916,7 +962,7 @@ function AgentChatView({
                 {failedStepLabel(run.failedStep.tool ?? "")}
               </p>
               <p>原因代码：{run.failedStep.failure_code}</p>
-              {run.failure_detail && (
+              {run.failure_detail && run.failure_detail.code === run.failure_code && (
                 <>
                   <p>校验位置：{run.failure_detail.path}</p>
                   {outputLimitDetail(run.failure_detail) && (
@@ -934,7 +980,13 @@ function AgentChatView({
               {run.failedStep.call_id && (
                 <p>诊断编号：{run.failedStep.call_id}</p>
               )}
-              <p>本轮未发布结果，未自动重复调用模型。</p>
+              <p>
+                {run.repair_summary?.attempted
+                  ? "本轮未发布结果；已尝试自动整理一次，系统不会再次自动整理。"
+                  : run.repair_summary
+                    ? "本轮未发布结果，未进行自动整理。"
+                    : "本轮未发布结果。请手动重试。"}
+              </p>
             </details>
           )}
           {!!run.batch_total && active && (
@@ -942,7 +994,7 @@ function AgentChatView({
               已阅读 {run.batch_completed ?? 0} / {run.batch_total} 批
             </p>
           )}
-          {(active || run.state === "failed") && run.effective_context_mode && (
+          {(active || run.state === "failed" || run.state === "unknown") && run.effective_context_mode && (
             <PaperScope
               result={{
                 context_mode: run.effective_context_mode,

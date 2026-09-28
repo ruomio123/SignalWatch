@@ -55,6 +55,18 @@ func agentValidationError(err error) error {
 }
 
 func agentError(err error) error {
+	// Before callbacks run after admission but before the provider call. Preserve
+	// workflow ownership, access and budget failures so they keep their meaning
+	// when the paper workflow chooses its final failure and repair eligibility.
+	for _, sentinel := range []error{agent.ErrLease, agent.ErrConflict, agent.ErrNotFound, agent.ErrBudget, context.Canceled, context.DeadlineExceeded} {
+		if errors.Is(err, sentinel) {
+			return err
+		}
+	}
+	var model *agent.ModelError
+	if errors.As(err, &model) {
+		return err
+	}
 	var call *ai.CallError
 	if errors.As(err, &call) {
 		e := &agent.ModelError{Code: call.Code, Admission: call.CallID == "" && (call.Code == "rate_limited" || call.Code == "call_in_progress")}

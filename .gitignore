@@ -118,3 +118,5 @@ __pycache__/
 !/internal/generation/paper_schema_test.go
 !/internal/agent/paper_version_test.go
 !/scripts/test-paper-packages.sh
+!/internal/agent/paper_repair_test.go
+!/internal/agent/paper_call_reservation_test.go

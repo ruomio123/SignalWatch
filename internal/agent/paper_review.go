@@ -114,15 +114,16 @@ func (s *Service) reviewPaper(ctx context.Context, r Run, cp *Checkpoint, check 
 	if cp.Paper.ReviewPlan == nil {
 		plan, err := planPaperReview(cp.Paper, r.Task, claims, sources)
 		if err != nil {
-			return nil, err
+			return nil, s.failPaperStage(ctx, r, cp, "validating_paper", err, nil)
 		}
 		cp.Paper.ReviewPlan = plan
+		cp.Paper.CurrentStage = "validating_paper"
 		if err := s.Store.Save(ctx, r, *cp, "validating_paper", nil); err != nil {
 			return nil, err
 		}
 	}
 	if err := validatePaperReviewPlan(cp.Paper.ReviewPlan, r.Task, claims); err != nil {
-		return nil, err
+		return nil, s.failPaperStage(ctx, r, cp, "validating_paper", err, nil)
 	}
 	verdicts := map[string]bool{}
 	position := 0

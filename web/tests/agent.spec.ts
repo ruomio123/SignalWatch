@@ -1153,3 +1153,192 @@ test("paper evidence review shows persisted batch progress and publishes no part
   await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
   expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
 });
+
+test("one paper repair shows safe pending, calling, review, and completed summaries across reload", async ({ page, api }) => {
+  const runID = "repairing-report-run";
+  let phase: "pending" | "calling" | "reviewing" | "completed" = "pending";
+  const repairedReport = { ...reportMessage("fulltext"), run_id: runID };
+  api.on("GET", conversationPath, (route) =>
+    route.fulfill({ json: { ...conversation, active_run_id: runID, paper_report_ready: phase === "completed" } }),
+  );
+  api.on("GET", `${conversationPath}/messages`, (route) =>
+    route.fulfill({ json: { items: phase === "completed" ? [repairedReport] : [], next_before: 0 } }),
+  );
+  api.on("GET", `${conversationPath}/paper-report`, (route) =>
+    route.fulfill({ json: { report: phase === "completed" ? repairedReport : null, matches_current_paper: phase === "completed" } }),
+  );
+  api.on("GET", `/agent/runs/${runID}`, (route) =>
+    route.fulfill({
+      json: {
+        run: {
+          id: runID,
+          task: "paper_report",
+          state: phase === "completed" ? "completed" : "running",
+          progress: phase === "pending" ? "waiting_for_model_slot" : phase === "calling" ? "repairing_results" : phase === "reviewing" ? "validating_paper" : "completed",
+          repair_summary: { field: "results", state: phase === "reviewing" ? "completed" : phase, attempted: phase !== "pending" },
+          ...(phase === "reviewing" ? { review_progress: { completed: 1, total: 3 } } : {}),
+        },
+        steps: [{ tool: "analyzing_results", failure_code: "output_limit_exceeded", call_id: "original-output" }],
+      },
+    }),
+  );
+
+  await page.goto(assistantURL);
+  await expect(page.getByText("正在等待模型调用空闲", { exact: true })).toBeVisible();
+  await expect(page.getByText("已安排一次自动整理：主要结果。", { exact: true })).toBeVisible();
+  phase = "calling";
+  await expect(page.getByText("正在整理主要结果", { exact: true })).toBeVisible();
+  await expect(page.getByText("本轮正在进行唯一一次自动整理。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "生成论文报告", exact: true })).toBeDisabled();
+  await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText("正在整理主要结果", { exact: true })).toBeVisible();
+  phase = "reviewing";
+  await expect(page.getByText("正在审核证据 2/3", { exact: true })).toBeVisible();
+  await expect(page.getByText("已完成一次自动整理：主要结果。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
+  phase = "completed";
+  await expect(page.getByRole("region", { name: "论文报告", exact: true })).toBeVisible();
+  await expect(page.getByText("本轮已完成", { exact: true })).toBeVisible();
+  await expect(page.getByText("已完成一次自动整理：主要结果。", { exact: true })).toBeVisible();
+  await expect(page.getByText("失败详情", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("模型输出的条目数量或文字长度超出上限。", { exact: true })).toHaveCount(0);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+test("an oversized repair request keeps the original limit diagnostic and explains that repair did not start", async ({ page, api }) => {
+  const runID = "repair-budget-run";
+  api.json("GET", `${conversationPath}/messages`, {
+    items: [{ id: 1, run_id: runID, role: "user", content: "生成论文报告", citations: [] }],
+    next_before: 0,
+  });
+  api.json("GET", `/agent/runs/${runID}`, {
+    run: {
+      id: runID,
+      task: "paper_report",
+      state: "failed",
+      progress: "analyzing_results",
+      failure_code: "output_limit_exceeded",
+      failure_detail: { code: "output_limit_exceeded", path: "$.claims", rule: "", count: 9, limit: 8, unit: "claims" },
+      repair_summary: { field: "results", state: "budget_exceeded", attempted: false },
+    },
+    steps: [{ tool: "analyzing_results", failure_code: "output_limit_exceeded", call_id: "original-output" }],
+  });
+
+  await page.goto(assistantURL);
+  await expect(page.getByText("自动整理输入超出 64 KiB 预算，未发起整理。", { exact: true })).toBeVisible();
+  await page.getByText("失败详情", { exact: true }).click();
+  await expect(page.getByText("失败步骤：分析主要结果", { exact: true })).toBeVisible();
+  await expect(page.getByText("结论 9 条，上限 8 条", { exact: true })).toBeVisible();
+  await expect(page.getByText("本轮未发布结果，未进行自动整理。", { exact: true })).toBeVisible();
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+for (const failure of [
+  { code: "timeout", attempted: true, message: "模型响应超时，本次调用未重试。" },
+  { code: "access_or_configuration_changed", attempted: true, message: "论文访问权限或模型配置已变化。" },
+  { code: "access_or_configuration_changed", attempted: false, message: "论文访问权限或模型配置已变化。" },
+  { code: "result_unknown", attempted: true, message: "模型调用结果未知，本次调用未再次执行。你可以手动重新发送。" },
+]) {
+  test(`paper repair ${failure.code} (attempted ${failure.attempted}) shows the latest failure without stale limits`, async ({ page, api }) => {
+    const runID = "repair-failed-run";
+    api.json("GET", `${conversationPath}/messages`, {
+      items: [{ id: 1, run_id: runID, role: "user", content: "生成论文报告", citations: [] }],
+      next_before: 0,
+    });
+    api.json("GET", `/agent/runs/${runID}`, {
+      run: {
+        id: runID,
+        task: "paper_report",
+        state: ["timeout", "result_unknown"].includes(failure.code) ? "unknown" : "failed",
+        progress: "repairing_results",
+        failure_code: failure.code,
+        failure_stage: "repairing_results",
+        repair_summary: { field: "results", state: "failed", attempted: failure.attempted },
+      },
+      steps: [
+        { tool: "analyzing_results", failure_code: "output_limit_exceeded", call_id: "original-output" },
+        { tool: "repairing_results", failure_code: failure.code, call_id: "final-failure" },
+      ],
+    });
+
+    await page.goto(assistantURL);
+    await expect(page.getByText(failure.message, { exact: true })).toBeVisible();
+    await expect(page.getByText(failure.attempted ? "本轮已尝试自动整理一次。" : "自动整理未开始。", { exact: true })).toBeVisible();
+    await page.getByText("失败详情", { exact: true }).click();
+    await expect(page.getByText("失败步骤：整理主要结果", { exact: true })).toBeVisible();
+    await expect(page.getByText(`原因代码：${failure.code}`, { exact: true })).toBeVisible();
+    await expect(page.getByText("诊断编号：final-failure", { exact: true })).toBeVisible();
+    await expect(page.getByText(failure.attempted
+      ? "本轮未发布结果；已尝试自动整理一次，系统不会再次自动整理。"
+      : "本轮未发布结果，未进行自动整理。", { exact: true })).toBeVisible();
+    await expect(page.getByText("模型输出的条目数量或文字长度超出上限。", { exact: true })).toHaveCount(0);
+    await expect(page.getByText(/校验位置：|未自动重复调用模型|原始候选|original-output/)).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "生成论文报告", exact: true })).toBeEnabled();
+    expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+  });
+}
+
+test("unknown repair recovery uses its final failure stage when only the old limit step was persisted", async ({ page, api }) => {
+  const runID = "repair-recovery-unknown";
+  api.json("GET", `${conversationPath}/messages`, {
+    items: [{ id: 1, run_id: runID, role: "user", content: "生成论文报告", citations: [] }],
+    next_before: 0,
+  });
+  api.json("GET", `/agent/runs/${runID}`, {
+    run: {
+      id: runID,
+      task: "paper_report",
+      state: "unknown",
+      progress: "unknown",
+      failure_code: "result_unknown",
+      failure_stage: "repairing_results",
+      repair_summary: { field: "results", state: "failed", attempted: true },
+    },
+    steps: [{ tool: "analyzing_results", failure_code: "output_limit_exceeded", call_id: "old-call" }],
+  });
+
+  await page.goto(assistantURL);
+  await expect(page.getByText("模型调用结果未知，本次调用未再次执行。你可以手动重新发送。", { exact: true })).toBeVisible();
+  await page.getByText("失败详情", { exact: true }).click();
+  await expect(page.getByText("失败步骤：整理主要结果", { exact: true })).toBeVisible();
+  await expect(page.getByText("原因代码：result_unknown", { exact: true })).toBeVisible();
+  await expect(page.getByText("本轮未发布结果；已尝试自动整理一次，系统不会再次自动整理。", { exact: true })).toBeVisible();
+  await expect(page.getByText(/校验位置：|诊断编号：|失败步骤：分析主要结果|output_limit_exceeded/)).toHaveCount(0);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+test("a later output limit identifies its field while preserving the completed one-repair summary", async ({ page, api }) => {
+  const runID = "second-limit-run";
+  api.json("GET", `${conversationPath}/messages`, {
+    items: [{ id: 1, run_id: runID, role: "user", content: "生成论文报告", citations: [] }],
+    next_before: 0,
+  });
+  api.json("GET", `/agent/runs/${runID}`, {
+    run: {
+      id: runID,
+      task: "paper_report",
+      state: "failed",
+      progress: "analyzing_limitations",
+      failure_code: "output_limit_exceeded",
+      failure_detail: { code: "output_limit_exceeded", path: "$.claims", rule: "", count: 7, limit: 6, unit: "claims" },
+      repair_summary: { field: "results", state: "completed", attempted: true },
+    },
+    steps: [
+      { tool: "analyzing_results", failure_code: "output_limit_exceeded", call_id: "original-output" },
+      { tool: "repairing_results", call_id: "repaired-output" },
+      { tool: "analyzing_limitations", failure_code: "output_limit_exceeded", call_id: "later-output" },
+    ],
+  });
+
+  await page.goto(assistantURL);
+  await expect(page.getByText("已完成一次自动整理：主要结果。", { exact: true })).toBeVisible();
+  await page.getByText("失败详情", { exact: true }).click();
+  await expect(page.getByText("失败步骤：分析局限性", { exact: true })).toBeVisible();
+  await expect(page.getByText("结论 7 条，上限 6 条", { exact: true })).toBeVisible();
+  await expect(page.getByText("诊断编号：later-output", { exact: true })).toBeVisible();
+  await expect(page.getByText("本轮未发布结果；已尝试自动整理一次，系统不会再次自动整理。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});

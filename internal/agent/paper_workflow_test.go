@@ -203,6 +203,11 @@ func TestLongReportCoversEveryChunkAndRespectsBudget(t *testing.T) {
 			if end.State != "completed" || end.BatchTotal < 2 || len(g.calls) != end.BatchTotal+6 || len(g.batches) != len(expected) {
 				t.Fatalf("%+v calls=%d chunks=%d seen=%d", end, len(g.calls), len(chunks), len(g.batches))
 			}
+			for _, request := range g.calls[:end.BatchTotal] {
+				if request.MaxTokens != 4096 || len(request.Input) > paperInputLimit {
+					t.Fatal("evidence extraction exceeded its output or input budget")
+				}
+			}
 			for i, id := range expected {
 				if g.batches[i] != id {
 					t.Fatal("lost/reordered passage")

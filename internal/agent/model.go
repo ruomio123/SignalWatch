@@ -39,6 +39,8 @@ type Conversation struct {
 func (Conversation) TableName() string { return "agent_conversations" }
 
 type Run struct {
+	FailureStage         string               `json:"failure_stage,omitempty" gorm:"-"`
+	RepairSummary        *PaperRepairSummary  `json:"repair_summary,omitempty" gorm:"-"`
 	ReviewProgress       *PaperReviewProgress `json:"review_progress,omitempty" gorm:"-"`
 	FailureDetail        *PaperFailure        `json:"failure_detail,omitempty" gorm:"-"`
 	Task                 string               `json:"task,omitempty"`

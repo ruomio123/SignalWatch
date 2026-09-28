@@ -44,60 +44,138 @@ func boundedPaperInput(value any) ([]byte, error) {
 	return raw, nil
 }
 
+func paperCallLimit(task string) int {
+	if task == TaskPaperReport {
+		return 30
+	}
+	return 5
+}
+
+func paperStageTokens(stage string) int {
+	if strings.HasPrefix(stage, "analyzing_") || strings.HasPrefix(stage, "repairing_") {
+		return 8192
+	}
+	return 4096
+}
+
+func paperFailureDetail(err error) *PaperFailure {
+	var failure *generation.OutputError
+	if !errors.As(err, &failure) {
+		return nil
+	}
+	return &PaperFailure{Code: failure.Code, Path: failure.Path, Rule: failure.Rule, Count: failure.Count, Limit: failure.Limit, Unit: failure.Unit}
+}
+
+// A durable terminal failure prevents a crash between recording a known result
+// and finishing the run from replaying the paid call.
+func (s *Service) failPaperStage(ctx context.Context, r Run, cp *Checkpoint, stage string, err error, step *Step) error {
+	code := paperFailureCode(err)
+	cp.Paper.CurrentStage = stage
+	cp.Paper.TerminalFailure = code
+	cp.Phase = "failed"
+	if cp.Paper.Failure == nil || cp.Paper.Failure.Code != code {
+		cp.Paper.Failure = paperFailureDetail(err)
+	}
+	if repair := cp.Paper.Repair; repair != nil && (repair.State == "calling" || repair.State == "pending") {
+		repair.State = "failed"
+	}
+	if step == nil {
+		cp.Sequence++
+		step = &Step{RunID: r.ID, Sequence: cp.Sequence, Kind: "workflow", Tool: stage, FailureCode: code, CreatedAt: time.Now().UTC()}
+	}
+	if saveErr := s.Store.Save(ctx, r, *cp, "failed", step); saveErr != nil {
+		return saveErr
+	}
+	return err
+}
+
 // paperCall is the sole model-call boundary for both fixed paper workflows.
 // Saved outputs are replayed locally; an uncertain remote call is never replayed.
 func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check func(context.Context) error, stage, prompt string, input any, validate func([]byte) error) ([]byte, error) {
 	if raw, ok := cp.Paper.Outputs[stage]; ok {
 		return raw, validate(raw)
 	}
-	raw, err := boundedPaperInput(input)
+	if repair := cp.Paper.Repair; repair != nil && repair.Stage == stage {
+		return s.runPaperRepair(ctx, r, cp, check)
+	}
+	var raw []byte
+	var err error
 	if saved, ok := input.(paperSerializedInput); ok {
-		raw, err = []byte(saved), nil
+		raw = []byte(saved)
 		if len(raw) > paperInputLimit {
 			err = paperError("context_too_large")
 		}
+	} else {
+		raw, err = boundedPaperInput(input)
 	}
 	if err != nil {
-		return nil, err
-	}
-	limit := 4
-	if r.Task == TaskPaperReport {
-		limit = 29
+		return nil, s.failPaperStage(ctx, r, cp, stage, err, nil)
 	}
 	for {
-		if cp.Calls >= limit {
-			return nil, ErrBudget
+		if cp.Calls >= paperCallLimit(r.Task) {
+			return nil, s.failPaperStage(ctx, r, cp, stage, ErrBudget, nil)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, s.failPaperStage(ctx, r, cp, stage, err, nil)
 		}
 		if err := check(ctx); err != nil {
-			return nil, err
+			return nil, s.failPaperStage(ctx, r, cp, stage, err, nil)
 		}
 		started := time.Now()
-		tokens := 4096
-		if strings.HasPrefix(stage, "analyzing_") {
-			tokens = 8192
-		}
 		progress := stage
 		if strings.HasPrefix(stage, "validating_paper") {
 			progress = "validating_paper"
 		}
-		result, err := s.Gateway.Generate(ctx, ModelRequest{Run: r, Feature: "paper_qa", System: paperPolicy + "\n" + prompt, Input: raw, Schema: paperStageSchema(stage), MaxTokens: tokens,
+		var validationErr error
+		reserved := false
+		result, callErr := s.Gateway.Generate(ctx, ModelRequest{Run: r, Feature: "paper_qa", System: paperPolicy + "\n" + prompt, Input: raw, Schema: paperStageSchema(stage), MaxTokens: paperStageTokens(stage),
 			Before: func(call context.Context) error {
 				if err := check(call); err != nil {
 					return err
 				}
-				cp.Phase = "calling"
-				return s.Store.Save(call, r, *cp, progress, nil)
-			}, Validate: func(res generation.Result) error {
-				err := validate(res.Content)
-				var failure *generation.OutputError
-				if errors.As(err, &failure) {
-					cp.Paper.Failure = &PaperFailure{Code: failure.Code, Path: failure.Path, Rule: failure.Rule, Count: failure.Count, Limit: failure.Limit, Unit: failure.Unit}
+				if err := call.Err(); err != nil {
+					return err
 				}
-				return err
+				if cp.Calls >= paperCallLimit(r.Task) {
+					return ErrBudget
+				}
+				previousCalls, previousPhase := cp.Calls, cp.Phase
+				previousFailure, previousStage := cp.Paper.Failure, cp.Paper.CurrentStage
+				previousRepairState, previousAttempted := "", false
+				if cp.Paper.Repair != nil {
+					previousRepairState, previousAttempted = cp.Paper.Repair.State, cp.Paper.Repair.Attempted
+				}
+				if strings.HasPrefix(stage, "repairing_") {
+					repair := cp.Paper.Repair
+					if repair == nil || repair.Attempted || repair.State != "pending" {
+						return paperError("invalid_checkpoint")
+					}
+					repair.Attempted, repair.State = true, "calling"
+				}
+				cp.Paper.Failure = nil
+				cp.Paper.CurrentStage = stage
+				cp.Calls++
+				cp.Phase = "calling"
+				if err := s.Store.Save(call, r, *cp, progress, nil); err != nil {
+					// Returning from Before prevents the external call. Restore the
+					// in-memory reservation before recording that definite failure.
+					// A process death after Save still leaves calling on disk.
+					cp.Calls, cp.Phase = previousCalls, previousPhase
+					cp.Paper.Failure, cp.Paper.CurrentStage = previousFailure, previousStage
+					if cp.Paper.Repair != nil {
+						cp.Paper.Repair.State, cp.Paper.Repair.Attempted = previousRepairState, previousAttempted
+					}
+					return err
+				}
+				reserved = true
+				return nil
+			}, Validate: func(res generation.Result) error {
+				validationErr = validate(res.Content)
+				return validationErr
 			}})
-		if err != nil {
+		if callErr != nil {
 			var failure *ModelError
-			if errors.As(err, &failure) && failure.Admission {
+			if errors.As(callErr, &failure) && failure.Admission && !reserved {
 				cp.Phase = "ready"
 				if e := s.Store.Save(ctx, r, *cp, "waiting_for_model_slot", nil); e != nil {
 					return nil, e
@@ -111,20 +189,61 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 				}
 				continue
 			}
-			cp.Sequence++
-			step := Step{RunID: r.ID, Sequence: cp.Sequence, Kind: "model", Tool: stage, CallID: result.CallID, DurationMS: time.Since(started).Milliseconds(), InputTokens: result.InputTokens, OutputTokens: result.OutputTokens, FailureCode: paperFailureCode(err), CreatedAt: time.Now().UTC()}
-			_ = s.Store.Save(ctx, r, *cp, "failed", &step)
-			return nil, err
+		} else {
+			// Enforce the contract even for a gateway that omits its validator.
+			validationErr = validate(result.Content)
+			callErr = validationErr
 		}
-		// Validate again for gateways that do not enforce the callback contract.
-		if err := validate(result.Content); err != nil {
-			return nil, err
-		}
-		cp.Calls++
-		cp.Paper.Outputs[stage] = append(json.RawMessage(nil), result.Content...)
-		cp.Phase = "ready"
 		cp.Sequence++
 		step := Step{RunID: r.ID, Sequence: cp.Sequence, Kind: "model", Tool: stage, CallID: result.CallID, DurationMS: time.Since(started).Milliseconds(), InputTokens: result.InputTokens, OutputTokens: result.OutputTokens, CreatedAt: time.Now().UTC()}
+		if !reserved {
+			step.Kind = "workflow"
+		}
+		if callErr != nil {
+			step.FailureCode = paperFailureCode(callErr)
+			cp.Paper.Failure = paperFailureDetail(callErr)
+			if detail := paperFailureDetail(validationErr); detail != nil && detail.Code == step.FailureCode {
+				cp.Paper.Failure = detail
+			}
+			// Only a fully received, settled count/text limit failure is eligible.
+			// Revalidate the returned candidate: some gateways return content on
+			// transport or settlement errors as well as on validation failure.
+			if reserved && strings.HasPrefix(stage, "analyzing_") && cp.Paper.Repair == nil && step.FailureCode == "output_limit_exceeded" && repairablePaperLimit(validationErr) && repairablePaperLimit(validate(result.Content)) {
+				permissionErr := ctx.Err()
+				if permissionErr == nil {
+					permissionErr = check(ctx)
+				}
+				if permissionErr != nil {
+					// Save the paid call's original failure and the actual terminal
+					// error atomically; there must be no replayable ready gap.
+					return nil, s.failPaperStage(ctx, r, cp, stage, permissionErr, &step)
+				}
+				request, budgetErr := buildPaperRepairRequest(r, cp.Paper, stage, result.Content, raw)
+				if budgetErr != nil && paperFailureCode(budgetErr) != "context_too_large" {
+					return nil, s.failPaperStage(ctx, r, cp, stage, budgetErr, &step)
+				}
+				cp.Paper.Repair = &PaperRepair{Stage: stage, Field: strings.TrimPrefix(stage, "analyzing_"), Candidate: append(json.RawMessage(nil), result.Content...), Request: request, Failure: cp.Paper.Failure, State: "pending"}
+				if budgetErr != nil {
+					cp.Paper.Repair.State = "budget_exceeded"
+					return nil, s.failPaperStage(ctx, r, cp, stage, callErr, &step)
+				}
+				cp.Phase = "ready"
+				cp.Paper.CurrentStage = "repairing_" + cp.Paper.Repair.Field
+				if err := s.Store.Save(ctx, r, *cp, "repairing_"+cp.Paper.Repair.Field, &step); err != nil {
+					return nil, err
+				}
+				return s.runPaperRepair(ctx, r, cp, check)
+			}
+			return nil, s.failPaperStage(ctx, r, cp, stage, callErr, &step)
+		}
+		cp.Paper.Outputs[stage] = append(json.RawMessage(nil), result.Content...)
+		if strings.HasPrefix(stage, "repairing_") {
+			repair := cp.Paper.Repair
+			cp.Paper.Outputs[repair.Stage] = append(json.RawMessage(nil), result.Content...)
+			repair.State = "completed"
+		}
+		cp.Paper.Failure = nil
+		cp.Phase = "ready"
 		if err := s.Store.Save(ctx, r, *cp, progress, &step); err != nil {
 			return nil, err
 		}
@@ -394,7 +513,7 @@ func (s *Service) processPaper(ctx context.Context, r Run, c Conversation, cp *C
 		// Reject oversized aggregation before paying for any final field analysis.
 		for _, field := range fields {
 			if _, err := boundedPaperInput(paperInput(pc, field, available[field])); err != nil {
-				return err
+				return s.failPaperStage(ctx, r, cp, "analyzing_"+field, err, nil)
 			}
 		}
 	} else {

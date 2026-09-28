@@ -2,6 +2,8 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"signalwatch/internal/agent"
@@ -63,6 +65,27 @@ func TestAgentGatewayForwardsInternalTokenBudget(t *testing.T) {
 			result, err := gateway.Generate(t.Context(), agent.ModelRequest{Run: agent.Run{UserID: 1, Generation: "fixture", Version: 1, Provider: "qwen", Model: "qwen3.8-flash"}, Feature: ai.FeaturePaperQA, MaxTokens: budget, Validate: func(generation.Result) error { return nil }})
 			if err != nil || calls != 1 || result.CallID == "" {
 				t.Fatalf("gateway result=%+v calls=%d error=%v", result, calls, err)
+			}
+		})
+	}
+}
+
+func TestAgentGatewayPreservesPreCallWorkflowFailures(t *testing.T) {
+	for _, failure := range []error{agent.ErrLease, agent.ErrConflict, agent.ErrNotFound, agent.ErrBudget, context.Canceled, context.DeadlineExceeded, &agent.ModelError{Code: "AI_CONFIGURATION_VERSION_CONFLICT"}} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			calls, before, validations := 0, 0, 0
+			factory := func([]string, string, string, string) (ai.Generator, error) {
+				return gatewayBudgetGenerator(func(int) { calls++ }), nil
+			}
+			runner := ai.NewCallRunner(gatewayBudgetCalls{}, ai.CallPolicy{}, factory, []string{"qwen"}, time.Now, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			gateway := agentGateway{ai.NewConfigurationService(gatewayBudgetStore{}, gatewayBudgetCipher{}, []string{"qwen"}, time.Now, runner, llm.Catalog{})}
+			result, err := gateway.Generate(t.Context(), agent.ModelRequest{
+				Run: agent.Run{UserID: 1, Generation: "fixture", Version: 1, Provider: "qwen", Model: "qwen3.8-flash"}, Feature: ai.FeaturePaperQA, MaxTokens: 8192,
+				Before:   func(context.Context) error { before++; return fmt.Errorf("workflow check: %w", failure) },
+				Validate: func(generation.Result) error { validations++; return nil },
+			})
+			if !errors.Is(err, failure) || before != 1 || validations != 0 || calls != 0 || result.CallID != "" {
+				t.Fatalf("workflow failure masked or model called: result=%+v calls=%d before=%d validations=%d error=%v", result, calls, before, validations, err)
 			}
 		})
 	}

@@ -15,10 +15,14 @@ import (
 
 type paperBudgetConfigurationStore struct {
 	ConfigurationStore
-	row Configuration
+	row  Configuration
+	read func() (Configuration, error)
 }
 
 func (s paperBudgetConfigurationStore) Read(context.Context, uint64) (Configuration, error) {
+	if s.read != nil {
+		return s.read()
+	}
 	return s.row, nil
 }
 func (paperBudgetConfigurationStore) MarkUsed(context.Context, uint64, uint64, time.Time) error {
@@ -33,13 +37,17 @@ func (paperBudgetCipher) Decrypt([]byte, []byte, string, string) ([]byte, error)
 
 type paperBudgetCallStore struct {
 	CallStore
-	started, finished int
-	settlementError   error
-	result            generation.Result
-	failure           error
+	admitted, released int
+	started, finished  int
+	settlementError    error
+	result             generation.Result
+	failure            error
 }
 
-func (*paperBudgetCallStore) Admit(context.Context, CallRecord, CallPolicy) error { return nil }
+func (s *paperBudgetCallStore) Admit(context.Context, CallRecord, CallPolicy) error {
+	s.admitted++
+	return nil
+}
 func (s *paperBudgetCallStore) Start(context.Context, string, time.Time) error {
 	s.started++
 	return nil
@@ -49,7 +57,10 @@ func (s *paperBudgetCallStore) Finish(_ context.Context, _ string, result genera
 	s.result, s.failure = result, err
 	return s.settlementError
 }
-func (*paperBudgetCallStore) Release(context.Context, CallRecord, time.Time) error { return nil }
+func (s *paperBudgetCallStore) Release(context.Context, CallRecord, time.Time) error {
+	s.released++
+	return nil
+}
 
 type paperBudgetGenerator func(context.Context, string, []byte, int) (generation.Result, error)
 
@@ -148,6 +159,116 @@ func TestPaperOutputFailureReturnsCandidateOnlyWithDefiniteSettlementCode(t *tes
 			var call *CallError
 			if !errors.As(err, &call) || call.Code != want || call.CallID == "" || call.CallID != result.CallID || string(result.Content) != `{"claims":[]}` || !result.UsageKnown || store.finished != 1 || calls != 1 {
 				t.Fatalf("candidate or definite result lost: result=%+v error=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestPaperCallFailurePrecedenceNeverReplaysOrExposesRepairableTransportFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, providerFailure, want         string
+		cancel, expireLease, failSettlement bool
+		wantValidations                     int
+	}{
+		{name: "settlement failure after validation", failSettlement: true, want: "storage_failed", wantValidations: 1},
+		{name: "lease expiry after validation", expireLease: true, want: "result_unknown", wantValidations: 1},
+		{name: "provider timeout", providerFailure: "timeout", want: "timeout"},
+		{name: "provider refusal", providerFailure: "provider_rejected", want: "provider_rejected"},
+		{name: "truncated content", providerFailure: "output_truncated", want: "output_truncated"},
+		{name: "canceled call", cancel: true, want: "result_unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			store := &paperBudgetCallStore{}
+			if tc.failSettlement {
+				store.settlementError = errors.New("fixture settlement failure")
+			}
+			now := time.Now()
+			calls, validations := 0, 0
+			factory := func([]string, string, string, string) (Generator, error) {
+				return paperBudgetGenerator(func(context.Context, string, []byte, int) (generation.Result, error) {
+					calls++
+					result := generation.Result{Content: []byte(`{"claims":[]}`), UsageKnown: true}
+					if tc.cancel {
+						cancel()
+					}
+					if tc.providerFailure != "" {
+						return result, &generation.Failure{Code: tc.providerFailure}
+					}
+					return result, nil
+				}), nil
+			}
+			runner := NewCallRunner(store, CallPolicy{}, factory, []string{"qwen"}, func() time.Time { return now }, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			result, err := runner.Run(ctx, CallRequest{UserID: 1, Provider: "qwen", Model: "qwen3.8-flash", Feature: FeaturePaperQA, MaxTokens: 8192, Validate: func(generation.Result) error {
+				validations++
+				if tc.expireLease {
+					now = now.Add(time.Minute)
+				}
+				return &generation.Failure{Code: "output_limit_exceeded", ValidationPath: "$.claims"}
+			}})
+			var call *CallError
+			if !errors.As(err, &call) || call.Code != tc.want || call.CallID != result.CallID || validations != tc.wantValidations || calls != 1 || store.admitted != 1 || store.started != 1 || store.finished != 1 || store.released != 1 {
+				t.Fatalf("failure precedence or no-replay violated: result=%+v err=%v validations=%d calls=%d store=%+v", result, err, validations, calls, store)
+			}
+		})
+	}
+}
+
+func TestPaperCredentialChangeAfterSettledLimitBlocksFurtherModelCalls(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		failure error
+	}{
+		{"rotated", ErrConfigurationConflict},
+		{"deleted", ErrConfigurationRequired},
+		{"invalidated", ErrConfigurationInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := Configuration{Generation: "fixture", UserID: 1, ProviderID: "qwen", ModelID: "qwen3.8-flash", Status: ConfigurationActive, ConfigVersion: 1}
+			changed := false
+			configurations := paperBudgetConfigurationStore{read: func() (Configuration, error) {
+				if !changed {
+					return row, nil
+				}
+				if tc.name == "deleted" {
+					return Configuration{}, ErrConfigurationRequired
+				}
+				updated := row
+				if tc.name == "rotated" {
+					updated.ConfigVersion++
+				}
+				if tc.name == "invalidated" {
+					updated.Status = ConfigurationInvalid
+				}
+				return updated, nil
+			}}
+			calls := 0
+			factory := func([]string, string, string, string) (Generator, error) {
+				return paperBudgetGenerator(func(context.Context, string, []byte, int) (generation.Result, error) {
+					calls++
+					changed = true
+					return generation.Result{Content: []byte(`{"claims":[]}`), UsageKnown: true}, nil
+				}), nil
+			}
+			store := &paperBudgetCallStore{}
+			runner := NewCallRunner(store, CallPolicy{}, factory, []string{"qwen"}, time.Now, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			service := NewConfigurationService(configurations, paperBudgetCipher{}, []string{"qwen"}, time.Now, runner, llm.Catalog{})
+			validate := func(generation.Result) error { return &generation.Failure{Code: "output_limit_exceeded"} }
+			result, err := service.GenerateForCredentialLimit(t.Context(), 1, "qwen", "qwen3.8-flash", "fixture", 1, FeaturePaperQA, "run", "Analyze", []byte(`{}`), 8192, nil, validate, nil)
+			var call *CallError
+			if !errors.As(err, &call) || call.Code != "output_limit_exceeded" || result.CallID == "" {
+				t.Fatalf("original call=%+v err=%v", result, err)
+			}
+			// The workflow checks its saved selection before scheduling repair; the
+			// credential boundary independently rejects a call using that revision.
+			selection, selectionErr := service.SelectionForCredential(t.Context(), 1, "fixture", "qwen", "qwen3.8-flash")
+			if selectionErr == nil && selection.Version == 1 {
+				t.Fatal("stale selection remains valid")
+			}
+			_, err = service.GenerateForCredentialLimit(t.Context(), 1, "qwen", "qwen3.8-flash", "fixture", 1, FeaturePaperQA, "run", "Repair", []byte(`{}`), 8192, nil, validate, nil)
+			if !errors.Is(err, tc.failure) || calls != 1 || store.admitted != 1 || store.started != 1 || store.finished != 1 {
+				t.Fatalf("stale credential allowed a second model call: err=%v calls=%d store=%+v", err, calls, store)
 			}
 		})
 	}

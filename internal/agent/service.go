@@ -162,6 +162,22 @@ func (s *Service) RunByID(ctx context.Context, uid uint64, id string) (Run, erro
 	_, err = s.Conversation(ctx, uid, r.ConversationID)
 	var cp Checkpoint
 	if err == nil && json.Unmarshal(r.Checkpoint, &cp) == nil && cp.Paper != nil {
+		if r.State == "failed" || r.State == "unknown" || r.State == "cancelled" {
+			stage := cp.Paper.CurrentStage
+			if stage == "normalizing_question" || stage == "validating_paper" || strings.HasPrefix(stage, "validating_paper_") || strings.HasPrefix(stage, "extracting_batch_") || paperLabels[strings.TrimPrefix(stage, "analyzing_")] != "" || paperLabels[strings.TrimPrefix(stage, "repairing_")] != "" {
+				r.FailureStage = stage
+			}
+		}
+		if repair := cp.Paper.Repair; repair != nil && paperLabels[repair.Field] != "" {
+			state := repair.State
+			switch state {
+			case "pending", "calling", "completed", "failed", "budget_exceeded":
+				if (r.State == "failed" || r.State == "unknown" || r.State == "cancelled") && (state == "pending" || state == "calling") {
+					state = "failed"
+				}
+				r.RepairSummary = &PaperRepairSummary{Field: repair.Field, State: state, Attempted: repair.Attempted}
+			}
+		}
 		if r.State == "failed" && cp.Paper.Failure != nil && cp.Paper.Failure.Code == r.FailureCode {
 			r.FailureDetail = cp.Paper.Failure
 		}

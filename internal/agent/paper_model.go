@@ -11,7 +11,7 @@ import (
 const (
 	TaskPaperReport      = "paper_report"
 	TaskPaperFollowup    = "paper_followup"
-	PaperWorkflowVersion = "paper-fixed-v8"
+	PaperWorkflowVersion = "paper-fixed-v9"
 	PaperReportMessage   = "快速了解论文"
 	PaperGoal            = "帮助用户快速了解当前论文"
 	paperInputLimit      = 64 << 10
@@ -71,7 +71,28 @@ type PaperReviewProgress struct {
 	Total     int `json:"total"`
 }
 
+// Candidate and Request stay private in checkpoint JSON. Public status is a
+// separate allowlisted projection, never this internal recovery record.
+type PaperRepair struct {
+	Stage     string          `json:"stage"`
+	Field     string          `json:"field"`
+	Candidate json.RawMessage `json:"candidate,omitempty"`
+	Request   string          `json:"request,omitempty"`
+	Failure   *PaperFailure   `json:"failure"`
+	State     string          `json:"state"`
+	Attempted bool            `json:"attempted"`
+}
+
+type PaperRepairSummary struct {
+	Field     string `json:"field"`
+	State     string `json:"state"`
+	Attempted bool   `json:"attempted"`
+}
+
 type PaperCheckpoint struct {
+	CurrentStage        string                     `json:"current_stage,omitempty"`
+	Repair              *PaperRepair               `json:"repair,omitempty"`
+	TerminalFailure     string                     `json:"terminal_failure,omitempty"`
 	ReviewPlan          []PaperReviewBatch         `json:"review_plan,omitempty"`
 	ContextCaptured     bool                       `json:"context_captured"`
 	ConversationContext PaperConversationContext   `json:"conversation_context"`
@@ -128,5 +149,5 @@ type PaperResult struct {
 func validPaperReport(message Message, hash string) (PaperResult, bool) {
 	var result PaperResult
 	err := json.Unmarshal(message.Result, &result)
-	return result, err == nil && result.Report != nil && result.PaperHash == hash && (result.WorkflowVersion == PaperWorkflowVersion || result.WorkflowVersion == "paper-fixed-v1" || result.WorkflowVersion == "paper-fixed-v2" || result.WorkflowVersion == "paper-fixed-v3" || result.WorkflowVersion == "paper-fixed-v4" || result.WorkflowVersion == "paper-fixed-v5" || result.WorkflowVersion == "paper-fixed-v6" || result.WorkflowVersion == "paper-fixed-v7") && (result.ContextMode == "abstract" || result.ContextMode == "fulltext")
+	return result, err == nil && result.Report != nil && result.PaperHash == hash && (result.WorkflowVersion == PaperWorkflowVersion || result.WorkflowVersion == "paper-fixed-v1" || result.WorkflowVersion == "paper-fixed-v2" || result.WorkflowVersion == "paper-fixed-v3" || result.WorkflowVersion == "paper-fixed-v4" || result.WorkflowVersion == "paper-fixed-v5" || result.WorkflowVersion == "paper-fixed-v6" || result.WorkflowVersion == "paper-fixed-v7" || result.WorkflowVersion == "paper-fixed-v8") && (result.ContextMode == "abstract" || result.ContextMode == "fulltext")
 }

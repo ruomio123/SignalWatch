@@ -135,6 +135,10 @@ func (s *Service) process(ctx context.Context, r Run) {
 		s.fail(r, "result_unknown")
 		return
 	}
+	if cp.Phase == "failed" && cp.Paper != nil && cp.Paper.TerminalFailure != "" {
+		s.fail(r, cp.Paper.TerminalFailure)
+		return
+	}
 	if !deadline.After(time.Now()) {
 		s.fail(r, "budget_exhausted")
 		return
