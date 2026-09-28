@@ -2,9 +2,10 @@
 # This drill only addresses the named isolated Compose project, never MYSQL_DSN.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-compose=(docker compose -p signalwatch-refactor-test -f deploy/compose.test.yaml)
+compose=(docker compose -p signalwatch-refactor-test --env-file /dev/null -f deploy/compose.test.yaml)
 name="signalwatch_migration_${RANDOM}_test"
-work=$(mktemp -d /tmp/signalwatch-migration.XXXXXX)
+mkdir -p .cache/tmp
+work=$(mktemp -d "$PWD/.cache/tmp/signalwatch-migration.XXXXXX")
 mysql(){ "${compose[@]}" exec -T -e MYSQL_PWD=isolated-test-only mysql mysql -uroot "$@"; }
 mysql -e "CREATE DATABASE $name"
 cleanup(){ mysql -e "DROP DATABASE $name"; rm -rf "$work"; }

@@ -161,6 +161,31 @@ docker build -f deploy/Dockerfile.backend -t signalwatch-backend:local .
 docker build --output type=local,dest=web/dist web
 ```
 
+## Agent 回归测试
+
+后端测试使用隔离 MySQL（本机 `13306` 端口）、随机临时数据库和真实 migrations，不读取应用 `.env`，不调用真实模型。需要 Docker Compose、Go 和 `goose`：
+
+```bash
+bash scripts/test-agent.sh
+```
+
+脚本运行 Agent 的集成测试和 race 检查，结束后删除本次数据库，保留隔离测试容器。缺少依赖或数据库时直接失败，不以跳过测试代替验收。
+
+前端回归使用 Node 22 和严格 API mock；测试 Vite 不读取 `.env`、不代理真实后端。安装依赖和浏览器后运行：
+
+```bash
+make ENV_FILE=/dev/null prepare-cache
+export npm_config_cache="$PWD/.cache/npm"
+export NODE_COMPILE_CACHE="$PWD/.cache/node-compile"
+export TMPDIR="$PWD/.cache/tmp"
+export PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright-browsers"
+npm --prefix web ci
+(cd web && npx playwright install chromium)
+npm --prefix web run test:agent
+```
+
+测试缓存、临时文件、浏览器和失败报告统一放在项目 `.cache/`，不提交仓库。仅本轮维护的 Agent 测试及必要工具入库，其他本地历史测试不属于此验收入口。
+
 ## 使用
 
 1. 打开网页，注册账号并登录。

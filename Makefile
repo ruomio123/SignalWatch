@@ -27,10 +27,12 @@ export SMTP_ADDR SMTP_FROM SMTP_USERNAME SMTP_PASSWORD SMTP_STARTTLS SMTP_TIMEOU
 
 # Keep build caches and temporary files under this project, out of shared /tmp.
 export GOCACHE ?= $(CURDIR)/.cache/go-build
+export GOMODCACHE ?= $(CURDIR)/.cache/go-mod
 export GOTMPDIR ?= $(CURDIR)/.cache/tmp
 export TMPDIR ?= $(CURDIR)/.cache/tmp
 export npm_config_cache ?= $(CURDIR)/.cache/npm
 export NODE_COMPILE_CACHE ?= $(CURDIR)/.cache/node-compile
+export PLAYWRIGHT_BROWSERS_PATH ?= $(CURDIR)/.cache/playwright-browsers
 
 .PHONY: require-env prepare-cache require-node deps-up deps-down api worker backend-build migrate-up migrate-down migrate-status frontend web-dev web-build web-publish web-rollback
 
@@ -40,7 +42,7 @@ require-env:
 prepare-cache:
 	@mkdir -p "$(CURDIR)/.cache"
 	@chmod 700 "$(CURDIR)/.cache"
-	@mkdir -p "$$GOCACHE" "$$GOTMPDIR" "$$TMPDIR" "$$npm_config_cache" "$$NODE_COMPILE_CACHE"
+	@mkdir -p "$$GOCACHE" "$$GOMODCACHE" "$$GOTMPDIR" "$$TMPDIR" "$$npm_config_cache" "$$NODE_COMPILE_CACHE" "$$PLAYWRIGHT_BROWSERS_PATH"
 
 deps-up: require-env
 	$(COMPOSE) up -d --wait

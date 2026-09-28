@@ -86,3 +86,22 @@ __pycache__/
 *.log
 *.tsbuildinfo
 .DS_Store
+
+# Reproducible Agent regression suite (other local suites stay ignored).
+!/scripts/test-agent.sh
+!/scripts/test-migrations.sh
+!/deploy/compose.test.yaml
+!/internal/agent/integration_test.go
+!/internal/agent/paper_workflow_test.go
+!/internal/agent/paper_validation_test.go
+!/internal/agent/runtime_test.go
+!/internal/agent/round1_test.go
+!/internal/platform/testguard/
+!/internal/platform/testguard/guard.go
+!/web/playwright-agent.config.ts
+!/web/vite.agent-test.config.ts
+!/web/tests/
+/web/tests/*
+!/web/tests/agent.spec.ts
+!/web/tests/agent-fixtures.ts
+!/web/scripts/test-agent.cjs
