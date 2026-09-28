@@ -35,6 +35,15 @@ export const conversation = {
 export const conversationPath = "/agent/conversations/conversation-one";
 export const assistantURL =
   "/papers?paper_id=1&assistant=paper&conversation=conversation-one";
+export const documentPath = "/agent/papers/1/document";
+export const documentStatus = {
+  state: "not_prepared",
+  usable: false,
+  document_id: "",
+  source_version: "1706.03762v1@2026-09-10T00:00:00Z",
+  parser_version: "poppler-reading-order-v3",
+  page_count: 0,
+};
 
 export function deferred() {
   let resolve!: () => void;
@@ -125,6 +134,7 @@ export const test = base.extend<{ api: AgentAPI }>({
       page_size: 20,
     });
     api.json("GET", "/papers/1", paper);
+    api.json("GET", documentPath, documentStatus);
     api.json("GET", "/subscriptions", {
       items: [],
       total: 0,

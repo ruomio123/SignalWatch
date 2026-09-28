@@ -285,8 +285,8 @@ func TestReportRestartsReuseSavedCallsAndUnknownIsNotReplayed(t *testing.T) {
 
 type failingDocuments struct{ document.Store }
 
-func (s failingDocuments) Ensure(ctx context.Context, src document.Source) (document.Document, error) {
-	d, err := s.Store.Ensure(ctx, src)
+func (s failingDocuments) Prepare(ctx context.Context, src document.Source) (document.Document, error) {
+	d, err := s.Store.Prepare(ctx, src)
 	d.State = "failed"
 	d.FailureCode = "ocr_required"
 	return d, err

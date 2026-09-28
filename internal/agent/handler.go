@@ -28,6 +28,27 @@ func (h Handler) Handle(c *gin.Context) {
 	path := c.FullPath()
 	method := c.Request.Method
 	switch {
+	case strings.Contains(path, "/agent/papers/"):
+		pid, err := strconv.ParseUint(id, 10, 64)
+		if err != nil || pid == 0 {
+			writeError(c, ErrInput)
+			return
+		}
+		var status PaperDocumentStatus
+		if method == "POST" {
+			status, err = s.PreparePaperDocument(ctx, u, pid)
+		} else {
+			status, err = s.PaperDocument(ctx, u, pid)
+		}
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		code := 200
+		if method == "POST" && status.State != "ready" {
+			code = 202
+		}
+		c.JSON(code, status)
 	case strings.HasSuffix(path, "/conversations"):
 		if method == "POST" {
 			var input struct {

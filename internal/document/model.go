@@ -14,6 +14,7 @@ const ParserVersion = "poppler-reading-order-v3"
 
 var ErrUnavailable = errors.New("DOCUMENT_UNAVAILABLE")
 var ErrLeaseLost = errors.New("DOCUMENT_LEASE_LOST")
+var ErrNotFound = errors.New("DOCUMENT_NOT_FOUND")
 
 // ExtractionError exposes a stable failure code without process output.
 type ExtractionError struct{ Code string }
@@ -69,6 +70,7 @@ func Identity(s Source) string {
 type Store interface {
 	Stats(context.Context) (map[string]int, error)
 	Ensure(context.Context, Source) (Document, error)
+	Prepare(context.Context, Source) (Document, error)
 	Get(context.Context, string) (Document, error)
 	Chunks(context.Context, string) ([]Chunk, error)
 	Claim(context.Context, string) (Document, error)

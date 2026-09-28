@@ -2,6 +2,7 @@ package document
 
 import (
 	"context"
+	"errors"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"time"
@@ -16,11 +17,21 @@ func (s *MySQLStore) Ensure(ctx context.Context, src Source) (Document, error) {
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&d).Error; err != nil {
 		return d, err
 	}
-	// Ensure is entered only for a user-submitted full-text question. Permit
-	// that explicit new attempt to prepare a previously failed version; never
-	// reset ready/processing documents or retry a paid model call here.
-	if err := s.db.WithContext(ctx).Model(&Document{}).Where("id=? AND state='failed'", d.ID).
-		Updates(map[string]any{"state": "pending", "failure_code": "", "updated_at": now}).Error; err != nil {
+	return s.Get(ctx, d.ID)
+}
+
+// Prepare is an explicit user request to create or retry this document version.
+// Reading status and ensuring a row exists must never restart a failed attempt.
+func (s *MySQLStore) Prepare(ctx context.Context, src Source) (Document, error) {
+	d, err := s.Ensure(ctx, src)
+	if err != nil {
+		return d, err
+	}
+	if d.State != "failed" {
+		return d, nil
+	}
+	if err := s.db.WithContext(ctx).Model(&Document{}).Where("id=? AND state='failed' AND epoch=?", d.ID, d.Epoch).
+		Updates(map[string]any{"state": "pending", "failure_code": "", "updated_at": time.Now().UTC()}).Error; err != nil {
 		return d, err
 	}
 	return s.Get(ctx, d.ID)
@@ -28,6 +39,9 @@ func (s *MySQLStore) Ensure(ctx context.Context, src Source) (Document, error) {
 func (s *MySQLStore) Get(ctx context.Context, id string) (Document, error) {
 	var d Document
 	err := s.db.WithContext(ctx).Where("id=?", id).Take(&d).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return d, ErrNotFound
+	}
 	return d, err
 }
 func (s *MySQLStore) Chunks(ctx context.Context, id string) ([]Chunk, error) {

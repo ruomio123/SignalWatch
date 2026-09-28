@@ -159,7 +159,7 @@ func (s *Service) preparePaper(ctx context.Context, r Run, c Conversation, cp *C
 	var doc document.Document
 	if pc.Mode == "" {
 		src := document.Source{PaperID: p.ID, ArXivID: p.ArXivID, PDFURL: p.PDFURL, UpdatedAt: p.ArXivUpdatedAt}
-		doc, err = s.Documents.Ensure(ctx, src)
+		doc, err = s.Documents.Prepare(ctx, src)
 		if err != nil {
 			return doc, nil, err
 		}

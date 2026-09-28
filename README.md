@@ -223,6 +223,8 @@ AI_ENABLED_PROVIDERS=glm,qwen,deepseek,kimi,openai
 
 论文助手单独展示最近一次已完成报告，不受消息分页影响；论文更新后，旧报告会标明已过期。助手设置支持继续加载历史对话，对话内可加载更早消息；新回答完成后保留已加载的历史记录。
 
+论文助手的材料状态卡可查看全文是否已准备好，也可以在创建对话之前点击「准备全文」。打开页面仅查询状态；准备和重试复用后台文档 Worker，不调用模型。解析失败后可显式重试，重复点击不会创建同一版本的多个任务；准备完成后显示可用状态和页数。
+
 ## Docker Compose 部署
 
 生产编排见 [deploy/compose.prod.yaml](deploy/compose.prod.yaml)。Nginx 对外开放 80 / 443，HTTP 自动跳转 HTTPS；API、Worker、MySQL 和 Redis 通过容器网络通信。

@@ -316,7 +316,7 @@ func TestPaperConversationRetrievesVersionedEvidenceAndPreservesHistory(t *testi
 	}
 	// A previously failed preparation must not permanently poison this version.
 	must(t, f.db.Model(&document.Document{}).Where("id=?", d.ID).Updates(map[string]any{"state": "failed", "failure_code": "document_extraction_failed"}).Error)
-	d, err = f.s.Documents.Ensure(ctx, src)
+	d, err = f.s.Documents.Prepare(ctx, src)
 	must(t, err)
 	if d.State != "pending" || d.FailureCode != "" {
 		t.Fatalf("explicit preparation retry was not queued: %+v", d)

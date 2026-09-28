@@ -238,3 +238,23 @@
   border-left: 3px solid var(--primary);
   background: var(--surface);
 }
+.paper-document-status {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--background);
+  font-size: 12px;
+}
+.paper-document-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.paper-document-status small {
+  color: var(--muted);
+}

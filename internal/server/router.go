@@ -158,6 +158,8 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 		return handler
 	}
 	agentHandler := orDisabled(dependencies.AgentHandler)
+	aiRoutes.GET("/agent/papers/:id/document", agentHandler)
+	aiRoutes.POST("/agent/papers/:id/document/prepare", agentHandler)
 	aiRoutes.GET("/agent/conversations", agentHandler)
 	aiRoutes.POST("/agent/conversations", agentHandler)
 	aiRoutes.GET("/agent/conversations/:id", agentHandler)

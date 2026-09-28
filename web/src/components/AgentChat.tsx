@@ -16,6 +16,7 @@ import type { Configuration, Provider } from "../lib/types";
 
 import { AssistantView, AssistantComposer } from "./AssistantView";
 import { PaperReportView, PaperScope, type PaperResult } from "./PaperReport";
+import { PaperDocumentStatus } from "./PaperDocumentStatus";
 import { ShieldCheck } from "lucide-react";
 import { SubscriptionDraftCard, type Draft } from "./SubscriptionDraft";
 
@@ -1002,6 +1003,12 @@ function AgentChatView({
       notices={
         <>
           {errorNotice}
+          {kind === "paper" && paperID && (
+            <PaperDocumentStatus
+              paperID={paperID}
+              refreshKey={[run?.id, run?.state, run?.progress].join(":")}
+            />
+          )}
           {availability}
         </>
       }

@@ -6,6 +6,9 @@ import {
   conversationPath,
   credential,
   deferred,
+  documentPath,
+  documentStatus,
+  paper,
 } from "./agent-fixtures";
 
 const report = {
@@ -70,6 +73,21 @@ for (const mode of ["fulltext", "abstract"] as const) {
     if (mode === "abstract")
       await page.setViewportSize({ width: 390, height: 844 });
     let generated = false;
+    if (mode === "fulltext") {
+      api.on("GET", documentPath, (route) =>
+        route.fulfill({
+          json: generated
+            ? {
+                ...documentStatus,
+                state: "ready",
+                usable: true,
+                document_id: "fixture-document",
+                page_count: 12,
+              }
+            : documentStatus,
+        }),
+      );
+    }
     const writes: Record<string, unknown>[] = [];
     api.on("GET", conversationPath, (route) =>
       route.fulfill({
@@ -122,6 +140,11 @@ for (const mode of ["fulltext", "abstract"] as const) {
       exact: true,
     });
     await expect(generate).toBeEnabled();
+    if (mode === "fulltext") {
+      await expect(
+        page.getByRole("region", { name: "论文全文材料", exact: true }).getByRole("status"),
+      ).toHaveText("全文尚未准备");
+    }
     expect(writes).toHaveLength(0);
     // Updated alongside direct Q&A when that workflow is introduced.
     await expect(
@@ -129,6 +152,14 @@ for (const mode of ["fulltext", "abstract"] as const) {
     ).toBeDisabled();
     await generate.click();
     await expect(page.getByRole("button", { name: "复制 JSON" })).toBeVisible();
+    if (mode === "fulltext") {
+      // The report workflow prepared the document. Its run update must refresh
+      // this card without a reload or a separate manual preparation request.
+      const material = page.getByRole("region", { name: "论文全文材料", exact: true });
+      await expect(material.getByRole("status")).toHaveText("全文已就绪");
+      await expect(material.getByText("下次提问可使用全文。", { exact: true })).toBeVisible();
+      expect(api.requestsFor("POST", `${documentPath}/prepare`)).toHaveLength(0);
+    }
     expect(writes).toHaveLength(1);
     expect(writes[0]).toMatchObject({
       task: "paper_report",
@@ -176,6 +207,7 @@ for (const mode of ["fulltext", "abstract"] as const) {
       page.getByRole("button", { name: "重新生成论文报告" }),
     ).toBeEnabled();
     expect(writes).toHaveLength(1);
+    expect(api.requestsFor("POST", `${documentPath}/prepare`)).toHaveLength(0);
     await expect(page.getByRole("alert")).not.toBeVisible();
   });
 }
@@ -634,5 +666,208 @@ test("creating a conversation sends its first report once and survives its own n
   await expect(page.getByRole("textbox", { name: "你的问题" })).toBeEnabled();
   expect(api.requestsFor("POST", "/agent/conversations")).toHaveLength(1);
   expect(api.requestsFor("POST", `${conversationPath}/messages`)).toHaveLength(1);
+  await expect(page.getByRole("alert")).not.toBeVisible();
+});
+
+test("opening a paper without a conversation only reads its document status", async ({
+  page,
+  api,
+}) => {
+  // Document preparation does not depend on a configured model or a chat.
+  api.json("GET", "/ai/credentials", { items: [] });
+  api.json("GET", "/agent/conversations", {
+    items: [],
+    page: 1,
+    has_more: false,
+    next_page: 0,
+  });
+  await page.goto("/papers?paper_id=1&assistant=paper");
+  const material = page.getByRole("region", { name: "论文全文材料", exact: true });
+  await expect(material.getByRole("status")).toHaveText("全文尚未准备");
+  await expect(
+    material.getByText("仅准备论文材料，不调用 AI 模型。", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    material.getByRole("button", { name: "准备全文", exact: true }),
+  ).toBeEnabled();
+  expect(api.requestsFor("GET", documentPath).length).toBeGreaterThan(0);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+  expect(
+    api.requests.filter((request) =>
+      /\/agent\/(runs\/|conversations\/[^/]+\/)/.test(request.path),
+    ),
+  ).toEqual([]);
+  await expect(page).not.toHaveURL(/conversation=/);
+  await expect(page.getByRole("alert")).not.toBeVisible();
+});
+
+test("explicit document preparation ignores an older read and polls until usable", async ({
+  page,
+  api,
+}) => {
+  let phase = "not_prepared";
+  const initialRead = deferred();
+  const releaseInitial = deferred();
+  const initialFinishes: Promise<void>[] = [];
+  const snapshot = (state: string) => ({
+    ...documentStatus,
+    state,
+    usable: state === "ready",
+    document_id: state === "not_prepared" ? "" : "prepared-document-one",
+    page_count: state === "ready" ? 12 : 0,
+  });
+  api.on("GET", documentPath, async (route) => {
+    const stateAtRequest = phase;
+    if (stateAtRequest === "not_prepared") {
+      const finished = deferred();
+      initialFinishes.push(finished.promise);
+      initialRead.resolve();
+      await releaseInitial.promise;
+      try {
+        await route.fulfill({ json: snapshot(stateAtRequest) });
+      } finally {
+        finished.resolve();
+      }
+      return;
+    }
+    await route.fulfill({ json: snapshot(stateAtRequest) });
+  });
+  api.on("POST", `${documentPath}/prepare`, (route) => {
+    phase = "pending";
+    return route.fulfill({ status: 202, json: snapshot(phase) });
+  });
+
+  await page.goto("/papers?paper_id=1&assistant=paper");
+  const material = page.getByRole("region", { name: "论文全文材料", exact: true });
+  try {
+    await initialRead.promise;
+    const prepare = material.getByRole("button", { name: "准备全文", exact: true });
+    await expect(prepare).toBeEnabled();
+    expect(api.requestsFor("POST", `${documentPath}/prepare`)).toHaveLength(0);
+    await prepare.evaluate((button: HTMLButtonElement) => {
+      button.click();
+      button.click();
+    });
+    await expect(material.getByRole("status")).toHaveText("全文等待解析");
+    await expect(
+      material.getByRole("button", { name: "正在准备全文…", exact: true }),
+    ).toBeDisabled();
+  } finally {
+    releaseInitial.resolve();
+  }
+  await Promise.all(initialFinishes);
+  await expect(material.getByRole("status")).toHaveText("全文等待解析");
+  phase = "processing";
+  await expect(material.getByRole("status")).toHaveText("正在解析全文");
+  phase = "ready";
+  await expect(material.getByRole("status")).toHaveText("全文已就绪");
+  await expect(
+    material.getByText("下次提问可使用全文。", { exact: true }),
+  ).toBeVisible();
+  await expect(material.getByRole("button")).toHaveCount(0);
+  expect(api.requestsFor("POST", `${documentPath}/prepare`)).toHaveLength(1);
+  expect(api.requests.filter((request) => request.method !== "GET").map((request) => request.path)).toEqual([
+    `/api/v2${documentPath}/prepare`,
+  ]);
+  await expect(page).not.toHaveURL(/conversation=/);
+  await expect(page.getByRole("alert")).not.toBeVisible();
+});
+
+test("failed document preparation only retries after an explicit click", async ({
+  page,
+  api,
+}) => {
+  let state = "failed";
+  const snapshot = () => ({
+    ...documentStatus,
+    state,
+    usable: state === "ready",
+    document_id: "retry-document-one",
+    page_count: state === "ready" ? 8 : 0,
+    ...(state === "failed" ? { failure_code: "ocr_required" } : {}),
+  });
+  api.on("GET", documentPath, (route) => route.fulfill({ json: snapshot() }));
+  api.on("POST", `${documentPath}/prepare`, (route) => {
+    state = "pending";
+    return route.fulfill({ status: 202, json: snapshot() });
+  });
+  await page.goto("/papers?paper_id=1&assistant=paper");
+  const material = page.getByRole("region", { name: "论文全文材料", exact: true });
+  await expect(material.getByRole("status")).toHaveText("全文准备失败");
+  const retry = material.getByRole("button", { name: "重试解析", exact: true });
+  await expect(retry).toBeEnabled();
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+  await retry.click();
+  await expect(material.getByRole("status")).toHaveText("全文等待解析");
+  state = "ready";
+  await expect(material.getByRole("status")).toHaveText("全文已就绪");
+  await expect(material.getByText("下次提问可使用全文。", { exact: true })).toBeVisible();
+  await expect(retry).toHaveCount(0);
+  expect(api.requestsFor("POST", `${documentPath}/prepare`)).toHaveLength(1);
+  expect(api.requests.filter((request) => request.method !== "GET").map((request) => request.path)).toEqual([
+    `/api/v2${documentPath}/prepare`,
+  ]);
+  await expect(page.getByRole("alert")).not.toBeVisible();
+});
+
+test("a late document status for paper A cannot replace paper B's material state", async ({
+  page,
+  api,
+}) => {
+  const otherPaper = { ...paper, id: 2, title: "Reliable Retrieval" };
+  const started = deferred();
+  const release = deferred();
+  const finishes: Promise<void>[] = [];
+  api.json("GET", "/papers", {
+    items: [paper, otherPaper],
+    total: 2,
+    page: 1,
+    page_size: 20,
+  });
+  api.json("GET", "/papers/2", otherPaper);
+  api.json("GET", "/agent/conversations", {
+    items: [],
+    page: 1,
+    has_more: false,
+    next_page: 0,
+  });
+  api.json("GET", "/agent/papers/2/document", documentStatus);
+  api.on("GET", documentPath, async (route) => {
+    const finished = deferred();
+    finishes.push(finished.promise);
+    started.resolve();
+    await release.promise;
+    try {
+      await route.fulfill({
+        json: {
+          ...documentStatus,
+          state: "ready",
+          usable: true,
+          document_id: "late-document-for-paper-one",
+          page_count: 99,
+        },
+      });
+    } finally {
+      finished.resolve();
+    }
+  });
+  await page.goto("/papers?paper_id=1&assistant=paper");
+  const material = page.getByRole("region", { name: "论文全文材料", exact: true });
+  try {
+    await started.promise;
+    await page.getByRole("button", { name: "返回论文列表", exact: true }).click();
+    await page.getByRole("button", { name: otherPaper.title, exact: true }).click();
+    await page.getByRole("button", { name: "AI 论文助手", exact: true }).click();
+    await expect(page).toHaveURL(/paper_id=2/);
+    await expect(material.getByRole("status")).toHaveText("全文尚未准备");
+  } finally {
+    release.resolve();
+  }
+  await Promise.all(finishes);
+  await expect(material.getByRole("status")).toHaveText("全文尚未准备");
+  await expect(material.getByRole("button", { name: "准备全文", exact: true })).toBeEnabled();
+  await expect(material.getByText("全文已就绪", { exact: true })).toHaveCount(0);
+  expect(api.requestsFor("GET", "/agent/papers/2/document").length).toBeGreaterThan(0);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
   await expect(page.getByRole("alert")).not.toBeVisible();
 });
