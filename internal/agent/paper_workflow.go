@@ -119,6 +119,20 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 }
 
 func (s *Service) preparePaper(ctx context.Context, r Run, c Conversation, cp *Checkpoint, check func(context.Context) error) (document.Document, []Citation, error) {
+	// A preparation deadline can cause a fallback; loss of the parent run's
+	// budget, ownership, access, or configuration must stop execution instead.
+	checkRun := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if r.Deadline != nil && !r.Deadline.After(time.Now()) {
+			return ErrBudget
+		}
+		return check(ctx)
+	}
+	if err := checkRun(); err != nil {
+		return document.Document{}, nil, err
+	}
 	p, err := s.Papers.Get(ctx, r.UserID, *c.PaperID)
 	if err != nil {
 		return document.Document{}, nil, err
@@ -130,90 +144,76 @@ func (s *Service) preparePaper(ctx context.Context, r Run, c Conversation, cp *C
 		cp.Evidence = []Citation{{ID: "abstract", DocumentID: "abstract:" + hash, ContentHash: hash, Quote: p.Title + "\n" + p.Abstract, URL: p.ArXivURL}}
 	}
 	pc := cp.Paper
-	if pc.Outputs == nil {
+	if pc.Outputs == nil || (pc.Mode != "" && pc.Mode != "abstract" && pc.Mode != "fulltext") {
 		return document.Document{}, nil, paperError("invalid_checkpoint")
 	}
 	if pc.PaperHash != paperSnapshotHash(p) {
 		return document.Document{}, nil, ErrConflict
 	}
-	if r.Task == TaskPaperFollowup {
-		message, err := s.Store.LatestPaperReport(ctx, c.ID)
-		if errors.Is(err, ErrNotFound) {
-			return document.Document{}, nil, ErrReportRequired
-		}
-		if err != nil {
-			return document.Document{}, nil, err
-		}
-		report, ok := validPaperReport(message, pc.PaperHash)
-		if !ok {
-			return document.Document{}, nil, ErrReportRequired
-		}
-		if pc.Mode == "" && report.ContextMode == "abstract" {
-			pc.Mode = "abstract"
-			pc.FallbackReason = report.FallbackReason
-		}
-	}
 	if pc.Mode == "" && r.ContextMode == "abstract" {
-		pc.Mode = "abstract"
+		freezePaperAbstract(cp, "")
 	}
 	var doc document.Document
 	if pc.Mode == "" {
 		src := document.Source{PaperID: p.ID, ArXivID: p.ArXivID, PDFURL: p.PDFURL, UpdatedAt: p.ArXivUpdatedAt}
-		doc, err = s.Documents.Prepare(ctx, src)
-		if err != nil {
-			return doc, nil, err
-		}
-		if cp.DocumentID != "" && cp.DocumentID != doc.ID {
+		id := document.Identity(src)
+		if cp.DocumentID != "" && cp.DocumentID != id {
 			return doc, nil, ErrConflict
 		}
-		cp.DocumentID = doc.ID
+		cp.DocumentID = id
+		deadline := time.Now().Add(105 * time.Second)
+		if r.Task == TaskPaperFollowup {
+			if pc.PreparationDeadline == nil {
+				timeout := s.paperPreparationTimeout
+				if timeout <= 0 {
+					timeout = 20 * time.Second
+				}
+				deadline = time.Now().Add(timeout)
+				pc.PreparationDeadline = &deadline
+			}
+			deadline = *pc.PreparationDeadline
+		}
+		if parent, ok := ctx.Deadline(); ok && parent.Before(deadline) {
+			deadline = parent
+		}
+		if r.Deadline != nil && r.Deadline.Before(deadline) {
+			deadline = *r.Deadline
+		}
+		// Persist the absolute budget before any potentially blocking document
+		// I/O. A recovery reuses it, even if the document has since become ready.
 		if err = s.Store.Save(ctx, r, *cp, "preparing_document", nil); err != nil {
 			return doc, nil, err
 		}
-		preparation, stop := context.WithTimeout(ctx, 105*time.Second)
-		defer stop()
-		for doc.State != "ready" && doc.State != "failed" {
-			if err = check(ctx); err != nil {
-				return doc, nil, err
-			}
-			timer := time.NewTimer(time.Second)
-			select {
-			case <-preparation.Done():
-				timer.Stop()
-				if ctx.Err() != nil {
-					return doc, nil, ctx.Err()
-				}
-				pc.Mode = "abstract"
-				pc.FallbackReason = "document_timeout"
-			case <-timer.C:
-			}
-			if pc.Mode == "abstract" {
-				break
-			}
-			doc, err = s.Documents.Get(ctx, doc.ID)
+		timedOut := !deadline.After(time.Now())
+		if !timedOut {
+			preparation, stop := context.WithDeadline(ctx, deadline)
+			doc, timedOut, err = s.awaitPaperDocument(ctx, preparation, r.Task, src, check)
+			stop()
 			if err != nil {
 				return doc, nil, err
 			}
 		}
-		if pc.Mode == "" {
-			if doc.State == "ready" && doc.TextComplete {
-				pc.Mode = "fulltext"
-				pc.SourceVersion = doc.SourceVersion
-				pc.ContentHash = doc.ContentHash
-				pc.Sections = doc.Sections
-			} else {
-				pc.Mode = "abstract"
-				pc.FallbackReason = doc.FailureCode
-				if pc.FallbackReason == "" {
-					pc.FallbackReason = "incomplete_text"
-				}
-			}
+		if err = checkRun(); err != nil {
+			return doc, nil, err
 		}
-		if pc.Mode == "abstract" {
-			cp.DocumentID = ""
+		if timedOut {
+			freezePaperAbstract(cp, "document_timeout")
+		} else if doc.ID != id {
+			return doc, nil, ErrConflict
+		} else if doc.State == "ready" && doc.TextComplete {
+			pc.Mode = "fulltext"
+			pc.SourceVersion = doc.SourceVersion
+			pc.ContentHash = doc.ContentHash
+			pc.Sections = doc.Sections
+		} else {
+			reason := doc.FailureCode
+			if reason == "" {
+				reason = "incomplete_text"
+			}
+			freezePaperAbstract(cp, reason)
 		}
 	}
-	if err = check(ctx); err != nil {
+	if err = checkRun(); err != nil {
 		return doc, nil, err
 	}
 	if err = s.Store.Save(ctx, r, *cp, "planning_paper", nil); err != nil {
@@ -244,6 +244,56 @@ func (s *Service) preparePaper(ctx context.Context, r Run, c Conversation, cp *C
 		evidence = append(evidence, Citation{ID: fmt.Sprintf("p%d-c%d", chunk.Page, chunk.Number), DocumentID: doc.ID, ContentHash: doc.ContentHash, Page: chunk.Page, Quote: chunk.Text, URL: fmt.Sprintf("https://arxiv.org/pdf/%s#page=%d", doc.SourceVersion, chunk.Page)})
 	}
 	return doc, paperEvidence(evidence), nil
+}
+
+func freezePaperAbstract(cp *Checkpoint, reason string) {
+	cp.Paper.Mode = "abstract"
+	cp.Paper.FallbackReason = reason
+	cp.Paper.SourceVersion = ""
+	cp.Paper.ContentHash = ""
+	cp.Paper.Sections = nil
+	cp.DocumentID = ""
+}
+
+// Document reads and polling share the preparation budget. Only that child
+// deadline may produce timedOut; storage and authorization errors propagate.
+func (s *Service) awaitPaperDocument(ctx, preparation context.Context, task string, src document.Source, check func(context.Context) error) (document.Document, bool, error) {
+	var doc document.Document
+	var err error
+	if task == TaskPaperReport {
+		doc, err = s.Documents.Prepare(preparation, src)
+	} else {
+		doc, err = s.Documents.Ensure(preparation, src)
+	}
+	for {
+		if parentErr := ctx.Err(); parentErr != nil {
+			return doc, false, parentErr
+		}
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) && errors.Is(preparation.Err(), context.DeadlineExceeded) {
+				return doc, true, nil
+			}
+			return doc, false, err
+		}
+		if preparation.Err() != nil {
+			return doc, true, nil
+		}
+		if doc.State == "ready" || doc.State == "failed" {
+			return doc, false, nil
+		}
+		if err = check(preparation); err != nil {
+			// Re-enter the common classification before deciding on a fallback.
+			continue
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-preparation.Done():
+			timer.Stop()
+			return doc, true, nil
+		case <-timer.C:
+		}
+		doc, err = s.Documents.Get(preparation, document.Identity(src))
+	}
 }
 
 func paperInput(pc *PaperCheckpoint, field string, evidence []Citation) map[string]any {

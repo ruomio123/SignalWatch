@@ -291,9 +291,9 @@ func (s failingDocuments) Prepare(ctx context.Context, src document.Source) (doc
 	d.FailureCode = "ocr_required"
 	return d, err
 }
-func TestScanFallbackIsPersistedAndFollowupStaysAbstract(t *testing.T) {
+func TestScanFallbackStaysAbstractUntilANewQuestionCanUseFulltext(t *testing.T) {
 	f := newFixture(t)
-	c, _ := workflowPaper(t, f, nil)
+	c, doc := workflowPaper(t, f, nil)
 	f.s.Documents = failingDocuments{f.s.Documents}
 	g := &workflowGateway{}
 	f.s.Gateway = g
@@ -303,12 +303,29 @@ func TestScanFallbackIsPersistedAndFollowupStaysAbstract(t *testing.T) {
 	if end.State != "completed" || end.EffectiveContextMode != "abstract" || end.FallbackReason != "ocr_required" || len(messages) != 2 {
 		t.Fatal(end)
 	}
+	// Ordinary questions read the failed document and fall back immediately;
+	// they neither retry extraction nor inherit the earlier report's mode.
+	must(t, f.db.Model(&document.Document{}).Where("id=?", doc.ID).Updates(map[string]any{"state": "failed", "failure_code": "ocr_required"}).Error)
 	next, err := f.s.Submit(context.Background(), f.u.ID, c.ID, SubmitInput{Question: "方法？", Provider: "glm", Model: "glm-4.7-flash", IdempotencyKey: rand.Text()})
 	must(t, err)
 	f.s.process(context.Background(), f.claim(t, next.ID))
 	follow, _ := paperOutcome(t, f, c, next)
-	if follow.State != "completed" || follow.EffectiveContextMode != "abstract" || len(g.calls) != 9 {
+	if follow.State != "completed" || follow.EffectiveContextMode != "abstract" || follow.FallbackReason != "ocr_required" || len(g.calls) != 9 {
 		t.Fatal(follow)
+	}
+	must(t, f.db.Model(&document.Document{}).Where("id=?", doc.ID).Updates(map[string]any{"state": "ready", "text_complete": true, "failure_code": "", "content_hash": "upgraded-fulltext", "source_version": "1706.03762v1", "page_count": 1}).Error)
+	must(t, f.db.CreateInBatches(document.Split(doc.ID, []string{"The paper studies a retrieval method with held out evaluation datasets."}), 50).Error)
+	upgraded, err := f.s.Submit(t.Context(), f.u.ID, c.ID, SubmitInput{Question: "方法？", Provider: "glm", Model: "glm-4.7-flash", IdempotencyKey: rand.Text()})
+	must(t, err)
+	f.s.process(t.Context(), f.claim(t, upgraded.ID))
+	fulltext, _ := paperOutcome(t, f, c, upgraded)
+	if fulltext.State != "completed" || fulltext.EffectiveContextMode != "fulltext" || fulltext.FallbackReason != "" || len(g.calls) != 12 {
+		t.Fatal(fulltext)
+	}
+	previous, err := f.s.RunByID(t.Context(), f.u.ID, next.ID)
+	must(t, err)
+	if previous.EffectiveContextMode != "abstract" || previous.FallbackReason != "ocr_required" {
+		t.Fatal("new fulltext question rewrote the prior abstract answer")
 	}
 }
 func TestReportInputIdentityAndTaskValidation(t *testing.T) {
@@ -426,26 +443,34 @@ func TestPaperReportHTTPAndResultContract(t *testing.T) {
 	}
 }
 
-func TestFollowupRequiresCurrentCompletedReport(t *testing.T) {
+func TestPaperReportAvailabilityDoesNotGateFollowup(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	c, _ := workflowPaper(t, f, []string{"This paper evaluates a retrieval method using a held out evaluation dataset."})
 	gateway := &workflowGateway{}
 	f.s.Gateway = gateway
 	question := SubmitInput{Question: "论文解决什么问题？", Provider: "glm", Model: "glm-4.7-flash", IdempotencyKey: rand.Text()}
+	acceptQuestion := func(conversation Conversation) {
+		t.Helper()
+		question.IdempotencyKey = rand.Text()
+		run, err := f.s.Submit(ctx, f.u.ID, conversation.ID, question)
+		must(t, err)
+		if run.Task != TaskPaperFollowup || run.State != "pending" {
+			t.Fatalf("direct question was not queued: %+v", run)
+		}
+		must(t, f.store.Cancel(ctx, f.u.ID, run.ID))
+	}
 	for _, task := range []string{"", TaskPaperFollowup} {
 		question.Task = task
-		if _, err := f.s.Submit(ctx, f.u.ID, c.ID, question); !errors.Is(err, ErrReportRequired) {
-			t.Fatalf("ungated task %q: %v", task, err)
-		}
+		acceptQuestion(c)
 	}
 	if len(gateway.calls) != 0 {
-		t.Fatal("rejected question invoked model")
+		t.Fatal("cancelled question invoked model")
 	}
 	current, err := f.s.Conversation(ctx, f.u.ID, c.ID)
 	must(t, err)
 	if current.PaperReportReady {
-		t.Fatal("new conversation unlocked")
+		t.Fatal("new conversation has a report")
 	}
 	failed := submitReport(t, f, c, "fulltext")
 	gateway.malformed = true
@@ -453,18 +478,15 @@ func TestFollowupRequiresCurrentCompletedReport(t *testing.T) {
 	current, err = f.s.Conversation(ctx, f.u.ID, c.ID)
 	must(t, err)
 	if current.PaperReportReady {
-		t.Fatal("failed report unlocked chat")
+		t.Fatal("failed report advertised as ready")
 	}
-	question.IdempotencyKey = rand.Text()
-	if _, err = f.s.Submit(ctx, f.u.ID, c.ID, question); !errors.Is(err, ErrReportRequired) {
-		t.Fatal(err)
-	}
+	acceptQuestion(c)
 	cancelled := submitReport(t, f, c, "fulltext")
 	must(t, f.store.Cancel(ctx, f.u.ID, cancelled.ID))
 	current, err = f.s.Conversation(ctx, f.u.ID, c.ID)
 	must(t, err)
 	if current.PaperReportReady {
-		t.Fatal("cancelled report unlocked chat")
+		t.Fatal("cancelled report advertised as ready")
 	}
 	gateway.malformed = false
 	report := submitReport(t, f, c, "fulltext")
@@ -472,7 +494,7 @@ func TestFollowupRequiresCurrentCompletedReport(t *testing.T) {
 	current, err = f.s.Conversation(ctx, f.u.ID, c.ID)
 	must(t, err)
 	if !current.PaperReportReady {
-		t.Fatal("completed report did not unlock chat")
+		t.Fatal("completed report not advertised as ready")
 	}
 	// Successful reports remain discoverable beyond prompt history and UI pages.
 	for i := 0; i < 55; i++ {
@@ -487,29 +509,27 @@ func TestFollowupRequiresCurrentCompletedReport(t *testing.T) {
 	current, err = f.s.Conversation(ctx, f.u.ID, c.ID)
 	must(t, err)
 	if !current.PaperReportReady {
-		t.Fatal("pagination hid prerequisite report")
+		t.Fatal("pagination hid the completed report")
 	}
-	next, err := f.s.Submit(ctx, f.u.ID, c.ID, question)
-	must(t, err)
-	must(t, f.store.Cancel(ctx, f.u.ID, next.ID))
+	acceptQuestion(c)
 	another, err := f.s.CreateConversation(ctx, f.u.ID, "paper", c.PaperID)
 	must(t, err)
-	if _, err = f.s.Submit(ctx, f.u.ID, another.ID, question); !errors.Is(err, ErrReportRequired) {
-		t.Fatal("report leaked across conversations", err)
+	other, err := f.s.Conversation(ctx, f.u.ID, another.ID)
+	must(t, err)
+	if other.PaperReportReady {
+		t.Fatal("report leaked across conversations")
 	}
+	acceptQuestion(another)
 	must(t, f.db.Model(&paper.Paper{}).Where("id=?", *c.PaperID).Update("title", "Updated paper").Error)
 	current, err = f.s.Conversation(ctx, f.u.ID, c.ID)
 	must(t, err)
 	if current.PaperReportReady {
-		t.Fatal("stale report unlocked chat")
+		t.Fatal("stale report advertised as current")
 	}
-	question.IdempotencyKey = rand.Text()
-	if _, err = f.s.Submit(ctx, f.u.ID, c.ID, question); !errors.Is(err, ErrReportRequired) {
-		t.Fatal("stale report accepted", err)
-	}
+	acceptQuestion(c)
 }
 
-func TestFollowupHTTPRejectsBeforeAnyReport(t *testing.T) {
+func TestFollowupHTTPAcceptsBeforeAnyReport(t *testing.T) {
 	f := newFixture(t)
 	c, _ := workflowPaper(t, f, nil)
 	router := gin.New()
@@ -519,13 +539,15 @@ func TestFollowupHTTPRejectsBeforeAnyReport(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
-	if recorder.Code != 409 || !strings.Contains(recorder.Body.String(), "PAPER_REPORT_REQUIRED") {
-		t.Fatalf("%d %s", recorder.Code, recorder.Body.String())
+	var response struct {
+		RunID string `json:"run_id"`
+		Run   Run    `json:"run"`
 	}
+	decodeAgentHTTPJSON(t, recorder, 202, &response)
 	messages, _, err := f.store.Messages(context.Background(), f.u.ID, c.ID, 0)
 	must(t, err)
-	if len(messages) != 0 {
-		t.Fatal("blocked question created a message")
+	if response.RunID == "" || response.Run.ID != response.RunID || response.Run.Task != TaskPaperFollowup || response.Run.State != "pending" || len(messages) != 1 || messages[0].RunID != response.RunID || messages[0].Role != "user" {
+		t.Fatalf("direct question was not persisted: %+v, messages=%+v", response, messages)
 	}
 }
 
@@ -552,7 +574,7 @@ func TestPaperProtocolUpgradeDoesNotReplayOldCheckpoints(t *testing.T) {
 	g := &workflowGateway{}
 	f.s.Gateway = g
 	r := submitReport(t, f, c, "fulltext")
-	must(t, f.db.Model(&Run{}).Where("id=?", r.ID).Update("workflow_version", "paper-fixed-v4").Error)
+	must(t, f.db.Model(&Run{}).Where("id=?", r.ID).Update("workflow_version", "paper-fixed-v5").Error)
 	f.s.process(t.Context(), f.claim(t, r.ID))
 	end, messages := paperOutcome(t, f, c, r)
 	if end.FailureCode != "workflow_changed" || len(messages) != 1 || len(g.calls) != 0 {
@@ -655,7 +677,7 @@ func TestEnglishReportClaimFailsBeforePublicationWithoutRetry(t *testing.T) {
 }
 
 func TestCompletedReportCompatibilityIncludesPreviousLanguagePolicy(t *testing.T) {
-	for _, version := range []string{"paper-fixed-v1", "paper-fixed-v2", "paper-fixed-v3", "paper-fixed-v4", PaperWorkflowVersion} {
+	for _, version := range []string{"paper-fixed-v1", "paper-fixed-v2", "paper-fixed-v3", "paper-fixed-v4", "paper-fixed-v5", PaperWorkflowVersion} {
 		raw, _ := json.Marshal(PaperResult{Report: &PaperReport{Problem: "An existing English report."}, PaperHash: "hash", ContextMode: "fulltext", WorkflowVersion: version})
 		if _, ok := validPaperReport(Message{Result: raw}, "hash"); !ok {
 			t.Fatal("historical report hidden:", version)

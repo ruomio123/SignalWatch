@@ -162,7 +162,7 @@ type Store interface {
 	Messages(context.Context, uint64, string, uint64) ([]Message, bool, error)
 	History(context.Context, string) ([]Message, error)
 	LatestPaperReport(context.Context, string) (Message, error)
-	Submit(context.Context, Run) (Run, error)
+	Submit(context.Context, Run, SubmitInput) (Run, error)
 	RunByID(context.Context, uint64, string) (Run, error)
 	Cancel(context.Context, uint64, string) error
 	Claim(context.Context, string) (Run, error)
@@ -191,9 +191,12 @@ type Dependencies struct {
 	Subscriptions Subscriptions
 	Documents     document.Store
 }
-type Service struct{ Dependencies }
+type Service struct {
+	Dependencies
+	paperPreparationTimeout time.Duration
+}
 
-func New(d Dependencies) *Service { return &Service{d} }
+func New(d Dependencies) *Service { return &Service{Dependencies: d} }
 
 type Action struct {
 	Type                 string          `json:"type"`

@@ -11,6 +11,31 @@ import {
   paper,
 } from "./agent-fixtures";
 
+function questionReply(
+  round: number,
+  mode: "abstract" | "fulltext",
+  content: string,
+  fallbackReason?: string,
+) {
+  return {
+    id: round * 2,
+    run_id: `question-run-${round}`,
+    role: "assistant",
+    content,
+    provider: credential.provider,
+    model: credential.model,
+    citations: [],
+    result: {
+      fields: { answer: { status: "supported", citation_ids: [] } },
+      context_mode: mode,
+      ...(fallbackReason ? { fallback_reason: fallbackReason } : {}),
+      coverage: mode === "fulltext" ? "retrieved_passages" : "abstract_only",
+      workflow_version: "paper-fixed-v6",
+      source_version: "1706.03762v1",
+    },
+  };
+}
+
 const report = {
   problem: "解决检索准确性问题 [problem-1-1]",
   method: "使用检索方法",
@@ -146,10 +171,9 @@ for (const mode of ["fulltext", "abstract"] as const) {
       ).toHaveText("全文尚未准备");
     }
     expect(writes).toHaveLength(0);
-    // Updated alongside direct Q&A when that workflow is introduced.
     await expect(
       page.getByRole("textbox", { name: "你的问题" }),
-    ).toBeDisabled();
+    ).toBeEnabled();
     await generate.click();
     await expect(page.getByRole("button", { name: "复制 JSON" })).toBeVisible();
     if (mode === "fulltext") {
@@ -342,7 +366,7 @@ test("the report remains available when it is outside the newest 50 messages", a
   await expect(page.getByRole("alert")).not.toBeVisible();
 });
 
-test("a stale report is readable while follow-up waits for a current report", async ({
+test("a stale report is readable without blocking a new question", async ({
   page,
   api,
 }) => {
@@ -353,11 +377,13 @@ test("a stale report is readable while follow-up waits for a current report", as
   await page.goto(assistantURL);
   await expect(page.getByLabel("论文报告", { exact: true })).toBeVisible();
   await expect(
-    page.getByText("这份报告对应旧版论文材料，请重新生成后再追问。", {
+    page.getByText("这份报告对应旧版论文材料，可按需重新生成。新问题会使用当前材料。", {
       exact: true,
     }),
   ).toBeVisible();
-  await expect(page.getByRole("textbox", { name: "你的问题" })).toBeDisabled();
+  await expect(page.getByRole("textbox", { name: "你的问题" })).toBeEnabled();
+  await page.getByRole("textbox", { name: "你的问题" }).fill("当前版本的方法有什么变化？");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeEnabled();
   await expect(
     page.getByRole("button", { name: "重新生成论文报告" }),
   ).toBeEnabled();
@@ -869,5 +895,172 @@ test("a late document status for paper A cannot replace paper B's material state
   await expect(material.getByText("全文已就绪", { exact: true })).toHaveCount(0);
   expect(api.requestsFor("GET", "/agent/papers/2/document").length).toBeGreaterThan(0);
   expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+  await expect(page.getByRole("alert")).not.toBeVisible();
+});
+
+for (const fallbackReason of ["document_timeout", "document_download_failed"] as const) {
+  test(`a first question needs no report, keeps its ${fallbackReason} answer, and uses ready text on the next question`, async ({ page, api }) => {
+    const questions = ["这篇论文解决了什么问题？", "请进一步说明实验条件。"];
+    const answers = ["摘要回答：当前材料说明方法用于检索。", "全文回答：实验包含独立验证集。"];
+    const submissions: Record<string, unknown>[] = [];
+    let materialState = "not_prepared";
+    const materialSnapshot = () => ({
+      ...documentStatus,
+      state: materialState,
+      usable: materialState === "ready",
+      document_id: materialState === "not_prepared" ? "" : "question-document",
+      page_count: materialState === "ready" ? 12 : 0,
+      ...(materialState === "failed" ? { failure_code: fallbackReason } : {}),
+    });
+    api.on("GET", documentPath, (route) => route.fulfill({ json: materialSnapshot() }));
+    api.on("POST", `${documentPath}/prepare`, (route) => {
+      materialState = "ready";
+      return route.fulfill({ status: 200, json: materialSnapshot() });
+    });
+    api.json("POST", "/agent/conversations", conversation, 201);
+    api.on("GET", `${conversationPath}/messages`, (route) => route.fulfill({
+      json: {
+        items: submissions.flatMap((_, index) => [
+          {
+            id: index * 2 + 1,
+            run_id: `question-run-${index + 1}`,
+            role: "user",
+            content: questions[index],
+            citations: [],
+          },
+          questionReply(index + 1, index === 0 ? "abstract" : "fulltext", answers[index], index === 0 ? fallbackReason : undefined),
+        ]),
+        next_before: 0,
+      },
+    }));
+    api.on("POST", `${conversationPath}/messages`, (route) => {
+      submissions.push(route.request().postDataJSON());
+      expect(submissions.length).toBeLessThanOrEqual(2);
+      if (submissions.length === 1)
+        materialState = fallbackReason === "document_timeout" ? "pending" : "failed";
+      return route.fulfill({
+        status: 202,
+        json: {
+          run_id: `question-run-${submissions.length}`,
+          run: { id: `question-run-${submissions.length}`, task: "paper_followup", state: "pending", progress: "queued" },
+        },
+      });
+    });
+    for (const round of [1, 2]) {
+      api.json("GET", `/agent/runs/question-run-${round}`, {
+        run: {
+          id: `question-run-${round}`,
+          task: "paper_followup",
+          state: "completed",
+          progress: "completed",
+          effective_context_mode: round === 1 ? "abstract" : "fulltext",
+          ...(round === 1 ? { fallback_reason: fallbackReason } : {}),
+        },
+        steps: [],
+      });
+    }
+
+    await page.goto("/papers?paper_id=1&assistant=paper");
+    const input = page.getByRole("textbox", { name: "你的问题" });
+    const send = page.getByRole("button", { name: "发送", exact: true });
+    const material = page.getByRole("region", { name: "论文全文材料", exact: true });
+    await expect(material.getByRole("status")).toHaveText("全文尚未准备");
+    await expect(input).toBeEnabled();
+    await input.fill(questions[0]);
+    await send.click();
+    await expect(page).toHaveURL(/conversation=conversation-one/);
+    const firstReply = page.locator('[data-message-id="2"]');
+    await expect(firstReply.getByText(answers[0], { exact: true })).toBeVisible();
+    await expect(firstReply.getByText(/仅基于摘要/)).toBeVisible();
+    await expect(firstReply.getByText(fallbackReason === "document_timeout" ? /全文准备超时/ : /PDF 下载失败/)).toBeVisible();
+    await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0]).toMatchObject({
+      task: "paper_followup",
+      question: questions[0],
+      context_mode: "fulltext",
+      credential_id: credential.id,
+      idempotency_key: expect.any(String),
+    });
+    expect(api.requestsFor("POST", "/agent/conversations")).toHaveLength(1);
+    if (fallbackReason === "document_timeout") {
+      await expect(material.getByRole("status")).toHaveText("全文等待解析");
+      materialState = "ready";
+    } else {
+      await expect(material.getByRole("status")).toHaveText("全文准备失败");
+      await material.getByRole("button", { name: "重试解析", exact: true }).click();
+    }
+    await expect(material.getByRole("status")).toHaveText("全文已就绪");
+    expect(submissions).toHaveLength(1);
+    await expect(firstReply.getByText(answers[0], { exact: true })).toBeVisible();
+    await expect(firstReply.getByText(/仅基于摘要/)).toBeVisible();
+
+    await input.fill(questions[1]);
+    await send.click();
+    const secondReply = page.locator('[data-message-id="4"]');
+    await expect(secondReply.getByText(answers[1], { exact: true })).toBeVisible();
+    await expect(secondReply.getByText(/基于论文提取文字/)).toBeVisible();
+    await expect(firstReply.getByText(/仅基于摘要/)).toBeAttached();
+    expect(submissions).toHaveLength(2);
+    expect(submissions[1]).toMatchObject({ task: "paper_followup", question: questions[1], context_mode: "fulltext" });
+    expect(submissions[1].idempotency_key).not.toBe(submissions[0].idempotency_key);
+    expect(api.requestsFor("POST", "/agent/conversations")).toHaveLength(1);
+    expect(api.requestsFor("POST", `${documentPath}/prepare`)).toHaveLength(fallbackReason === "document_timeout" ? 0 : 1);
+    await expect(page.getByRole("alert")).not.toBeVisible();
+  });
+}
+
+test("retrying a first question after a lost response reuses its conversation and idempotency key", async ({ page, api }) => {
+  const question = "请解释核心方法。";
+  const submissions: Record<string, unknown>[] = [];
+  const accepted = new Set<string>();
+  api.json("POST", "/agent/conversations", conversation, 201);
+  api.on("POST", `${conversationPath}/messages`, async (route) => {
+    const body = route.request().postDataJSON();
+    submissions.push(body);
+    accepted.add(body.idempotency_key);
+    if (submissions.length === 1) {
+      // The server accepted the task, but its acknowledgement was lost.
+      await route.abort("failed");
+      return;
+    }
+    await route.fulfill({
+      status: 202,
+      json: { run_id: "question-run-1", run: { id: "question-run-1", task: "paper_followup", state: "pending", progress: "queued" } },
+    });
+  });
+  api.json("GET", `${conversationPath}/messages`, {
+    items: [
+      { id: 1, run_id: "question-run-1", role: "user", content: question, citations: [] },
+      questionReply(1, "abstract", "同一个任务返回的摘要回答。", "document_timeout"),
+    ],
+    next_before: 0,
+  });
+  api.json("GET", "/agent/runs/question-run-1", {
+    run: { id: "question-run-1", task: "paper_followup", state: "completed", progress: "completed", effective_context_mode: "abstract", fallback_reason: "document_timeout" },
+    steps: [],
+  });
+
+  await page.goto("/papers?paper_id=1&assistant=paper");
+  const input = page.getByRole("textbox", { name: "你的问题" });
+  const send = page.getByRole("button", { name: "发送", exact: true });
+  await input.fill(question);
+  await send.click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(input).toHaveValue(question);
+  expect(submissions).toHaveLength(1);
+  await expect(send).toBeEnabled();
+  await send.click();
+  await expect(page).toHaveURL(/conversation=conversation-one/);
+  await expect(page.getByText("同一个任务返回的摘要回答。", { exact: true })).toBeVisible();
+  expect(api.requestsFor("POST", "/agent/conversations")).toHaveLength(1);
+  expect(submissions).toHaveLength(2);
+  expect(submissions[0]).toMatchObject({ task: "paper_followup", question, idempotency_key: expect.any(String) });
+  expect(submissions[0].idempotency_key).not.toBe("");
+  expect(submissions[1]).toEqual(submissions[0]);
+  expect(accepted.size).toBe(1);
+  await expect(page.locator('[data-message-id="1"]')).toHaveCount(1);
+  await expect(page.locator('[data-message-id="2"]')).toHaveCount(1);
+  await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
   await expect(page.getByRole("alert")).not.toBeVisible();
 });

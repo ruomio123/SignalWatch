@@ -97,6 +97,7 @@ __pycache__/
 !/internal/agent/runtime_test.go
 !/internal/agent/round1_test.go
 !/internal/agent/paper_document_test.go
+!/internal/agent/paper_direct_test.go
 !/internal/platform/testguard/
 !/internal/platform/testguard/guard.go
 !/web/playwright-agent.config.ts

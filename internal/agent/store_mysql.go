@@ -106,7 +106,7 @@ func latestPaperReport(db *gorm.DB, conversation string) (Message, error) {
 func (s *MySQLStore) LatestPaperReport(ctx context.Context, conversation string) (Message, error) {
 	return latestPaperReport(s.db.WithContext(ctx), conversation)
 }
-func (s *MySQLStore) Submit(ctx context.Context, r Run) (out Run, err error) {
+func (s *MySQLStore) Submit(ctx context.Context, r Run, input SubmitInput) (out Run, err error) {
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lockAccount(tx, r.UserID); err != nil {
 			return err
@@ -118,7 +118,7 @@ func (s *MySQLStore) Submit(ctx context.Context, r Run) (out Run, err error) {
 		}
 		err := tx.Where("conversation_id=? AND idempotency_key=?", c.ID, r.IdempotencyKey).Take(&out).Error
 		if err == nil {
-			if out.InputHash != r.InputHash {
+			if out.InputHash != submissionHash(input, out.WorkflowVersion) {
 				return ErrConflict
 			}
 			return nil
@@ -133,19 +133,11 @@ func (s *MySQLStore) Submit(ctx context.Context, r Run) (out Run, err error) {
 			if c.PaperID == nil {
 				return ErrInput
 			}
+			// Preserve the paper existence lock while queuing the question. Its
+			// content snapshot is pinned at execution and rechecked at publication.
 			var current paper.Paper
 			if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).Where("id=?", *c.PaperID).Take(&current).Error; err != nil {
 				return err
-			}
-			message, err := latestPaperReport(tx, c.ID)
-			if errors.Is(err, ErrNotFound) {
-				return ErrReportRequired
-			}
-			if err != nil {
-				return err
-			}
-			if _, ok := validPaperReport(message, paperSnapshotHash(publicPaperSnapshot(current))); !ok {
-				return ErrReportRequired
 			}
 		}
 		if err := tx.Create(&r).Error; err != nil {

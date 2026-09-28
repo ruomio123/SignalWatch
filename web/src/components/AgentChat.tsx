@@ -122,11 +122,10 @@ const validationRules: Record<string, string> = {
   invalid_json: "必须是有效 JSON",
 };
 const failures: Record<string, string> = {
-  PAPER_REPORT_REQUIRED: "请先成功生成当前论文的报告，再继续追问。",
   document_unavailable: "全文不可用。",
   context_too_large: "论文或汇总证据超出本次输入上限，未输出部分报告。",
   invalid_output: "本次输出或证据校验未通过，未发布报告。请手动重试。",
-  workflow_changed: "论文助手已升级，旧任务已停止。请重新生成报告。",
+  workflow_changed: "论文助手已升级，旧任务已停止。请重新提问，或手动生成论文报告。",
   result_unknown: "模型调用结果未知，未自动重试。你可以手动重新发送。",
   timeout: "模型响应超时，未自动重试。",
   invalid_citation: "本次回答的证据校验未通过，请手动重试。",
@@ -410,15 +409,10 @@ function AgentChatView({
       controller.abort();
     };
   }, [activeRunID, reload, list, token]);
-  const canFollowup =
-    kind !== "paper" ||
-    (current?.id === conversationID &&
-      current?.paper_report_ready === true &&
-      reportSnapshot?.matches_current_paper === true);
   async function send(e?: FormEvent, task?: "paper_report" | "paper_followup") {
     e?.preventDefault();
     if (
-      (task !== "paper_report" && (!question.trim() || !canFollowup)) ||
+      (task !== "paper_report" && !question.trim()) ||
       submitting.current ||
       busy ||
       active ||
@@ -746,7 +740,7 @@ function AgentChatView({
           <h3>论文报告</h3>
           {!reportSnapshot?.matches_current_paper && (
             <p role="status" className="paper-report-stale">
-              这份报告对应旧版论文材料，请重新生成后再追问。
+              这份报告对应旧版论文材料，可按需重新生成。新问题会使用当前材料。
             </p>
           )}
           <PaperReportView
@@ -763,9 +757,9 @@ function AgentChatView({
       )}
       {kind === "paper" && !latestReport && (
         <div className="paper-report-start">
-          <p>固定解读论文问题、方法、实验、结果与局限；完成后可以继续追问。</p>
+          <p>也可生成论文报告，集中解读问题、方法、实验、结果与局限。</p>
           <button
-            className="button button-primary"
+            className="button"
             disabled={
               busy ||
               active ||
@@ -796,7 +790,7 @@ function AgentChatView({
       {!messages.length && !latestReport && (
         <p className="settings-description">
           {kind === "paper"
-            ? "请先点击「生成论文报告」，成功完成后即可继续追问。"
+            ? "直接输入问题即可开始，也可以先生成一份论文报告。"
             : "描述你想关注的研究方向，例如：关注 cs.AI 中视觉语言模型的论文。"}
         </p>
       )}
@@ -896,7 +890,7 @@ function AgentChatView({
               {run.failedStep.call_id && (
                 <p>诊断编号：{run.failedStep.call_id}</p>
               )}
-              <p>本轮未发布报告，未自动重复调用模型。</p>
+              <p>本轮未发布结果，未自动重复调用模型。</p>
             </details>
           )}
           {!!run.batch_total && active && (
@@ -953,7 +947,6 @@ function AgentChatView({
     </>
   );
   const sendDisabled =
-    !canFollowup ||
     !usable.length ||
     !provider ||
     !model ||
@@ -993,8 +986,8 @@ function AgentChatView({
                 <option value="abstract">仅标题和摘要</option>
               </select>
               <small>
-                全文失败时自动降级为摘要版。OCR
-                尚未启用；摘要版后续追问仅依据摘要，重新生成全文报告可再次尝试解析。
+                选择全文模式时，直接提问最多等待全文 20
+                秒；超时或不可用时使用摘要。全文就绪后，下一次全文模式提问可使用全文；已完成的回答不会自动重答。
               </small>
             </label>
           )}
@@ -1021,7 +1014,7 @@ function AgentChatView({
             助手只生成草案，确认后才会创建订阅。
           </>
         ) : (
-          `请求资料：${mode === "fulltext" ? "全文优先，不可用时使用摘要" : "仅标题和摘要"}`
+          `请求资料：${mode === "fulltext" ? "全文优先，最多等待 20 秒后使用摘要" : "仅标题和摘要"}`
         )
       }
       composer={
@@ -1031,12 +1024,9 @@ function AgentChatView({
           onChange={setQuestion}
           onSend={send}
           disabled={sendDisabled}
-          inputDisabled={!canFollowup}
           placeholder={
             kind === "paper"
-              ? canFollowup
-                ? "围绕论文报告继续追问"
-                : "请先生成论文报告，完成后即可追问"
+              ? "直接提问，例如：这篇论文解决了什么问题？"
               : "描述研究方向、篇数或邮件偏好……"
           }
           modelLabel={[providerName, modelName].filter(Boolean).join(" · ")}

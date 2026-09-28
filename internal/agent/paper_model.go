@@ -11,7 +11,7 @@ import (
 const (
 	TaskPaperReport      = "paper_report"
 	TaskPaperFollowup    = "paper_followup"
-	PaperWorkflowVersion = "paper-fixed-v5"
+	PaperWorkflowVersion = "paper-fixed-v6"
 	PaperReportMessage   = "快速了解论文"
 	PaperGoal            = "帮助用户快速了解当前论文"
 	paperInputLimit      = 64 << 10
@@ -59,17 +59,18 @@ type PaperFailure struct {
 }
 
 type PaperCheckpoint struct {
-	Failure        *PaperFailure              `json:"failure,omitempty"`
-	Sections       json.RawMessage            `json:"sections,omitempty"`
-	Context        PaperContext               `json:"context"`
-	PaperHash      string                     `json:"paper_hash"`
-	Mode           string                     `json:"mode"`
-	FallbackReason string                     `json:"fallback_reason,omitempty"`
-	SourceVersion  string                     `json:"source_version,omitempty"`
-	ContentHash    string                     `json:"content_hash,omitempty"`
-	BatchTotal     int                        `json:"batch_total"`
-	BatchCompleted int                        `json:"batch_completed"`
-	Outputs        map[string]json.RawMessage `json:"outputs"`
+	PreparationDeadline *time.Time                 `json:"preparation_deadline,omitempty"`
+	Failure             *PaperFailure              `json:"failure,omitempty"`
+	Sections            json.RawMessage            `json:"sections,omitempty"`
+	Context             PaperContext               `json:"context"`
+	PaperHash           string                     `json:"paper_hash"`
+	Mode                string                     `json:"mode"`
+	FallbackReason      string                     `json:"fallback_reason,omitempty"`
+	SourceVersion       string                     `json:"source_version,omitempty"`
+	ContentHash         string                     `json:"content_hash,omitempty"`
+	BatchTotal          int                        `json:"batch_total"`
+	BatchCompleted      int                        `json:"batch_completed"`
+	Outputs             map[string]json.RawMessage `json:"outputs"`
 }
 
 type EvidenceRef struct {
@@ -111,5 +112,5 @@ type PaperResult struct {
 func validPaperReport(message Message, hash string) (PaperResult, bool) {
 	var result PaperResult
 	err := json.Unmarshal(message.Result, &result)
-	return result, err == nil && result.Report != nil && result.PaperHash == hash && (result.WorkflowVersion == PaperWorkflowVersion || result.WorkflowVersion == "paper-fixed-v1" || result.WorkflowVersion == "paper-fixed-v2" || result.WorkflowVersion == "paper-fixed-v3" || result.WorkflowVersion == "paper-fixed-v4") && (result.ContextMode == "abstract" || result.ContextMode == "fulltext")
+	return result, err == nil && result.Report != nil && result.PaperHash == hash && (result.WorkflowVersion == PaperWorkflowVersion || result.WorkflowVersion == "paper-fixed-v1" || result.WorkflowVersion == "paper-fixed-v2" || result.WorkflowVersion == "paper-fixed-v3" || result.WorkflowVersion == "paper-fixed-v4" || result.WorkflowVersion == "paper-fixed-v5") && (result.ContextMode == "abstract" || result.ContextMode == "fulltext")
 }

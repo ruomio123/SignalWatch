@@ -139,14 +139,20 @@ func (s *Service) Submit(ctx context.Context, uid uint64, id string, input Submi
 		return Run{}, err
 	}
 	now := time.Now().UTC()
+	cp, _ := json.Marshal(Checkpoint{Phase: "ready", Observations: []Observation{}, Evidence: []Citation{}})
+	r := Run{Task: input.Task, WorkflowVersion: workflow, ID: rand.Text(), ConversationID: c.ID, UserID: uid, Question: input.Question, Provider: input.Provider, Model: input.Model, Generation: choice.Generation, Version: choice.Version, IdempotencyKey: input.IdempotencyKey, InputHash: submissionHash(input, workflow), ContextMode: input.ContextMode, State: "pending", Progress: "queued", Checkpoint: cp, CreatedAt: now, UpdatedAt: now}
+	return s.Store.Submit(ctx, r, input)
+}
+
+// Keep the original serialized shape so a normalized request can be checked
+// against the workflow version that originally owned an idempotency key.
+func submissionHash(input SubmitInput, workflow string) string {
 	raw, _ := json.Marshal(struct {
 		SubmitInput
 		WorkflowVersion string `json:"workflow_version,omitempty"`
 	}{input, workflow})
 	h := sha256.Sum256(raw)
-	cp, _ := json.Marshal(Checkpoint{Phase: "ready", Observations: []Observation{}, Evidence: []Citation{}})
-	r := Run{Task: input.Task, WorkflowVersion: workflow, ID: rand.Text(), ConversationID: c.ID, UserID: uid, Question: input.Question, Provider: input.Provider, Model: input.Model, Generation: choice.Generation, Version: choice.Version, IdempotencyKey: input.IdempotencyKey, InputHash: hex.EncodeToString(h[:]), ContextMode: input.ContextMode, State: "pending", Progress: "queued", Checkpoint: cp, CreatedAt: now, UpdatedAt: now}
-	return s.Store.Submit(ctx, r)
+	return hex.EncodeToString(h[:])
 }
 func (s *Service) RunByID(ctx context.Context, uid uint64, id string) (Run, error) {
 	r, err := s.Store.RunByID(ctx, uid, id)
