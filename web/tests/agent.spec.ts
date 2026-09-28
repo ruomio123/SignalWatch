@@ -1462,7 +1462,7 @@ test("structured partial answers group questions and show only approved claims a
   expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
 });
 
-test("insufficient structured answers show a bounded gap and accurate v10 call budgets", async ({ page, api }) => {
+test("insufficient structured answers show a bounded gap and accurate call budgets", async ({ page, api }) => {
   const message = citationAnswer(24);
   api.json("GET", `${conversationPath}/messages`, {
     items: [{ ...message, result: { ...message.result, answer: { status: "insufficient", parts: [{ question_id: "q1", question: "缺失的问题", status: "insufficient_evidence", claims: [], gap: { reason: "insufficient_evidence" } }] } } }],
@@ -1477,7 +1477,7 @@ test("insufficient structured answers show a bounded gap and accurate v10 call b
   await expect(reply.locator("details")).toHaveCount(0);
   await expect(reply.getByText(message.content, { exact: true })).toHaveCount(0);
   await expect(page.getByText(/短论文通常调用 6 次；长论文最多 30 次、15 分钟/)).toBeVisible();
-  await expect(page.getByText(/问答通常调用 3 次，最多 5 次、180 秒/)).toBeVisible();
+  await expect(page.getByText(/问答通常调用 3 次，最多 6 次、180 秒/)).toBeVisible();
 });
 
 test("report and legacy answer markers share evidence controls without crossing message boundaries", async ({ page, api }) => {
@@ -1589,3 +1589,115 @@ test("replacing a login session remounts evidence targets even when message and 
   await expect(reply.getByText("New session source.", { exact: true })).toBeVisible();
   expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
 });
+
+test("one supplemental retrieval exposes safe progress through analysis, repair, review, and reload", async ({ page, api }) => {
+  const runID = "supplement-run";
+  let phase: "initial" | "pending" | "ready" | "calling" | "repairing" | "reviewing" | "completed" = "initial";
+  const reply = { ...citationAnswer(32, "Evidence found during the one supplemental retrieval."), run_id: runID };
+  reply.result.workflow_version = "paper-fixed-v11";
+  api.on("GET", conversationPath, (route) => route.fulfill({ json: { ...conversation, active_run_id: runID } }));
+  api.on("GET", `${conversationPath}/messages`, (route) => route.fulfill({ json: { items: phase === "completed" ? [reply] : [], next_before: 0 } }));
+  api.on("GET", `/agent/runs/${runID}`, (route) => {
+    const stages = {
+      initial: "retrieving_evidence",
+      pending: "retrieving_supplement",
+      ready: "waiting_for_model_slot",
+      calling: "analyzing_answer_supplement",
+      repairing: "repairing_answer_supplement",
+      reviewing: "validating_paper",
+      completed: "completed",
+    };
+    const state = phase === "initial" ? "initial_ready" : phase === "repairing" ? "calling" : phase === "reviewing" ? "completed" : phase;
+    return route.fulfill({ json: {
+      run: {
+        id: runID,
+        task: "paper_followup",
+        state: phase === "completed" ? "completed" : "running",
+        progress: stages[phase],
+        retrieval_summary: { state, selected: 4, added: phase === "initial" || phase === "pending" ? 0 : 3, query: "PRIVATE_QUERY_SENTINEL", candidate: "PRIVATE_DRAFT_SENTINEL", request: "PRIVATE_REQUEST_SENTINEL" },
+        ...(phase === "reviewing" ? { review_progress: { completed: 0, total: 1 } } : {}),
+      },
+      steps: [],
+    } });
+  });
+  await page.goto(assistantURL);
+  await expect(page.getByText("正在检索论文证据", { exact: true })).toBeVisible();
+  await expect(page.getByText("已选取 4 段论文证据。", { exact: true })).toBeVisible();
+  phase = "pending";
+  await expect(page.getByText("正在补充检索论文证据", { exact: true })).toBeVisible();
+  await expect(page.getByText("正在进行本轮唯一一次补充检索。", { exact: true })).toBeVisible();
+  phase = "ready";
+  await expect(page.getByText("已找到 3 段补充证据，等待生成补充回答。", { exact: true })).toBeVisible();
+  phase = "calling";
+  await expect(page.getByText("正在生成补充回答", { exact: true })).toBeVisible();
+  await expect(page.getByText("正在结合 3 段补充证据完善回答。", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("正在生成补充回答", { exact: true })).toBeVisible();
+  await expect(page.getByText("正在结合 3 段补充证据完善回答。", { exact: true })).toBeVisible();
+  phase = "repairing";
+  await expect(page.getByText("正在整理补充回答", { exact: true })).toBeVisible();
+  phase = "reviewing";
+  await expect(page.getByText("正在审核证据 1/1", { exact: true })).toBeVisible();
+  await expect(page.getByText("已完成一次补充检索与回答，新增 3 段证据。", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-message-id="32"]')).toHaveCount(0);
+  await expect(page.getByText(/PRIVATE_QUERY_SENTINEL|PRIVATE_DRAFT_SENTINEL|PRIVATE_REQUEST_SENTINEL/)).toHaveCount(0);
+  phase = "completed";
+  await expect(page.getByText("本轮已完成", { exact: true })).toBeVisible();
+  const published = page.locator('[data-message-id="32"]');
+  await expect(published.getByText("该方法由本轮论文原文支持。", { exact: false })).toBeVisible();
+  await published.getByRole("button", { name: "查看证据 shared-source", exact: true }).click();
+  await expect(published.getByText(reply.citations[0].quote, { exact: true })).toBeVisible();
+  await expect(page.getByText(/PRIVATE_QUERY_SENTINEL|PRIVATE_DRAFT_SENTINEL|PRIVATE_REQUEST_SENTINEL/)).toHaveCount(0);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+for (const skipped of [
+  { reason: "no_queries", text: "本轮没有新的检索方向，未进行补充检索。" },
+  { reason: "abstract_only", text: "当前仅有摘要材料，未进行补充检索。" },
+  { reason: "no_new_evidence", text: "补充检索未找到新的证据。" },
+  { reason: "input_budget", text: "补充材料超出本轮输入预算，未生成补充回答。" },
+  { reason: "time_budget", text: "本轮剩余时间不足，未生成补充回答。" },
+  { reason: "call_budget", text: "本轮调用预算不足，未生成补充回答。" },
+  { reason: "PRIVATE_REASON_SENTINEL", text: "本轮未生成补充回答。" },
+]) {
+  test(`supplemental retrieval skip ${skipped.reason} uses controlled prose and preserves partial answers`, async ({ page, api }) => {
+    const message = citationAnswer(34);
+    const runID = message.run_id;
+    const result = { ...message.result, answer: { status: "partial", parts: [{ ...message.result.answer.parts[0], status: "partial", gap: { reason: "insufficient_evidence" } }] } };
+    api.json("GET", `${conversationPath}/messages`, { items: [{ ...message, result }], next_before: 0 });
+    api.json("GET", `/agent/runs/${runID}`, {
+      run: { id: runID, task: "paper_followup", state: "completed", progress: "completed", retrieval_summary: { state: "skipped", selected: 4, added: 0, reason: skipped.reason, query: "PRIVATE_QUERY_SENTINEL" } },
+      steps: [],
+    });
+    await page.goto(assistantURL);
+    await expect(page.getByText(skipped.text, { exact: true })).toBeVisible();
+    await expect(page.getByText("部分回答", { exact: true })).toBeVisible();
+    await expect(page.getByText("当前材料不足以可靠回答这部分问题。", { exact: true })).toBeVisible();
+    await expect(page.getByText(/PRIVATE_REASON_SENTINEL|PRIVATE_QUERY_SENTINEL/)).toHaveCount(0);
+    await expect(page.getByText(/正在补充检索|正在生成补充回答/)).toHaveCount(0);
+    expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+  });
+}
+
+for (const failure of [
+  { stage: "retrieving_supplement", state: "pending", code: "access_or_configuration_changed", label: "补充检索论文证据" },
+  { stage: "analyzing_answer_supplement", state: "calling", code: "timeout", label: "生成补充回答" },
+  { stage: "repairing_answer_supplement", state: "calling", code: "result_unknown", label: "整理补充回答" },
+]) {
+  test(`failed ${failure.stage} shows the actual stage without stale supplemental activity or an initial draft`, async ({ page, api }) => {
+    const runID = "supplement-failed";
+    api.json("GET", conversationPath, { ...conversation, active_run_id: runID });
+    api.json("GET", `/agent/runs/${runID}`, {
+      run: { id: runID, task: "paper_followup", state: failure.code === "result_unknown" ? "unknown" : "failed", progress: failure.stage, failure_code: failure.code, failure_stage: failure.stage, retrieval_summary: { state: failure.state, selected: 4, added: 2 } },
+      steps: [{ tool: failure.stage, failure_code: failure.code, call_id: "supplement-final-call" }],
+    });
+    await page.goto(assistantURL);
+    await expect(page.getByText("本轮未完成补充回答。", { exact: true })).toBeVisible();
+    await expect(page.getByText(/正在进行本轮唯一一次补充检索|正在结合 \d+ 段补充证据/)).toHaveCount(0);
+    await page.getByText("失败详情", { exact: true }).click();
+    await expect(page.getByText(`失败步骤：${failure.label}`, { exact: true })).toBeVisible();
+    await expect(page.getByText(`原因代码：${failure.code}`, { exact: true })).toBeVisible();
+    await expect(page.getByRole("article", { name: "助手回复", exact: true })).toHaveCount(0);
+    expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+  });
+}

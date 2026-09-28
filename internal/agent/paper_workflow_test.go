@@ -105,7 +105,7 @@ func singleQuestionAnswer(field fieldOutput) paperAnswerOutput {
 	if status == "not_stated" {
 		status = "insufficient_evidence"
 	}
-	return paperAnswerOutput{Answers: []paperAnswerPartOutput{{QuestionID: "q1", Status: status, Claims: field.Claims}}}
+	return paperAnswerOutput{Answers: []paperAnswerPartOutput{{QuestionID: "q1", Status: status, Claims: field.Claims}}, SupplementalQueries: []PaperSupplementQuery{}}
 }
 func workflowPaper(t *testing.T, f *fixture, texts []string) (Conversation, document.Document) {
 	t.Helper()

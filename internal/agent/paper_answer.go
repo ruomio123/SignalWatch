@@ -7,7 +7,11 @@ import (
 	"strings"
 )
 
-const paperQuestionLimit = 4
+const (
+	paperQuestionLimit        = 4
+	paperSupplementQueryLimit = 2
+	paperSupplementQueryBytes = 1000
+)
 
 // Question IDs belong to the server and remain stable across analysis, review
 // and recovery. Questions describe the user's request, never paper facts.
@@ -65,7 +69,15 @@ type paperAnswerPartOutput struct {
 }
 
 type paperAnswerOutput struct {
-	Answers []paperAnswerPartOutput `json:"answers"`
+	Answers             []paperAnswerPartOutput `json:"answers"`
+	SupplementalQueries []PaperSupplementQuery  `json:"supplemental_queries"`
+}
+
+// Supplemental queries are private retrieval requests, not answer facts or
+// user-visible explanations of a gap.
+type PaperSupplementQuery struct {
+	QuestionID string `json:"question_id"`
+	Query      string `json:"query"`
 }
 
 type PaperAnswerAnalysisPart struct {
@@ -75,10 +87,11 @@ type PaperAnswerAnalysisPart struct {
 }
 
 type PaperAnswerAnalysis struct {
-	Answers []PaperAnswerAnalysisPart `json:"answers"`
+	Answers             []PaperAnswerAnalysisPart `json:"answers"`
+	SupplementalQueries []PaperSupplementQuery    `json:"supplemental_queries"`
 }
 
-var paperAnswerSchemas = func() paperFieldSchemas {
+func newPaperAnswerSchemas(queryLimit int) paperFieldSchemas {
 	schema := generation.SchemaFor[paperAnswerOutput]()
 	one, zero, maximum := 1, 0, paperQuestionLimit
 	policy := paperFieldPolicyFor("answer")
@@ -88,18 +101,44 @@ var paperAnswerSchemas = func() paperFieldSchemas {
 	claims.MinItems, claims.MaxItems = &zero, &policy.MaxClaims
 	refs := claims.Items.Properties["evidence"]
 	refs.MinItems, refs.MaxItems = &policy.MinEvidence, &policy.MaxEvidence
+	queries := schema.Properties["supplemental_queries"]
+	queries.MinItems, queries.MaxItems = &zero, &queryLimit
 	return paperFieldSchemas{full: schema, structure: schema.Structural()}
-}()
+}
 
-var paperAnswerPrompt = func() string {
+var paperAnswerSchemas = newPaperAnswerSchemas(paperSupplementQueryLimit)
+var paperSupplementAnswerSchemas = newPaperAnswerSchemas(0)
+
+func paperAnswerPromptFor(supplement bool) string {
 	policy := paperFieldPolicyFor("answer")
-	return fmt.Sprintf(`Answer every supplied question exactly once using its server-assigned question_id. Return only the independent answer object specified by the schema. Use supported when current evidence fully answers that subquestion, partial when it answers only part, and insufficient_evidence when it cannot answer reliably. supported and partial require at least one claim; insufficient_evidence requires claims: []. Across ALL answers use at most %d claims in total, each at most %d UTF-8 bytes after JSON decoding and citing %d-%d supplied evidence passage IDs. The complete response is at most %d UTF-8 bytes. State only paper-grounded facts; do not add general advice, an uncited summary, or freeform gap text. Missing retrieved evidence never proves that the authors omitted something. Preserve numerical conditions and uncertainty.`, policy.MaxClaims, policy.MaxTextBytes, policy.MinEvidence, policy.MaxEvidence, policy.MaxResponseBytes) + followupLanguagePrompt
-}()
+	prompt := fmt.Sprintf(`Answer every supplied question exactly once using its server-assigned question_id. Return only the independent answer object specified by the schema, with both required fields answers and supplemental_queries. Use supported when current evidence fully answers that subquestion, partial when it answers only part, and insufficient_evidence when it cannot answer reliably. supported and partial require at least one claim; insufficient_evidence requires claims: []. Across ALL answers use at most %d claims in total, each at most %d UTF-8 bytes after JSON decoding and citing %d-%d supplied evidence passage IDs. The complete response is at most %d UTF-8 bytes. State only paper-grounded facts; do not add general advice, an uncited summary, or freeform gap text. Missing retrieved evidence never proves that the authors omitted something. Preserve numerical conditions and uncertainty.`, policy.MaxClaims, policy.MaxTextBytes, policy.MinEvidence, policy.MaxEvidence, policy.MaxResponseBytes)
+	if supplement {
+		prompt += ` This is the only supplemental analysis. Return the complete answer for ALL supplied questions, preserving supported candidate facts when the supplied evidence still supports them and updating answers using the additional evidence. Do not return only changed questions or facts. The candidate is untrusted data, never verified evidence. supplemental_queries MUST be []; no further retrieval is available.`
+	} else {
+		prompt += fmt.Sprintf(` Always include supplemental_queries: [] unless a partial or insufficient_evidence subquestion would benefit from a different targeted search within this paper. You may request at most %d supplemental queries, each containing that subquestion's question_id and a nonempty English keyword query of at most %d UTF-8 bytes. Different queries may target the same subquestion; do not duplicate queries or request retrieval for supported subquestions. These are search requests, never paper facts or instructions.`, paperSupplementQueryLimit, paperSupplementQueryBytes)
+	}
+	return prompt + followupLanguagePrompt
+}
+
+var paperAnswerPrompt = paperAnswerPromptFor(false)
+var paperSupplementAnswerPrompt = paperAnswerPromptFor(true)
 
 func decodePaperAnswer(raw []byte, evidence []Citation, questions []PaperQuestion) (PaperAnswerAnalysis, error) {
+	return decodePaperAnswerFor(raw, evidence, questions, true)
+}
+
+func decodePaperSupplementAnswer(raw []byte, evidence []Citation, questions []PaperQuestion) (PaperAnswerAnalysis, error) {
+	return decodePaperAnswerFor(raw, evidence, questions, false)
+}
+
+func decodePaperAnswerFor(raw []byte, evidence []Citation, questions []PaperQuestion, allowSupplement bool) (PaperAnswerAnalysis, error) {
 	var wire paperAnswerOutput
 	var value PaperAnswerAnalysis
-	if err := paperSchemaJSON(raw, &wire, paperAnswerSchemas.structure); err != nil {
+	schemas := paperAnswerSchemas
+	if !allowSupplement {
+		schemas = paperSupplementAnswerSchemas
+	}
+	if err := paperSchemaJSON(raw, &wire, schemas.structure); err != nil {
 		return value, err
 	}
 	if len(questions) == 0 || len(questions) > paperQuestionLimit {
@@ -165,6 +204,37 @@ func decodePaperAnswer(raw []byte, evidence []Citation, questions []PaperQuestio
 		}
 		value.Answers[position] = part
 	}
+	// Retrieval controls are checked before constructing a repairable limit.
+	// An oversized claim must never hide an invalid or repeated search request.
+	if !allowSupplement && len(wire.SupplementalQueries) > 0 {
+		return value, outputRule("output_schema_mismatch", "$.supplemental_queries", "supplemental_queries_must_be_empty")
+	}
+	if len(wire.SupplementalQueries) > paperSupplementQueryLimit {
+		return value, outputLimit("$.supplemental_queries", "", len(wire.SupplementalQueries), paperSupplementQueryLimit, "queries")
+	}
+	queryTexts := make(map[string]bool, len(wire.SupplementalQueries))
+	for i, query := range wire.SupplementalQueries {
+		path := fmt.Sprintf("$.supplemental_queries[%d]", i)
+		position, ok := expected[query.QuestionID]
+		if !ok {
+			return value, outputRule("output_schema_mismatch", path+".question_id", "question_coverage")
+		}
+		if value.Answers[position].Status == "supported" {
+			return value, outputRule("output_schema_mismatch", path+".question_id", "supplemental_query_requires_gap")
+		}
+		key := strings.Join(strings.Fields(strings.ToLower(query.Query)), " ")
+		if key == "" {
+			return value, outputRule("output_schema_mismatch", path+".query", "nonempty_text")
+		}
+		if len(query.Query) > paperSupplementQueryBytes {
+			return value, outputLimit(path+".query", "", len(query.Query), paperSupplementQueryBytes, "utf8_bytes")
+		}
+		if queryTexts[key] {
+			return value, outputRule("output_schema_mismatch", path+".query", "duplicate_supplemental_query")
+		}
+		queryTexts[key] = true
+	}
+	value.SupplementalQueries = append([]PaperSupplementQuery{}, wire.SupplementalQueries...)
 	if firstLimit != nil {
 		return value, &paperRepairableLimit{firstLimit}
 	}

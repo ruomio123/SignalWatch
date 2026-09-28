@@ -186,7 +186,9 @@ func (s *MySQLStore) Cancel(ctx context.Context, u uint64, id string) error {
 }
 func (s *MySQLStore) Claim(ctx context.Context, owner string) (r Run, err error) {
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).Where("state='pending' OR (state='running' AND lease_until<UTC_TIMESTAMP(6))").Order("created_at").Take(&r).Error; err != nil {
+		// Sort and lock only the lease fields. A frozen paper checkpoint can be
+		// much larger than MySQL's sort buffer; load its payload by ID afterward.
+		if err := tx.Select("id", "epoch", "task").Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).Where("state='pending' OR (state='running' AND lease_until<UTC_TIMESTAMP(6))").Order("created_at").Take(&r).Error; err != nil {
 			return err
 		}
 		r.Epoch++

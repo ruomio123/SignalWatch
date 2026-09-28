@@ -17,10 +17,11 @@ type PaperAnswerInput struct {
 }
 
 type PaperQACheckpoint struct {
-	RetrieverVersion     string            `json:"retriever_version"`
-	NormalizationRequest string            `json:"normalization_request"`
-	Questions            []PaperQuestion   `json:"questions"`
-	Initial              *PaperAnswerInput `json:"initial,omitempty"`
+	RetrieverVersion     string                     `json:"retriever_version"`
+	NormalizationRequest string                     `json:"normalization_request"`
+	Questions            []PaperQuestion            `json:"questions"`
+	Initial              *PaperAnswerInput          `json:"initial,omitempty"`
+	Supplement           *PaperSupplementCheckpoint `json:"supplement,omitempty"`
 }
 
 // Priorities are preserved when packing; the selected passages themselves are
@@ -43,7 +44,7 @@ func rankPaperEvidence(evidence []Citation, queries []string, limit int) []Citat
 }
 
 func packPaperAnswerInput(r Run, pc *PaperCheckpoint, questions []PaperQuestion, candidates []Citation) (PaperAnswerInput, error) {
-	selected := append([]Citation{}, candidates...)
+	selected := append([]Citation{}, candidates[:min(len(candidates), paperInitialPassageLimit)]...)
 	for {
 		request := paperInput(pc, "answer", selected)
 		request["question"] = r.Question
@@ -144,6 +145,9 @@ func (s *Service) processPaperQuestion(ctx context.Context, r Run, c Conversatio
 		}
 	}
 	input := qa.Initial
+	if err := validatePaperAnswerInput(input, questions); err != nil {
+		return err
+	}
 	raw, err = s.paperCall(ctx, r, cp, check, "analyzing_answer", paperAnswerPrompt, paperSerializedInput(input.Request), func(raw []byte) error {
 		return paperContract("analyzing_answer").Validate(raw, paperStageValidation{Evidence: input.Evidence, Questions: questions})
 	})
@@ -151,6 +155,10 @@ func (s *Service) processPaperQuestion(ctx context.Context, r Run, c Conversatio
 		return err
 	}
 	analysis, err := decodePaperAnswer(raw, input.Evidence, questions)
+	if err != nil {
+		return err
+	}
+	analysis, input, err = s.supplementPaperAnswer(ctx, r, cp, check, evidence, raw, analysis)
 	if err != nil {
 		return err
 	}

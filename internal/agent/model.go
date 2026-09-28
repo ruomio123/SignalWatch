@@ -39,37 +39,38 @@ type Conversation struct {
 func (Conversation) TableName() string { return "agent_conversations" }
 
 type Run struct {
-	FailureStage         string               `json:"failure_stage,omitempty" gorm:"-"`
-	RepairSummary        *PaperRepairSummary  `json:"repair_summary,omitempty" gorm:"-"`
-	ReviewProgress       *PaperReviewProgress `json:"review_progress,omitempty" gorm:"-"`
-	FailureDetail        *PaperFailure        `json:"failure_detail,omitempty" gorm:"-"`
-	Task                 string               `json:"task,omitempty"`
-	WorkflowVersion      string               `json:"workflow_version,omitempty"`
-	EffectiveContextMode string               `json:"effective_context_mode,omitempty"`
-	FallbackReason       string               `json:"fallback_reason,omitempty"`
-	BatchTotal           int                  `json:"batch_total"`
-	BatchCompleted       int                  `json:"batch_completed"`
-	ID                   string               `json:"id"`
-	ConversationID       string               `json:"conversation_id"`
-	UserID               uint64               `json:"-"`
-	IdempotencyKey       string               `json:"-"`
-	InputHash            string               `json:"-"`
-	Question             string               `json:"-"`
-	Provider             string               `json:"provider"`
-	Model                string               `json:"model"`
-	Generation           string               `json:"-"`
-	Version              uint64               `json:"-"`
-	ContextMode          string               `json:"context_mode"`
-	State                string               `json:"state"`
-	Progress             string               `json:"progress"`
-	FailureCode          string               `json:"failure_code,omitempty"`
-	Checkpoint           json.RawMessage      `json:"-"`
-	LeaseOwner           string               `json:"-"`
-	Epoch                uint64               `json:"-"`
-	LeaseUntil           *time.Time           `json:"-"`
-	Deadline             *time.Time           `json:"deadline,omitempty"`
-	CreatedAt            time.Time            `json:"created_at"`
-	UpdatedAt            time.Time            `json:"updated_at"`
+	FailureStage         string                 `json:"failure_stage,omitempty" gorm:"-"`
+	RepairSummary        *PaperRepairSummary    `json:"repair_summary,omitempty" gorm:"-"`
+	ReviewProgress       *PaperReviewProgress   `json:"review_progress,omitempty" gorm:"-"`
+	RetrievalSummary     *PaperRetrievalSummary `json:"retrieval_summary,omitempty" gorm:"-"`
+	FailureDetail        *PaperFailure          `json:"failure_detail,omitempty" gorm:"-"`
+	Task                 string                 `json:"task,omitempty"`
+	WorkflowVersion      string                 `json:"workflow_version,omitempty"`
+	EffectiveContextMode string                 `json:"effective_context_mode,omitempty"`
+	FallbackReason       string                 `json:"fallback_reason,omitempty"`
+	BatchTotal           int                    `json:"batch_total"`
+	BatchCompleted       int                    `json:"batch_completed"`
+	ID                   string                 `json:"id"`
+	ConversationID       string                 `json:"conversation_id"`
+	UserID               uint64                 `json:"-"`
+	IdempotencyKey       string                 `json:"-"`
+	InputHash            string                 `json:"-"`
+	Question             string                 `json:"-"`
+	Provider             string                 `json:"provider"`
+	Model                string                 `json:"model"`
+	Generation           string                 `json:"-"`
+	Version              uint64                 `json:"-"`
+	ContextMode          string                 `json:"context_mode"`
+	State                string                 `json:"state"`
+	Progress             string                 `json:"progress"`
+	FailureCode          string                 `json:"failure_code,omitempty"`
+	Checkpoint           json.RawMessage        `json:"-"`
+	LeaseOwner           string                 `json:"-"`
+	Epoch                uint64                 `json:"-"`
+	LeaseUntil           *time.Time             `json:"-"`
+	Deadline             *time.Time             `json:"deadline,omitempty"`
+	CreatedAt            time.Time              `json:"created_at"`
+	UpdatedAt            time.Time              `json:"updated_at"`
 }
 
 func (Run) TableName() string { return "agent_runs" }

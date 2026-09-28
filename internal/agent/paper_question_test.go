@@ -21,7 +21,7 @@ func TestPaperQuestionsPublishReviewedCoveragePerAspect(t *testing.T) {
 			answer := paperAnswerOutput{Answers: []paperAnswerPartOutput{
 				{QuestionID: "q1", Status: "supported", Claims: []claimOutput{{Text: "论文的方法检索相关文本。", Evidence: []evidenceOutput{{ID: "p1-c1-s0"}}}}},
 				{QuestionID: "q2", Status: "supported", Claims: []claimOutput{{Text: "论文在留出数据上评估准确率。", Evidence: []evidenceOutput{{ID: "p2-c2-s0"}}}}},
-			}}
+			}, SupplementalQueries: []PaperSupplementQuery{}}
 			wantStatus, wantClaims := "complete", 2
 			switch scenario {
 			case "partial":
@@ -181,8 +181,8 @@ func TestPaperQuestionRecoveryReusesFrozenRequestsAndEvidence(t *testing.T) {
 			if frozen.Paper.QA.Initial != nil && !reflect.DeepEqual(completed.Paper.QA.Initial, frozen.Paper.QA.Initial) {
 				t.Fatal("recovery reselected or changed frozen evidence")
 			}
-			if completed.Calls != 3 || paperCallLimit(TaskPaperFollowup) != 5 {
-				t.Fatal("v10 call counting or hard limit changed")
+			if completed.Calls != 3 || paperCallLimit(TaskPaperFollowup) != 6 {
+				t.Fatal("normal call counting or v11 hard limit changed")
 			}
 		})
 	}
@@ -234,5 +234,14 @@ func TestPaperAnswerPackingTrimsHistoryBeforeWholeEvidence(t *testing.T) {
 	}
 	if _, err := packPaperAnswerInput(Run{Question: strings.Repeat("<", paperInputLimit)}, &PaperCheckpoint{}, questions, nil); paperFailureCode(err) != "context_too_large" {
 		t.Fatalf("oversized mandatory input was silently clipped: %v", err)
+	}
+	short := make([]Citation, 33)
+	for i := range short {
+		short[i] = Citation{ID: fmt.Sprintf("abstract-s%d", i*1000), Quote: "完整摘要证据🙂"}
+	}
+	packed, err := packPaperAnswerInput(Run{Question: "问题"}, &PaperCheckpoint{Mode: "abstract"}, questions, short)
+	must(t, err)
+	if !reflect.DeepEqual(packed.Evidence, short[:24]) {
+		t.Fatal("abstract initial retrieval did not retain at most 24 whole passages")
 	}
 }

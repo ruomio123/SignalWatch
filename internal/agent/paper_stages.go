@@ -42,6 +42,16 @@ var paperStageContracts = func() map[string]paperStageContract {
 			return err
 		}}
 	stages["analyzing_answer"] = answer
+	supplement := answer
+	supplement.Schema = paperSupplementAnswerSchemas.full
+	supplement.RepairStage = "repairing_answer_supplement"
+	supplement.Validate = func(raw []byte, input paperStageValidation) error {
+		_, err := decodePaperSupplementAnswer(raw, input.Evidence, input.Questions)
+		return err
+	}
+	stages[paperSupplementStage] = supplement
+	supplement.OriginalStage, supplement.RepairStage = paperSupplementStage, ""
+	stages["repairing_answer_supplement"] = supplement
 	answer.RepairStage = ""
 	answer.OriginalStage = "analyzing_answer"
 	stages["repairing_answer"] = answer

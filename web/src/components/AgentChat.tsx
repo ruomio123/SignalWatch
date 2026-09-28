@@ -79,6 +79,12 @@ type Run = {
   failure_detail?: FailureDetail;
   failure_stage?: string;
   review_progress?: { completed: number; total: number };
+  retrieval_summary?: {
+    state: "initial_ready" | "pending" | "ready" | "calling" | "completed" | "skipped";
+    selected: number;
+    added: number;
+    reason?: "no_queries" | "abstract_only" | "no_new_evidence" | "input_budget" | "time_budget" | "call_budget";
+  };
   repair_summary?: {
     field: string;
     state: "pending" | "calling" | "completed" | "failed" | "budget_exceeded";
@@ -107,8 +113,10 @@ const progress: Record<string, string> = {
   analyzing_results: "正在分析主要结果",
   analyzing_limitations: "正在分析局限性",
   analyzing_answer: "正在分析追问",
+  analyzing_answer_supplement: "正在生成补充回答",
   validating_paper: "正在校验结论与论文证据",
   retrieving_evidence: "正在检索论文证据",
+  retrieving_supplement: "正在补充检索论文证据",
   previewing_subscription: "正在预览本地匹配论文",
   preparing_draft: "正在整理订阅草案",
   querying_options: "正在查询订阅分类",
@@ -127,6 +135,7 @@ const paperFields: Record<string, string> = {
   results: "主要结果",
   limitations: "局限性",
   answer: "追问回答",
+  answer_supplement: "补充回答",
 };
 const validationRules: Record<string, string> = {
   chinese_text_required: "报告论断需要使用中文叙述，专业名称与公式可保留原文",
@@ -196,6 +205,50 @@ function repairSummary(run: Run): string | undefined {
   return repair.attempted
     ? "本轮已尝试自动整理一次。"
     : "自动整理未开始。";
+}
+function retrievalSummary(run: Run): string | undefined {
+  const retrieval = run.retrieval_summary;
+  if (!retrieval) return undefined;
+  const selected = Number.isSafeInteger(retrieval.selected) && retrieval.selected >= 0
+    ? retrieval.selected : undefined;
+  const added = Number.isSafeInteger(retrieval.added) && retrieval.added >= 0
+    ? retrieval.added : undefined;
+  if (
+    !["pending", "running"].includes(run.state) &&
+    ["pending", "ready", "calling"].includes(retrieval.state)
+  ) return "本轮未完成补充回答。";
+  switch (retrieval.state) {
+    case "initial_ready":
+      return selected === undefined
+        ? "已完成本轮证据检索。"
+        : `已选取 ${selected} 段论文证据。`;
+    case "pending":
+      return "正在进行本轮唯一一次补充检索。";
+    case "ready":
+      return added === undefined
+        ? "补充证据已就绪，等待生成补充回答。"
+        : `已找到 ${added} 段补充证据，等待生成补充回答。`;
+    case "calling":
+      return added === undefined
+        ? "正在结合补充证据完善回答。"
+        : `正在结合 ${added} 段补充证据完善回答。`;
+    case "completed":
+      return added === undefined
+        ? "已完成一次补充检索与回答。"
+        : `已完成一次补充检索与回答，新增 ${added} 段证据。`;
+    case "skipped":
+      switch (retrieval.reason) {
+        case "no_queries": return "本轮没有新的检索方向，未进行补充检索。";
+        case "abstract_only": return "当前仅有摘要材料，未进行补充检索。";
+        case "no_new_evidence": return "补充检索未找到新的证据。";
+        case "input_budget": return "补充材料超出本轮输入预算，未生成补充回答。";
+        case "time_budget": return "本轮剩余时间不足，未生成补充回答。";
+        case "call_budget": return "本轮调用预算不足，未生成补充回答。";
+        default: return "本轮未生成补充回答。";
+      }
+    default:
+      return undefined;
+  }
 }
 function failedStepLabel(tool: string): string {
   if (tool.startsWith("repairing_"))
@@ -965,6 +1018,7 @@ function AgentChatView({
                   `本轮未完成（${run.failure_code ?? run.state}），请手动重试。`)}
           </p>
           {repairSummary(run) && <p>{repairSummary(run)}</p>}
+          {retrievalSummary(run) && <p>{retrievalSummary(run)}</p>}
           {!active && run.state !== "completed" && run.failedStep && (
             <details>
               <summary>失败详情</summary>
@@ -1121,7 +1175,7 @@ function AgentChatView({
             助手只生成草案，确认后才会创建订阅。
           </>
         ) : (
-          `请求资料：${mode === "fulltext" ? "全文优先，最多等待 20 秒后使用摘要" : "仅标题和摘要"}；问答通常调用 3 次，最多 5 次、180 秒。`
+          `请求资料：${mode === "fulltext" ? "全文优先，最多等待 20 秒后使用摘要" : "仅标题和摘要"}；问答通常调用 3 次，最多 6 次、180 秒。`
         )
       }
       composer={

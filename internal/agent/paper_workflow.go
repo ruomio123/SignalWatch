@@ -48,7 +48,7 @@ func paperCallLimit(task string) int {
 	if task == TaskPaperReport {
 		return 30
 	}
-	return 5
+	return 6
 }
 
 func paperFailureDetail(err error) *PaperFailure {
@@ -114,12 +114,19 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 		if err := check(ctx); err != nil {
 			return nil, s.failPaperStage(ctx, r, cp, stage, err, nil)
 		}
+		if stage == paperSupplementStage {
+			if reason := paperSupplementBudget(ctx, r, cp, time.Now()); reason != "" {
+				cp.Paper.QA.Supplement.Reason = reason
+				return nil, errPaperSupplementSkipped
+			}
+		}
 		started := time.Now()
 		progress := stage
 		if strings.HasPrefix(stage, "validating_paper") {
 			progress = "validating_paper"
 		}
 		var validationErr error
+		optionalSkip := false
 		reserved := false
 		result, callErr := s.Gateway.Generate(ctx, ModelRequest{Run: r, Feature: "paper_qa", System: paperPolicy + "\n" + prompt, Input: raw, Schema: paperStageSchema(stage), MaxTokens: paperStageTokens(stage),
 			Before: func(call context.Context) error {
@@ -129,12 +136,23 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 				if err := call.Err(); err != nil {
 					return err
 				}
+				if stage == paperSupplementStage {
+					if reason := paperSupplementBudget(call, r, cp, time.Now()); reason != "" {
+						cp.Paper.QA.Supplement.Reason, optionalSkip = reason, true
+						return errPaperSupplementSkipped
+					}
+				}
 				if cp.Calls >= paperCallLimit(r.Task) {
 					return ErrBudget
 				}
 				previousCalls, previousPhase := cp.Calls, cp.Phase
 				previousFailure, previousStage := cp.Paper.Failure, cp.Paper.CurrentStage
 				previousRepairState, previousAttempted := "", false
+				previousSupplementState := ""
+				if stage == paperSupplementStage {
+					previousSupplementState = cp.Paper.QA.Supplement.State
+					cp.Paper.QA.Supplement.State = "calling"
+				}
 				if cp.Paper.Repair != nil {
 					previousRepairState, previousAttempted = cp.Paper.Repair.State, cp.Paper.Repair.Attempted
 				}
@@ -155,6 +173,9 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 					// A process death after Save still leaves calling on disk.
 					cp.Calls, cp.Phase = previousCalls, previousPhase
 					cp.Paper.Failure, cp.Paper.CurrentStage = previousFailure, previousStage
+					if stage == paperSupplementStage {
+						cp.Paper.QA.Supplement.State = previousSupplementState
+					}
 					if cp.Paper.Repair != nil {
 						cp.Paper.Repair.State, cp.Paper.Repair.Attempted = previousRepairState, previousAttempted
 					}
@@ -166,6 +187,9 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 				validationErr = validate(res.Content)
 				return validationErr
 			}})
+		if optionalSkip && !reserved {
+			return nil, errPaperSupplementSkipped
+		}
 		if callErr != nil {
 			var failure *ModelError
 			if errors.As(callErr, &failure) && failure.Admission && !reserved {
@@ -221,6 +245,9 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 					return nil, s.failPaperStage(ctx, r, cp, stage, callErr, &step)
 				}
 				cp.Phase = "ready"
+				if stage == paperSupplementStage {
+					cp.Paper.QA.Supplement.State = "ready"
+				}
 				cp.Paper.CurrentStage = paperContract(stage).RepairStage
 				if err := s.Store.Save(ctx, r, *cp, paperContract(stage).RepairStage, &step); err != nil {
 					return nil, err
@@ -234,6 +261,9 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 			repair := cp.Paper.Repair
 			cp.Paper.Outputs[repair.Stage] = append(json.RawMessage(nil), result.Content...)
 			repair.State = "completed"
+		}
+		if stage == paperSupplementStage || paperContract(stage).OriginalStage == paperSupplementStage {
+			cp.Paper.QA.Supplement.State = "completed"
 		}
 		cp.Paper.Failure = nil
 		cp.Phase = "ready"

@@ -11,7 +11,7 @@ import (
 const (
 	TaskPaperReport      = "paper_report"
 	TaskPaperFollowup    = "paper_followup"
-	PaperWorkflowVersion = "paper-fixed-v10"
+	PaperWorkflowVersion = "paper-fixed-v11"
 	PaperReportMessage   = "快速了解论文"
 	PaperGoal            = "帮助用户快速了解当前论文"
 	paperInputLimit      = 64 << 10
@@ -151,5 +151,5 @@ type PaperResult struct {
 func validPaperReport(message Message, hash string) (PaperResult, bool) {
 	var result PaperResult
 	err := json.Unmarshal(message.Result, &result)
-	return result, err == nil && result.Report != nil && result.PaperHash == hash && (result.WorkflowVersion == PaperWorkflowVersion || result.WorkflowVersion == "paper-fixed-v1" || result.WorkflowVersion == "paper-fixed-v2" || result.WorkflowVersion == "paper-fixed-v3" || result.WorkflowVersion == "paper-fixed-v4" || result.WorkflowVersion == "paper-fixed-v5" || result.WorkflowVersion == "paper-fixed-v6" || result.WorkflowVersion == "paper-fixed-v7" || result.WorkflowVersion == "paper-fixed-v8" || result.WorkflowVersion == "paper-fixed-v9") && (result.ContextMode == "abstract" || result.ContextMode == "fulltext")
+	return result, err == nil && result.Report != nil && result.PaperHash == hash && (result.WorkflowVersion == PaperWorkflowVersion || result.WorkflowVersion == "paper-fixed-v1" || result.WorkflowVersion == "paper-fixed-v2" || result.WorkflowVersion == "paper-fixed-v3" || result.WorkflowVersion == "paper-fixed-v4" || result.WorkflowVersion == "paper-fixed-v5" || result.WorkflowVersion == "paper-fixed-v6" || result.WorkflowVersion == "paper-fixed-v7" || result.WorkflowVersion == "paper-fixed-v8" || result.WorkflowVersion == "paper-fixed-v9" || result.WorkflowVersion == "paper-fixed-v10") && (result.ContextMode == "abstract" || result.ContextMode == "fulltext")
 }

@@ -573,7 +573,7 @@ func TestPaperRepairFinalCallCapsIncludeOriginalFailureAndRepair(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/room=%d", task, room), func(t *testing.T) {
 				field, cap := "results", 30
 				if task == TaskPaperFollowup {
-					field, cap = "answer", 5
+					field, cap = "answer", 6
 				}
 				f, c, r, g := repairWorkflowFixture(t, task, field)
 				r = f.claim(t, r.ID)

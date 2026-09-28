@@ -164,10 +164,11 @@ func (s *Service) RunByID(ctx context.Context, uid uint64, id string) (Run, erro
 	if err == nil && json.Unmarshal(r.Checkpoint, &cp) == nil && cp.Paper != nil {
 		if r.State == "failed" || r.State == "unknown" || r.State == "cancelled" {
 			stage := cp.Paper.CurrentStage
-			if _, registered := paperStageContracts[stage]; registered || stage == "retrieving_evidence" {
+			if _, registered := paperStageContracts[stage]; registered || stage == "retrieving_evidence" || stage == "retrieving_supplement" {
 				r.FailureStage = stage
 			}
 		}
+		r.RetrievalSummary = paperRetrievalSummary(cp.Paper.QA)
 		if repair := cp.Paper.Repair; repair != nil && paperLabels[repair.Field] != "" {
 			state := repair.State
 			switch state {

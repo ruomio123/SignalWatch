@@ -343,10 +343,10 @@ func TestPaperConversationRetrievesVersionedEvidenceAndPreservesHistory(t *testi
 	f.s.Gateway = f.gateway
 	f.gateway.actions = []string{
 		`{"questions":[{"question":"实验怎样设计？","query":"retrieval experiment"}]}`,
-		`{"answers":[{"question_id":"q1","status":"supported","claims":[{"text":"论文在独立数据集上评估。","evidence":[{"id":"p1-c1-s0"}]}]}]}`,
+		`{"answers":[{"question_id":"q1","status":"supported","claims":[{"text":"论文在独立数据集上评估。","evidence":[{"id":"p1-c1-s0"}]}]}],"supplemental_queries":[]}`,
 		`{"verdicts":[{"id":"q1-1","supported":true}]}`,
 		`{"questions":[{"question":"实验怎样设计？继续说明","query":"retrieval experiment"}]}`,
-		`{"answers":[{"question_id":"q1","status":"insufficient_evidence","claims":[]}]}`,
+		`{"answers":[{"question_id":"q1","status":"insufficient_evidence","claims":[]}],"supplemental_queries":[]}`,
 		`{"verdicts":[]}`,
 	}
 	r, err := f.s.Submit(ctx, f.u.ID, c.ID, SubmitInput{Question: "实验怎样设计？", Provider: "glm", Model: "glm-4.7-flash", IdempotencyKey: rand.Text(), ContextMode: "fulltext"})
