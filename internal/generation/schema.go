@@ -18,6 +18,33 @@ type Schema struct {
 	AdditionalProperties *bool              `json:"additionalProperties,omitempty"`
 	Items                *Schema            `json:"items,omitempty"`
 	Enum                 []string           `json:"enum,omitempty"`
+	MinItems             *int               `json:"minItems,omitempty"`
+	MaxItems             *int               `json:"maxItems,omitempty"`
+}
+
+// Structural returns an independent projection onto the structural constraints
+// accepted by providers such as Qwen. The complete schema remains unchanged for
+// prompts and server validation; text sizes are checked separately in UTF-8 bytes.
+func (s *Schema) Structural() *Schema {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	out.MinItems, out.MaxItems = nil, nil
+	out.Required = append([]string(nil), s.Required...)
+	out.Enum = append([]string(nil), s.Enum...)
+	if s.AdditionalProperties != nil {
+		v := *s.AdditionalProperties
+		out.AdditionalProperties = &v
+	}
+	if s.Properties != nil {
+		out.Properties = make(map[string]*Schema, len(s.Properties))
+		for key, child := range s.Properties {
+			out.Properties[key] = child.Structural()
+		}
+	}
+	out.Items = s.Items.Structural()
+	return &out
 }
 
 func SchemaFor[T any]() *Schema { return schemaType(reflect.TypeFor[T]()) }
@@ -113,6 +140,13 @@ func (s *Schema) validate(v any, path string, depth int) error {
 			if err := s.Items.validate(item, fmt.Sprintf("%s[%d]", path, i), depth+1); err != nil {
 				return err
 			}
+		}
+		count := len(items)
+		if s.MinItems != nil && count < *s.MinItems {
+			return &OutputError{Code: "output_schema_mismatch", Path: path, Rule: "min_items", Count: &count, Limit: s.MinItems, Unit: "items"}
+		}
+		if s.MaxItems != nil && count > *s.MaxItems {
+			return &OutputError{Code: "output_limit_exceeded", Path: path, Rule: "max_items", Count: &count, Limit: s.MaxItems, Unit: "items"}
 		}
 	case "string":
 		text, ok := v.(string)

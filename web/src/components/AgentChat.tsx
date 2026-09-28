@@ -65,8 +65,17 @@ type AgentChatProps = {
   onClose?: () => void;
 };
 type FailedStep = { tool?: string; call_id?: string; failure_code?: string };
+type FailureDetail = {
+  code: string;
+  path: string;
+  rule: string;
+  count?: number;
+  limit?: number;
+  unit?: string;
+};
 type Run = {
-  failure_detail?: { code: string; path: string; rule: string };
+  failure_detail?: FailureDetail;
+  review_progress?: { completed: number; total: number };
   failedStep?: FailedStep;
   task?: "paper_report" | "paper_followup";
   effective_context_mode?: "abstract" | "fulltext";
@@ -121,6 +130,46 @@ const validationRules: Record<string, string> = {
   too_deep: "JSON 嵌套过深",
   invalid_json: "必须是有效 JSON",
 };
+function outputLimitDetail(detail: FailureDetail): string | undefined {
+  if (
+    detail.code !== "output_limit_exceeded" ||
+    !Number.isSafeInteger(detail.count) ||
+    !Number.isSafeInteger(detail.limit) ||
+    detail.count! < 0 ||
+    detail.limit! < 0
+  )
+    return undefined;
+  if (detail.unit === "claims")
+    return `结论 ${detail.count} 条，上限 ${detail.limit} 条`;
+  if (detail.unit === "utf8_bytes")
+    return `${detail.path === "$" ? "完整响应" : "文字"} ${detail.count} UTF-8 字节，上限 ${detail.limit} 字节`;
+  if (detail.unit === "evidence")
+    return `证据 ${detail.count} 段，上限 ${detail.limit} 段`;
+  return undefined;
+}
+function runProgress(run: Run): string {
+  if (
+    /^validating_paper(?:_\d+)?$/.test(run.progress) &&
+    run.review_progress &&
+    run.review_progress.total > 0
+  ) {
+    const { completed, total } = run.review_progress;
+    return `正在审核证据 ${Math.min(completed + 1, total)}/${total}`;
+  }
+  return (
+    progress[run.progress] ??
+    (run.progress?.startsWith("extracting_batch_")
+      ? "正在分批阅读全文"
+      : "正在处理")
+  );
+}
+function failedStepLabel(tool: string): string {
+  if (tool.startsWith("extracting_batch_"))
+    return `第 ${tool.slice("extracting_batch_".length)} 批全文证据提取`;
+  if (/^validating_paper_\d+$/.test(tool))
+    return `第 ${tool.slice("validating_paper_".length)} 批证据审核`;
+  return progress[tool]?.replace(/^正在/, "") ?? tool;
+}
 const failures: Record<string, string> = {
   document_unavailable: "全文不可用。",
   context_too_large: "论文或汇总证据超出本次输入上限，未输出部分报告。",
@@ -852,10 +901,7 @@ function AgentChatView({
         <div role="status">
           <p>
             {active
-              ? (progress[run.progress] ??
-                (run.progress?.startsWith("extracting_batch_")
-                  ? "正在分批阅读全文"
-                  : "正在处理"))
+              ? runProgress(run)
               : run.state === "completed"
                 ? "本轮已完成"
                 : (outputFailureMessage(run.failure_code ?? "") ??
@@ -867,17 +913,15 @@ function AgentChatView({
               <summary>失败详情</summary>
               <p>
                 失败步骤：
-                {run.failedStep.tool?.startsWith("extracting_batch_")
-                  ? `第 ${run.failedStep.tool.slice("extracting_batch_".length)} 批全文证据提取`
-                  : (progress[run.failedStep.tool ?? ""]?.replace(
-                      /^正在/,
-                      "",
-                    ) ?? run.failedStep.tool)}
+                {failedStepLabel(run.failedStep.tool ?? "")}
               </p>
               <p>原因代码：{run.failedStep.failure_code}</p>
               {run.failure_detail && (
                 <>
                   <p>校验位置：{run.failure_detail.path}</p>
+                  {outputLimitDetail(run.failure_detail) && (
+                    <p>{outputLimitDetail(run.failure_detail)}</p>
+                  )}
                   {run.failure_detail.rule && (
                     <p>
                       校验要求：

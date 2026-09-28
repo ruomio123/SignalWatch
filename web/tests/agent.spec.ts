@@ -1064,3 +1064,92 @@ test("retrying a first question after a lost response reuses its conversation an
   await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
   await expect(page.getByRole("alert")).not.toBeVisible();
 });
+
+for (const diagnostic of [
+  {
+    name: "claim count",
+    detail: { path: "$.claims", rule: "", count: 9, limit: 8, unit: "claims" },
+    expected: "结论 9 条，上限 8 条",
+  },
+  {
+    name: "UTF-8 byte count",
+    detail: { path: "$.claims[0].text", rule: "", count: 1350, limit: 1200, unit: "utf8_bytes" },
+    expected: "文字 1350 UTF-8 字节，上限 1200 字节",
+  },
+  {
+    name: "complete response byte count",
+    detail: { path: "$", rule: "", count: 50001, limit: 50000, unit: "utf8_bytes" },
+    expected: "完整响应 50001 UTF-8 字节，上限 50000 字节",
+  },
+  {
+    name: "legacy missing counts",
+    detail: { path: "$.claims", rule: "" },
+    expected: undefined,
+  },
+]) {
+  test(`paper output diagnostics display ${diagnostic.name} without submitting again`, async ({ page, api }) => {
+    const runID = "failed-report-run";
+    api.json("GET", `${conversationPath}/messages`, {
+      items: [{ id: 1, run_id: runID, role: "user", content: "生成论文报告", citations: [] }],
+      next_before: 0,
+    });
+    api.json("GET", `/agent/runs/${runID}`, {
+      run: {
+        id: runID,
+        task: "paper_report",
+        state: "failed",
+        progress: "analyzing_results",
+        failure_code: "output_limit_exceeded",
+        failure_detail: { code: "output_limit_exceeded", ...diagnostic.detail },
+      },
+      steps: [{ tool: "analyzing_results", call_id: "fixture-failed-call", failure_code: "output_limit_exceeded" }],
+    });
+
+    await page.goto(assistantURL);
+    await expect(page.getByText("模型输出的条目数量或文字长度超出上限。", { exact: true })).toBeVisible();
+    await page.getByText("失败详情", { exact: true }).click();
+    await expect(page.getByText("失败步骤：分析主要结果", { exact: true })).toBeVisible();
+    await expect(page.getByText(`校验位置：${diagnostic.detail.path}`, { exact: true })).toBeVisible();
+    if (diagnostic.expected)
+      await expect(page.getByText(diagnostic.expected, { exact: true })).toBeVisible();
+    else
+      await expect(page.getByText(/(?:结论|文字|完整响应) \d+.*上限/)).toHaveCount(0);
+    await expect(page.getByText("诊断编号：fixture-failed-call", { exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "生成论文报告", exact: true })).toBeEnabled();
+    await page.reload();
+    await expect(page.getByText("模型输出的条目数量或文字长度超出上限。", { exact: true })).toBeVisible();
+    expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+  });
+}
+
+test("paper evidence review shows persisted batch progress and publishes no partial report", async ({ page, api }) => {
+  const runID = "reviewing-report-run";
+  let completed = 1;
+  api.json("GET", conversationPath, { ...conversation, active_run_id: runID });
+  api.on("GET", `/agent/runs/${runID}`, (route) =>
+    route.fulfill({
+      json: {
+        run: {
+          id: runID,
+          task: "paper_report",
+          state: "running",
+          progress: "validating_paper",
+          review_progress: { completed, total: 3 },
+        },
+        steps: [],
+      },
+    }),
+  );
+
+  await page.goto(assistantURL);
+  await expect(page.getByText("正在审核证据 2/3", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "生成论文报告", exact: true })).toBeDisabled();
+  await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText("正在审核证据 2/3", { exact: true })).toBeVisible();
+  completed = 2;
+  await expect(page.getByText("正在审核证据 3/3", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});

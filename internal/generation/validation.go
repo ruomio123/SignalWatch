@@ -3,9 +3,12 @@ package generation
 // OutputError contains only server-defined rules and paths, never model text.
 // It is shared across the workflow, metering and provider-independent gateway.
 type OutputError struct {
-	Code string
-	Path string
-	Rule string
+	Code  string
+	Path  string
+	Rule  string
+	Count *int
+	Limit *int
+	Unit  string
 }
 
 func (e *OutputError) Error() string { return e.Code }

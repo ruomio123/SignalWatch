@@ -109,3 +109,12 @@ __pycache__/
 !/web/tests/agent.spec.ts
 !/web/tests/agent-fixtures.ts
 !/web/scripts/test-agent.cjs
+
+!/internal/agent/paper_review_test.go
+!/internal/ai/paper_budget_test.go
+!/internal/platform/llm/paper_budget_test.go
+!/internal/bootstrap/paper_budget_test.go
+!/internal/agent/paper_policy_test.go
+!/internal/generation/paper_schema_test.go
+!/internal/agent/paper_version_test.go
+!/scripts/test-paper-packages.sh

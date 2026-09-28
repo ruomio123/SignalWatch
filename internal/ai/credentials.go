@@ -114,6 +114,15 @@ func (s *ConfigurationService) SelectionForCredential(ctx context.Context, uid u
 	return c, nil
 }
 func (s *ConfigurationService) GenerateForCredential(ctx context.Context, uid uint64, provider, model, gen string, version uint64, feature, requestID, system string, input []byte, before func(context.Context) error, validate func(generation.Result) error, schema *generation.Schema) (generation.Result, error) {
+	return s.GenerateForCredentialLimit(ctx, uid, provider, model, gen, version, feature, requestID, system, input, 4096, before, validate, schema)
+}
+
+// GenerateForCredentialLimit accepts an internal workflow budget. HTTP inputs do
+// not control this value; existing business callers retain the default budget.
+func (s *ConfigurationService) GenerateForCredentialLimit(ctx context.Context, uid uint64, provider, model, gen string, version uint64, feature, requestID, system string, input []byte, maxTokens int, before func(context.Context) error, validate func(generation.Result) error, schema *generation.Schema) (generation.Result, error) {
+	if maxTokens == 0 {
+		maxTokens = 4096
+	}
 	scoped := CredentialIDContext(ctx, gen)
 	check := func(c context.Context) error {
 		row, err := s.SelectionForCredential(c, uid, gen, provider, model)
@@ -146,7 +155,7 @@ func (s *ConfigurationService) GenerateForCredential(ctx context.Context, uid ui
 		}
 		return nil
 	}
-	result, err := s.calls.Run(ctx, CallRequest{UserID: uid, Provider: provider, Model: model, Key: string(key), Generation: gen, Version: version, Feature: feature, RequestID: requestID, System: system, Input: input, Schema: schema, MaxTokens: 4096, BeforeStart: beforeStart, Validate: validate, Commit: check})
+	result, err := s.calls.Run(ctx, CallRequest{UserID: uid, Provider: provider, Model: model, Key: string(key), Generation: gen, Version: version, Feature: feature, RequestID: requestID, System: system, Input: input, Schema: schema, MaxTokens: maxTokens, BeforeStart: beforeStart, Validate: validate, Commit: check})
 	if result.CallID != "" {
 		mark, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()

@@ -35,7 +35,7 @@ func (g agentGateway) Selection(ctx context.Context, u uint64, p, m, id string) 
 	return agent.Selection{Generation: c.Generation, Version: c.Version}, nil
 }
 func (g agentGateway) Generate(ctx context.Context, r agent.ModelRequest) (generation.Result, error) {
-	value, err := g.configuration.GenerateForCredential(ctx, r.Run.UserID, r.Run.Provider, r.Run.Model, r.Run.Generation, r.Run.Version, r.Feature, r.Run.ID, r.System, r.Input, r.Before, func(value generation.Result) error {
+	value, err := g.configuration.GenerateForCredentialLimit(ctx, r.Run.UserID, r.Run.Provider, r.Run.Model, r.Run.Generation, r.Run.Version, r.Feature, r.Run.ID, r.System, r.Input, r.MaxTokens, r.Before, func(value generation.Result) error {
 		return agentValidationError(r.Validate(value))
 	}, r.Schema)
 	if err != nil {

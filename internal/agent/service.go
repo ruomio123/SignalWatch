@@ -161,8 +161,19 @@ func (s *Service) RunByID(ctx context.Context, uid uint64, id string) (Run, erro
 	}
 	_, err = s.Conversation(ctx, uid, r.ConversationID)
 	var cp Checkpoint
-	if err == nil && r.State == "failed" && json.Unmarshal(r.Checkpoint, &cp) == nil && cp.Paper != nil {
-		r.FailureDetail = cp.Paper.Failure
+	if err == nil && json.Unmarshal(r.Checkpoint, &cp) == nil && cp.Paper != nil {
+		if r.State == "failed" && cp.Paper.Failure != nil && cp.Paper.Failure.Code == r.FailureCode {
+			r.FailureDetail = cp.Paper.Failure
+		}
+		if len(cp.Paper.ReviewPlan) > 0 {
+			progress := &PaperReviewProgress{Total: len(cp.Paper.ReviewPlan)}
+			for i := range cp.Paper.ReviewPlan {
+				if _, ok := cp.Paper.Outputs[paperReviewStage(i)]; ok {
+					progress.Completed++
+				}
+			}
+			r.ReviewProgress = progress
+		}
 	}
 	return r, err
 }

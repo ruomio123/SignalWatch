@@ -51,12 +51,18 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 		return raw, validate(raw)
 	}
 	raw, err := boundedPaperInput(input)
+	if saved, ok := input.(paperSerializedInput); ok {
+		raw, err = []byte(saved), nil
+		if len(raw) > paperInputLimit {
+			err = paperError("context_too_large")
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
-	limit := 3
+	limit := 4
 	if r.Task == TaskPaperReport {
-		limit = 24
+		limit = 29
 	}
 	for {
 		if cp.Calls >= limit {
@@ -66,18 +72,26 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 			return nil, err
 		}
 		started := time.Now()
-		result, err := s.Gateway.Generate(ctx, ModelRequest{Run: r, Feature: "paper_qa", System: paperPolicy + "\n" + prompt, Input: raw, Schema: paperStageSchema(stage),
+		tokens := 4096
+		if strings.HasPrefix(stage, "analyzing_") {
+			tokens = 8192
+		}
+		progress := stage
+		if strings.HasPrefix(stage, "validating_paper") {
+			progress = "validating_paper"
+		}
+		result, err := s.Gateway.Generate(ctx, ModelRequest{Run: r, Feature: "paper_qa", System: paperPolicy + "\n" + prompt, Input: raw, Schema: paperStageSchema(stage), MaxTokens: tokens,
 			Before: func(call context.Context) error {
 				if err := check(call); err != nil {
 					return err
 				}
 				cp.Phase = "calling"
-				return s.Store.Save(call, r, *cp, stage, nil)
+				return s.Store.Save(call, r, *cp, progress, nil)
 			}, Validate: func(res generation.Result) error {
 				err := validate(res.Content)
 				var failure *generation.OutputError
 				if errors.As(err, &failure) {
-					cp.Paper.Failure = &PaperFailure{Code: failure.Code, Path: failure.Path, Rule: failure.Rule}
+					cp.Paper.Failure = &PaperFailure{Code: failure.Code, Path: failure.Path, Rule: failure.Rule, Count: failure.Count, Limit: failure.Limit, Unit: failure.Unit}
 				}
 				return err
 			}})
@@ -111,7 +125,7 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 		cp.Phase = "ready"
 		cp.Sequence++
 		step := Step{RunID: r.ID, Sequence: cp.Sequence, Kind: "model", Tool: stage, CallID: result.CallID, DurationMS: time.Since(started).Milliseconds(), InputTokens: result.InputTokens, OutputTokens: result.OutputTokens, CreatedAt: time.Now().UTC()}
-		if err := s.Store.Save(ctx, r, *cp, stage, &step); err != nil {
+		if err := s.Store.Save(ctx, r, *cp, progress, &step); err != nil {
 			return nil, err
 		}
 		return result.Content, nil
@@ -446,7 +460,7 @@ func (s *Service) processPaper(ctx context.Context, r Run, c Conversation, cp *C
 		if err != nil {
 			return err
 		}
-		raw, err = s.paperCall(ctx, r, cp, check, "analyzing_answer", followupFieldPrompt, request, func(raw []byte) error { _, err := decodeField(raw, available["answer"]); return err })
+		raw, err = s.paperCall(ctx, r, cp, check, "analyzing_answer", fieldPromptFor("answer", false), request, func(raw []byte) error { _, err := decodeField(raw, available["answer"]); return err })
 		if err != nil {
 			return err
 		}
@@ -454,35 +468,24 @@ func (s *Service) processPaper(ctx context.Context, r Run, c Conversation, cp *C
 	}
 	if r.Task == TaskPaperReport {
 		for _, field := range fields {
-			raw, err := s.paperCall(ctx, r, cp, check, "analyzing_"+field, reportFieldPrompt, paperInput(pc, field, available[field]), func(raw []byte) error { _, err := decodeReportField(raw, available[field]); return err })
+			raw, err := s.paperCall(ctx, r, cp, check, "analyzing_"+field, fieldPromptFor(field, true), paperInput(pc, field, available[field]), func(raw []byte) error { _, err := decodeFieldFor(raw, available[field], field, true); return err })
 			if err != nil {
 				return err
 			}
-			analyses[field], _ = decodeReportField(raw, available[field])
+			analyses[field], _ = decodeFieldFor(raw, available[field], field, true)
 		}
 	}
 	claims := reviewClaims(fields, analyses)
-	// Review the actual server-owned passages, once each. Claims contain only
-	// references, avoiding duplicate source text in the bounded reviewer input.
-	supporting := []Citation{}
-	seen := map[string]bool{}
+	sources := map[string]Citation{}
 	for _, field := range fields {
-		index := evidenceIndex(available[field])
-		for _, claim := range analyses[field].Claims {
-			for _, ref := range claim.Evidence {
-				if !seen[ref.ID] {
-					supporting = append(supporting, index[ref.ID])
-					seen[ref.ID] = true
-				}
-			}
+		for _, source := range available[field] {
+			sources[source.ID] = source
 		}
 	}
-	reviewInput := map[string]any{"paper": pc.Context, "context_mode": pc.Mode, "claims": claims, "source_passages": evidencePassages(supporting)}
-	raw, err := s.paperCall(ctx, r, cp, check, "validating_paper", verdictPrompt, reviewInput, func(raw []byte) error { _, err := decodeVerdicts(raw, claims); return err })
+	verdicts, err := s.reviewPaper(ctx, r, cp, check, claims, sources)
 	if err != nil {
 		return err
 	}
-	verdicts, _ := decodeVerdicts(raw, claims)
 	content, result, citations := renderPaperResult(r, cp, fields, analyses, available, verdicts)
 	if err = check(ctx); err != nil {
 		return err
