@@ -342,11 +342,11 @@ func TestPaperConversationRetrievesVersionedEvidenceAndPreservesHistory(t *testi
 	f.s.process(ctx, f.claim(t, report.ID))
 	f.s.Gateway = f.gateway
 	f.gateway.actions = []string{
-		`{"question":"实验怎样设计？","query":"retrieval experiment"}`,
-		`{"status":"supported","claims":[{"text":"论文在独立数据集上评估。","evidence":[{"id":"p1-c1-s0"}]}]}`,
-		`{"verdicts":[{"id":"answer-1","supported":true}]}`,
-		`{"question":"实验怎样设计？继续说明","query":"retrieval experiment"}`,
-		`{"status":"not_stated","claims":[]}`,
+		`{"questions":[{"question":"实验怎样设计？","query":"retrieval experiment"}]}`,
+		`{"answers":[{"question_id":"q1","status":"supported","claims":[{"text":"论文在独立数据集上评估。","evidence":[{"id":"p1-c1-s0"}]}]}]}`,
+		`{"verdicts":[{"id":"q1-1","supported":true}]}`,
+		`{"questions":[{"question":"实验怎样设计？继续说明","query":"retrieval experiment"}]}`,
+		`{"answers":[{"question_id":"q1","status":"insufficient_evidence","claims":[]}]}`,
 		`{"verdicts":[]}`,
 	}
 	r, err := f.s.Submit(ctx, f.u.ID, c.ID, SubmitInput{Question: "实验怎样设计？", Provider: "glm", Model: "glm-4.7-flash", IdempotencyKey: rand.Text(), ContextMode: "fulltext"})

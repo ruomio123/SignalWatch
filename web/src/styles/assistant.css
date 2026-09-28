@@ -202,6 +202,39 @@
   gap: 12px;
   padding: 12px 0;
 }
+.paper-citation-marker {
+  border: 0;
+  padding: 0 0.2em;
+  background: transparent;
+  color: var(--primary);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  overflow-wrap: anywhere;
+}
+.paper-citation-marker:focus-visible,
+.paper-citation-detail summary:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+.paper-citation-detail {
+  scroll-margin: 12px;
+  overflow-wrap: anywhere;
+}
+.paper-answer-part + .paper-answer-part {
+  margin-top: 16px;
+}
+.paper-answer-part h4 {
+  margin: 0 0 8px;
+}
+.paper-answer-status {
+  font-weight: 600;
+}
+.paper-answer-gap {
+  color: var(--muted);
+  line-height: 1.6;
+}
 .paper-report-start small,
 .paper-report-scope {
   color: var(--muted);

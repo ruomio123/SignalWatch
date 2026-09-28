@@ -56,7 +56,7 @@ func (g *workflowGateway) Generate(ctx context.Context, req ModelRequest) (gener
 	var value any
 	switch {
 	case strings.Contains(req.System, "Resolve pronouns"):
-		value = map[string]string{"question": "论文使用什么方法？", "query": "retrieval method experiment"}
+		value = paperQuestionsOutput{Questions: []paperQuestionItemOutput{{Question: "论文使用什么方法？", Query: "retrieval method experiment"}}}
 	case strings.Contains(req.System, "Read ALL supplied"):
 		refs := map[string][]evidenceOutput{}
 		for _, field := range paperFields {
@@ -83,6 +83,9 @@ func (g *workflowGateway) Generate(ctx context.Context, req ModelRequest) (gener
 		} else {
 			value = fieldOutput{Status: "not_stated", Claims: []claimOutput{}}
 		}
+		if input.Field == "answer" {
+			value = singleQuestionAnswer(value.(fieldOutput))
+		}
 	}
 	raw, _ := json.Marshal(value)
 	if g.malformed && strings.Contains(req.System, "Check EVERY") {
@@ -93,6 +96,16 @@ func (g *workflowGateway) Generate(ctx context.Context, req ModelRequest) (gener
 		return result, err
 	}
 	return result, nil
+}
+
+// Existing report fixtures can share their claim content with one-question QA,
+// while emitting the current strict QA protocol at the model boundary.
+func singleQuestionAnswer(field fieldOutput) paperAnswerOutput {
+	status := field.Status
+	if status == "not_stated" {
+		status = "insufficient_evidence"
+	}
+	return paperAnswerOutput{Answers: []paperAnswerPartOutput{{QuestionID: "q1", Status: status, Claims: field.Claims}}}
 }
 func workflowPaper(t *testing.T, f *fixture, texts []string) (Conversation, document.Document) {
 	t.Helper()

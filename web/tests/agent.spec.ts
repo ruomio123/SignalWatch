@@ -1342,3 +1342,250 @@ test("a later output limit identifies its field while preserving the completed o
   await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
   expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
 });
+
+function citationAnswer(id: number, quote = "Current source passage.") {
+  return {
+    ...questionReply(id / 2, "fulltext", "隐藏的旧版原始回答，不应覆盖结构化结果。"),
+    id,
+    run_id: `citation-run-${id}`,
+    citations: [{
+      id: "shared-source",
+      page: 3,
+      quote,
+      url: "https://arxiv.org/pdf/1706.03762v1#page=3",
+      document_id: "fixture-document",
+      content_hash: "fixture-content-hash",
+    }],
+    result: {
+      ...questionReply(id / 2, "fulltext", "").result,
+      workflow_version: "paper-fixed-v10",
+      answer: {
+        status: "complete",
+        parts: [{
+          question_id: "q1",
+          question: "这项方法如何工作？",
+          status: "supported",
+          claims: [{ text: "该方法由本轮论文原文支持。", citation_ids: ["shared-source"] }],
+        }],
+      },
+    },
+  };
+}
+
+function completedCitationRun(id: number) {
+  return { run: { id: `citation-run-${id}`, task: "paper_followup", state: "completed", progress: "completed" }, steps: [] };
+}
+
+test("structured simple answers use native citation buttons to expand, focus, and scroll evidence with mouse and keyboard", async ({ page, api }) => {
+  const message = citationAnswer(20, "<script>source text remains literal</script>");
+  const literal = "<img src=x onerror=alert(1)> 本轮支持的回答。";
+  message.result.answer.parts[0].claims = [
+    { text: literal, citation_ids: ["shared-source"] },
+    ...Array.from({ length: 5 }, () => ({ text: "条件与适用范围。".repeat(35), citation_ids: ["shared-source"] })),
+  ];
+  api.json("GET", `${conversationPath}/messages`, { items: [message], next_before: 0 });
+  api.json("GET", "/agent/runs/citation-run-20", completedCitationRun(20));
+  await page.goto(assistantURL);
+  const reply = page.locator('[data-message-id="20"]');
+  await expect(reply.getByText(literal, { exact: false })).toBeVisible();
+  await expect(reply.getByRole("heading")).toHaveCount(0);
+  await expect(reply.getByText(message.result.answer.parts[0].question, { exact: true })).toHaveCount(0);
+  await expect(reply.getByText(message.content, { exact: true })).toHaveCount(0);
+  await expect(reply.locator("img, script")).toHaveCount(0);
+  const markers = reply.getByRole("button", { name: "查看证据 shared-source", exact: true });
+  const marker = markers.first();
+  const details = reply.locator("details");
+  const summary = details.locator("summary");
+  const target = await marker.getAttribute("aria-controls");
+  expect(target).toContain(encodeURIComponent(JSON.stringify(["conversation-one:20", "shared-source"])));
+  await expect(details).toHaveAttribute("id", target!);
+  await expect(details).not.toHaveAttribute("open", "");
+  await marker.click();
+  await expect(details).toHaveAttribute("open", "");
+  await expect(summary).toBeFocused();
+  await expect(summary).toBeInViewport();
+  await expect(details.getByText(message.citations[0].quote, { exact: true })).toBeVisible();
+  await expect(details.locator("script")).toHaveCount(0);
+  await expect(details.getByRole("link", { name: "查看 arXiv 原文" })).toHaveAttribute("href", "https://arxiv.org/pdf/1706.03762v1#page=3");
+  for (const key of ["Enter", "Space"]) {
+    await summary.click();
+    await expect(details).not.toHaveAttribute("open", "");
+    await marker.focus();
+    await marker.press(key);
+    await expect(details).toHaveAttribute("open", "");
+    await expect(summary).toBeFocused();
+  }
+  // The PDF navigation itself is mocked too; this verifies the snapshot's
+  // fragment reaches the new tab without allowing a real external request.
+  await page.context().route("https://arxiv.org/pdf/1706.03762v1", (route) =>
+    route.fulfill({ contentType: "text/plain", body: "Mock paper PDF" }),
+  );
+  const [pdf] = await Promise.all([
+    page.waitForEvent("popup"),
+    details.getByRole("link", { name: "查看 arXiv 原文" }).click(),
+  ]);
+  await expect(pdf).toHaveURL("https://arxiv.org/pdf/1706.03762v1#page=3");
+  await pdf.close();
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+test("structured partial answers group questions and show only approved claims and controlled gaps", async ({ page, api }) => {
+  const message = citationAnswer(22);
+  const result = {
+    ...message.result,
+    answer: {
+      status: "partial",
+      parts: [
+        { question_id: "q1", question: "核心方法是什么？", status: "supported", claims: [{ text: "受支持的方法结论。", citation_ids: ["shared-source"] }] },
+        { question_id: "q2", question: "<b>有哪些实验结果？</b>", status: "partial", claims: [{ text: "仅这项实验结果有充分证据。", citation_ids: ["shared-source"] }], gap: { reason: "review_rejected", text: "禁止展示的被拒结论" } },
+        { question_id: "q3", question: "是否适用于未测试场景？", status: "insufficient_evidence", claims: [], gap: { reason: "insufficient_evidence" } },
+      ],
+    },
+  };
+  api.json("GET", `${conversationPath}/messages`, {
+    items: [{ ...message, result, content: "禁止展示的被拒结论", citations: [...message.citations, { ...message.citations[0], id: "rejected-source", quote: "不得展示的拒绝证据" }] }],
+    next_before: 0,
+  });
+  api.json("GET", "/agent/runs/citation-run-22", completedCitationRun(22));
+  await page.goto(assistantURL);
+  const reply = page.locator('[data-message-id="22"]');
+  await expect(reply.getByText("部分回答", { exact: true })).toBeVisible();
+  for (const part of result.answer.parts) await expect(reply.getByRole("heading", { name: part.question, exact: true })).toBeVisible();
+  await expect(reply.getByText("受支持的方法结论。", { exact: false })).toBeVisible();
+  await expect(reply.getByText("仅这项实验结果有充分证据。", { exact: false })).toBeVisible();
+  await expect(reply.getByText("这部分结论未通过证据审核，未予展示。", { exact: true })).toBeVisible();
+  await expect(reply.getByText("当前材料不足以可靠回答这部分问题。", { exact: true })).toBeVisible();
+  await expect(reply.getByText(/禁止展示|不得展示/)).toHaveCount(0);
+  await expect(reply.locator("b")).toHaveCount(0);
+  await expect(reply.locator("details")).toHaveCount(1);
+  await expect(reply.getByRole("button", { name: "查看证据 shared-source", exact: true })).toHaveCount(2);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+test("insufficient structured answers show a bounded gap and accurate v10 call budgets", async ({ page, api }) => {
+  const message = citationAnswer(24);
+  api.json("GET", `${conversationPath}/messages`, {
+    items: [{ ...message, result: { ...message.result, answer: { status: "insufficient", parts: [{ question_id: "q1", question: "缺失的问题", status: "insufficient_evidence", claims: [], gap: { reason: "insufficient_evidence" } }] } } }],
+    next_before: 0,
+  });
+  api.json("GET", "/agent/runs/citation-run-24", completedCitationRun(24));
+  await page.goto(assistantURL);
+  const reply = page.locator('[data-message-id="24"]');
+  await expect(reply.getByText("证据不足", { exact: true })).toBeVisible();
+  await expect(reply.getByText("当前材料不足以可靠回答这部分问题。", { exact: true })).toBeVisible();
+  await expect(reply.getByRole("button")).toHaveCount(0);
+  await expect(reply.locator("details")).toHaveCount(0);
+  await expect(reply.getByText(message.content, { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/短论文通常调用 6 次；长论文最多 30 次、15 分钟/)).toBeVisible();
+  await expect(page.getByText(/问答通常调用 3 次，最多 5 次、180 秒/)).toBeVisible();
+});
+
+test("report and legacy answer markers share evidence controls without crossing message boundaries", async ({ page, api }) => {
+  const reportReply = reportMessage("fulltext");
+  const answer = citationAnswer(26, "The independent legacy answer source.");
+  const legacy = {
+    ...answer,
+    content: "<b>旧回答保留原文</b> [problem-1-1] [unknown-id] [外部链接](javascript:alert(1))",
+    result: { ...questionReply(13, "fulltext", "").result },
+    citations: [{ ...answer.citations[0], id: "problem-1-1" }],
+  };
+  api.json("GET", `${conversationPath}/messages`, { items: [reportReply, legacy], next_before: 0 });
+  api.json("GET", `${conversationPath}/paper-report`, { report: reportReply, matches_current_paper: true });
+  api.json("GET", "/agent/runs/citation-run-26", completedCitationRun(26));
+  await page.goto(assistantURL);
+  const pinned = page.getByRole("region", { name: "论文报告", exact: true });
+  const reply = page.locator('[data-message-id="26"]');
+  const reportMarker = pinned.getByRole("button", { name: "查看证据 problem-1-1", exact: true });
+  const answerMarker = reply.getByRole("button", { name: "查看证据 problem-1-1", exact: true });
+  expect(await reportMarker.getAttribute("aria-controls")).not.toBe(await answerMarker.getAttribute("aria-controls"));
+  await expect(reply.getByText(/<b>旧回答保留原文<\/b>/)).toBeVisible();
+  await expect(reply.getByText(/\[unknown-id\]/)).toBeVisible();
+  await expect(reply.getByRole("button")).toHaveCount(1);
+  await expect(reply.locator("b")).toHaveCount(0);
+  await expect(reply.getByRole("link", { name: "外部链接" })).toHaveCount(0);
+  await reportMarker.click();
+  await expect(pinned.locator("details")).toHaveAttribute("open", "");
+  await expect(reply.locator("details")).not.toHaveAttribute("open", "");
+  await answerMarker.click();
+  await expect(reply.locator("summary")).toBeFocused();
+  await expect(reply.getByText(answer.citations[0].quote, { exact: true })).toBeVisible();
+  await expect(pinned.getByText(reportReply.citations[0].quote, { exact: true })).toBeAttached();
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+test("evidence targets survive history insertion and are isolated across conversations even for repeated IDs", async ({ page, api }) => {
+  const recent = citationAnswer(200, "Current conversation recent source.");
+  const older = citationAnswer(100, "Current conversation older source.");
+  const other = { ...conversation, id: "conversation-two", title: "另一段论文对话" };
+  const otherPath = `/agent/conversations/${other.id}`;
+  const replacement = citationAnswer(200, "Other conversation source.");
+  api.json("GET", "/agent/conversations", { items: [conversation, other], page: 1, has_more: false, next_page: 0 });
+  api.on("GET", `${conversationPath}/messages`, (route, url) => route.fulfill({ json: url.searchParams.has("before") ? { items: [older], next_before: 0 } : { items: [recent], next_before: 200 } }));
+  api.json("GET", otherPath, other);
+  api.json("GET", `${otherPath}/messages`, { items: [replacement], next_before: 0 });
+  api.json("GET", `${otherPath}/paper-report`, { report: null, matches_current_paper: false });
+  api.json("GET", "/agent/runs/citation-run-200", completedCitationRun(200));
+  await page.goto(assistantURL);
+  const recentReply = page.locator('[data-message-id="200"]');
+  const recentMarker = recentReply.getByRole("button", { name: "查看证据 shared-source", exact: true });
+  const targetBefore = await recentMarker.getAttribute("aria-controls");
+  await recentMarker.click();
+  await page.getByRole("button", { name: "加载更早消息", exact: true }).click();
+  const olderReply = page.locator('[data-message-id="100"]');
+  await expect(olderReply).toBeAttached();
+  await expect(recentMarker).toHaveAttribute("aria-controls", targetBefore!);
+  await expect(recentReply.locator("details")).toHaveAttribute("open", "");
+  const olderMarker = olderReply.getByRole("button", { name: "查看证据 shared-source", exact: true });
+  expect(await olderMarker.getAttribute("aria-controls")).not.toBe(targetBefore);
+  await olderMarker.click();
+  await expect(olderReply.locator("summary")).toBeFocused();
+  await expect(olderReply.getByText(older.citations[0].quote, { exact: true })).toBeVisible();
+  await expect(recentReply.getByText(recent.citations[0].quote, { exact: true })).toBeAttached();
+  await page.getByRole("button", { name: "助手设置" }).click();
+  await page.getByRole("combobox", { name: "历史对话", exact: true }).selectOption(other.id);
+  await expect(page.getByRole("combobox", { name: "历史对话", exact: true })).toHaveValue(other.id);
+  await expect(page.locator('[data-message-id="100"]')).toHaveCount(0);
+  await expect(recentReply.getByText(replacement.citations[0].quote, { exact: true })).toBeAttached();
+  const replacementTarget = await recentMarker.getAttribute("aria-controls");
+  expect(replacementTarget).not.toBe(targetBefore);
+  await expect(recentReply.locator("details")).not.toHaveAttribute("open", "");
+  await page.getByRole("button", { name: "助手设置" }).click();
+  await recentMarker.click();
+  await expect(recentReply.locator("summary")).toBeFocused();
+  await expect(recentReply.getByText(replacement.citations[0].quote, { exact: true })).toBeVisible();
+  const ids = await page.locator("details[id]").evaluateAll((nodes) => nodes.map((node) => node.id));
+  expect(new Set(ids).size).toBe(ids.length);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+test("replacing a login session remounts evidence targets even when message and citation IDs repeat", async ({ page, api }) => {
+  let replacement = false;
+  api.on("GET", `${conversationPath}/messages`, (route) =>
+    route.fulfill({ json: { items: [citationAnswer(200, replacement ? "New session source." : "Old session source.")], next_before: 0 } }),
+  );
+  api.json("GET", "/agent/runs/citation-run-200", completedCitationRun(200));
+  await page.goto(assistantURL);
+  const reply = page.locator('[data-message-id="200"]');
+  const marker = reply.getByRole("button", { name: "查看证据 shared-source", exact: true });
+  const oldTarget = await marker.getAttribute("aria-controls");
+  await marker.click();
+  await expect(reply.getByText("Old session source.", { exact: true })).toBeVisible();
+  replacement = true;
+  await page.evaluate(() => {
+    const next = JSON.stringify({ id: "replacement-fixture-session", accessToken: "replacement-fixture-token" });
+    localStorage.setItem("signalwatch.session", next);
+    window.dispatchEvent(new StorageEvent("storage", { key: "signalwatch.session", newValue: next }));
+  });
+  await expect(reply.getByText("New session source.", { exact: true })).toBeAttached();
+  await expect(reply.getByText("Old session source.", { exact: true })).toHaveCount(0);
+  const newTarget = await marker.getAttribute("aria-controls");
+  expect(newTarget).not.toBe(oldTarget);
+  expect(newTarget).not.toContain("replacement-fixture");
+  expect(await page.evaluate((id) => document.getElementById(id!), oldTarget)).toBeNull();
+  await expect(reply.locator("details")).not.toHaveAttribute("open", "");
+  await marker.focus();
+  await marker.press("Enter");
+  await expect(reply.locator("summary")).toBeFocused();
+  await expect(reply.getByText("New session source.", { exact: true })).toBeVisible();
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});

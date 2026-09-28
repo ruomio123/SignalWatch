@@ -286,7 +286,7 @@ func TestPaperConversationHistoricalCitationsCannotBecomeSourceEvidence(t *testi
 				t.Fatal("a historical assistant answer was promoted into source evidence")
 			}
 		}
-		raw, err := json.Marshal(fieldOutput{Status: "supported", Claims: []claimOutput{{Text: "这个结论来自历史对话。", Evidence: []evidenceOutput{{ID: "history-only-reference"}}}}})
+		raw, err := json.Marshal(singleQuestionAnswer(fieldOutput{Status: "supported", Claims: []claimOutput{{Text: "这个结论来自历史对话。", Evidence: []evidenceOutput{{ID: "history-only-reference"}}}}}))
 		must(t, err)
 		return req.Validate(generation.Result{Content: raw})
 	}

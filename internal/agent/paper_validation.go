@@ -335,19 +335,3 @@ func paperSchemaJSON(raw []byte, value any, schema *generation.Schema) error {
 	}
 	return paperJSON(raw, value)
 }
-func paperStageSchema(stage string) *generation.Schema {
-	switch {
-	case strings.HasPrefix(stage, "extracting_batch_"):
-		return batchSchema
-	case strings.HasPrefix(stage, "analyzing_"):
-		return paperSchemasFor(strings.TrimPrefix(stage, "analyzing_")).full
-	case strings.HasPrefix(stage, "repairing_"):
-		return paperSchemasFor(strings.TrimPrefix(stage, "repairing_")).full
-	case stage == "validating_paper" || strings.HasPrefix(stage, "validating_paper_"):
-		return reviewSchema
-	case stage == "normalizing_question":
-		return questionSchema
-	default:
-		panic("unregistered paper stage")
-	}
-}

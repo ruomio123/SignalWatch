@@ -17,6 +17,7 @@ chmod 700 .cache
 # Keep ignored historical tests and their unrelated dependencies out of this
 # acceptance entry point. Every selected test is self-contained and tracked.
 for test_file in \
+  internal/document/paper_retrieval_test.go \
   internal/generation/paper_schema_test.go \
   internal/ai/paper_budget_test.go \
   internal/bootstrap/paper_budget_test.go \

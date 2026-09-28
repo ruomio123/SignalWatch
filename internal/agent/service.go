@@ -164,7 +164,7 @@ func (s *Service) RunByID(ctx context.Context, uid uint64, id string) (Run, erro
 	if err == nil && json.Unmarshal(r.Checkpoint, &cp) == nil && cp.Paper != nil {
 		if r.State == "failed" || r.State == "unknown" || r.State == "cancelled" {
 			stage := cp.Paper.CurrentStage
-			if stage == "normalizing_question" || stage == "validating_paper" || strings.HasPrefix(stage, "validating_paper_") || strings.HasPrefix(stage, "extracting_batch_") || paperLabels[strings.TrimPrefix(stage, "analyzing_")] != "" || paperLabels[strings.TrimPrefix(stage, "repairing_")] != "" {
+			if _, registered := paperStageContracts[stage]; registered || stage == "retrieving_evidence" {
 				r.FailureStage = stage
 			}
 		}

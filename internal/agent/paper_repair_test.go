@@ -62,7 +62,13 @@ func (g *paperRepairGateway) Generate(ctx context.Context, req ModelRequest) (ge
 			g.t.Fatal("repair did not use its durable request")
 		}
 		var candidate fieldOutput
-		must(g.t, json.Unmarshal(cp.Paper.Repair.Candidate, &candidate))
+		if cp.Paper.Repair.Field == "answer" {
+			var answer paperAnswerOutput
+			must(g.t, json.Unmarshal(cp.Paper.Repair.Candidate, &answer))
+			candidate = fieldOutput{Status: answer.Answers[0].Status, Claims: answer.Answers[0].Claims}
+		} else {
+			must(g.t, json.Unmarshal(cp.Paper.Repair.Candidate, &candidate))
+		}
 		claim := candidate.Claims[0]
 		claim.Text = "整理后的结论仍受本轮原文支持。"
 		value = fieldOutput{Status: "supported", Claims: []claimOutput{claim}}
@@ -71,7 +77,7 @@ func (g *paperRepairGateway) Generate(ctx context.Context, req ModelRequest) (ge
 		}
 	case strings.Contains(req.System, "Resolve pronouns"):
 		stage = "normalizing_question"
-		value = questionOutput{Question: "论文使用什么方法？", Query: "retrieval method experiment"}
+		value = paperQuestionsOutput{Questions: []paperQuestionItemOutput{{Question: "论文使用什么方法？", Query: "retrieval method experiment"}}}
 	case strings.Contains(req.System, "Check EVERY"):
 		stage = "validating_paper"
 		verdicts := []map[string]any{}
@@ -100,6 +106,9 @@ func (g *paperRepairGateway) Generate(ctx context.Context, req ModelRequest) (ge
 			claims[len(claims)-1].Evidence[0].ID = "forged-reference"
 		}
 		value = fieldOutput{Status: "supported", Claims: claims}
+	}
+	if input.Field == "answer" {
+		value = singleQuestionAnswer(value.(fieldOutput))
 	}
 	g.stages = append(g.stages, stage)
 	wantTokens := 4096
@@ -574,11 +583,23 @@ func TestPaperRepairFinalCallCapsIncludeOriginalFailureAndRepair(t *testing.T) {
 				cp.Calls, g.initialCalls = cap-room, cap-room
 				must(t, f.store.Save(t.Context(), r, cp, "ready", nil))
 				evidence := []Citation{{ID: "source", Quote: "paper source"}}
+				questions := []PaperQuestion{{ID: "q1", Question: "论文使用什么方法？", Query: "retrieval method experiment"}}
+				if task == TaskPaperFollowup {
+					cp.Paper.QA = &PaperQACheckpoint{RetrieverVersion: paperRetrieverVersion, Questions: questions}
+				}
 				validate := func(raw []byte) error {
+					if task == TaskPaperFollowup {
+						_, e := decodePaperAnswer(raw, evidence, questions)
+						return e
+					}
 					_, e := decodeFieldFor(raw, evidence, field, task == TaskPaperReport)
 					return e
 				}
-				_, err = f.s.paperCall(t.Context(), r, &cp, func(context.Context) error { return nil }, "analyzing_"+field, fieldPromptFor(field, task == TaskPaperReport), paperInput(cp.Paper, field, evidence), validate)
+				input := paperInput(cp.Paper, field, evidence)
+				if task == TaskPaperFollowup {
+					input["questions"] = questions
+				}
+				_, err = f.s.paperCall(t.Context(), r, &cp, func(context.Context) error { return nil }, "analyzing_"+field, fieldPromptFor(field, task == TaskPaperReport), input, validate)
 				if room == 2 {
 					must(t, err)
 					if cp.Paper.Repair == nil || !cp.Paper.Repair.Attempted || cp.Paper.Repair.State != "completed" {

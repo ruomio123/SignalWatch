@@ -1,5 +1,11 @@
 import { useState } from "react";
-import { safeURL } from "./Common";
+import {
+  CitationDetails,
+  CitationText,
+  PaperCitations,
+  type PaperCitation,
+} from "./PaperCitations";
+import type { PaperAnswer } from "./PaperAnswer";
 
 export const reportFields = [
   ["problem", "论文问题"],
@@ -11,6 +17,7 @@ export const reportFields = [
 export type ReportField = (typeof reportFields)[number][0];
 export type PaperResult = {
   report?: Record<ReportField, string>;
+  answer?: PaperAnswer;
   fields: Record<string, { status: string; citation_ids: string[] }>;
   context_mode: "abstract" | "fulltext";
   fallback_reason?: string;
@@ -18,7 +25,6 @@ export type PaperResult = {
   workflow_version: string;
   source_version?: string;
 };
-type Reference = { id: string; page: number; quote: string; url: string };
 const fallbackReasons: Record<string, string> = {
   ocr_required: "扫描或图片页面需要 OCR，本期尚未启用",
   incomplete_text: "全文文字提取不完整",
@@ -52,20 +58,32 @@ export function PaperScope({
   );
 }
 export function PaperReportView({
+  messageID,
   result,
   content,
   citations,
   onRegenerate,
   disabled,
 }: {
+  messageID: string;
   result: PaperResult;
   content: string;
-  citations: Reference[];
+  citations: PaperCitation[];
   onRegenerate?: () => void;
   disabled?: boolean;
 }) {
   const [copied, setCopied] = useState("");
   const [error, setError] = useState("");
+  const assigned = new Set<string>();
+  const fieldCitations = Object.fromEntries(
+    reportFields.map(([field]) => {
+      const ids = (result.fields[field]?.citation_ids ?? []).filter(
+        (id) => !assigned.has(id),
+      );
+      ids.forEach((id) => assigned.add(id));
+      return [field, ids];
+    }),
+  );
   async function copy(kind: "JSON" | "Markdown") {
     try {
       await navigator.clipboard.writeText(
@@ -78,47 +96,40 @@ export function PaperReportView({
     }
   }
   return (
-    <div className="paper-report">
-      <PaperScope result={result} />
-      <div className="react-actions">
-        {onRegenerate && (
-          <button className="button" disabled={disabled} onClick={onRegenerate}>
-            重新生成论文报告
-          </button>
-        )}
-        <button className="button" onClick={() => void copy("JSON")}>
-          复制 JSON
-        </button>
-        <button className="button" onClick={() => void copy("Markdown")}>
-          复制 Markdown
-        </button>
-        {copied && <span role="status">已复制 {copied}</span>}
-      </div>
-      {error && <p role="alert">{error}</p>}
-      {reportFields.map(([field, label]) => (
-        <section className="paper-report-field" key={field} aria-label={label}>
-          <h3>{label}</h3>
-          <p className="agent-text">{result.report?.[field]}</p>
-          {result.fields[field]?.status === "insufficient_evidence" && (
-            <small>证据不足，未保留未经支持的结论。</small>
+    <PaperCitations messageID={messageID} citations={citations}>
+      <div className="paper-report">
+        <PaperScope result={result} />
+        <div className="react-actions">
+          {onRegenerate && (
+            <button className="button" disabled={disabled} onClick={onRegenerate}>
+              重新生成论文报告
+            </button>
           )}
-          {citations
-            .filter((ref) =>
-              result.fields[field]?.citation_ids.includes(ref.id),
-            )
-            .map((ref) => (
-              <details key={ref.id}>
-                <summary>
-                  证据 {ref.id} · {ref.page ? `第 ${ref.page} 页` : "摘要"}
-                </summary>
-                <blockquote>{ref.quote}</blockquote>
-                <a href={safeURL(ref.url)} target="_blank" rel="noreferrer">
-                  查看 arXiv 原文
-                </a>
-              </details>
-            ))}
-        </section>
-      ))}
-    </div>
+          <button className="button" onClick={() => void copy("JSON")}>
+            复制 JSON
+          </button>
+          <button className="button" onClick={() => void copy("Markdown")}>
+            复制 Markdown
+          </button>
+          {copied && <span role="status">已复制 {copied}</span>}
+        </div>
+        {error && <p role="alert">{error}</p>}
+        {reportFields.map(([field, label]) => (
+          <section className="paper-report-field" key={field} aria-label={label}>
+            <h3>{label}</h3>
+            <p className="agent-text">
+              <CitationText text={result.report?.[field] ?? ""} />
+            </p>
+            {result.fields[field]?.status === "insufficient_evidence" && (
+              <small>证据不足，未保留未经支持的结论。</small>
+            )}
+            <CitationDetails ids={fieldCitations[field]} />
+          </section>
+        ))}
+        <CitationDetails
+          ids={citations.filter((ref) => !assigned.has(ref.id)).map((ref) => ref.id)}
+        />
+      </div>
+    </PaperCitations>
   );
 }

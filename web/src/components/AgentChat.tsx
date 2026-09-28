@@ -11,11 +11,13 @@ import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { request, outputFailureMessage } from "../lib/api";
 import { useSession } from "../lib/session";
 import { useRequestScope } from "../lib/useRequestScope";
-import { ErrorNotice, Loading, safeURL } from "./Common";
+import { ErrorNotice, Loading } from "./Common";
 import type { Configuration, Provider } from "../lib/types";
 
 import { AssistantView, AssistantComposer } from "./AssistantView";
 import { PaperReportView, PaperScope, type PaperResult } from "./PaperReport";
+import { PaperAnswerView } from "./PaperAnswer";
+import { CitationDetails, CitationText, PaperCitations } from "./PaperCitations";
 import { PaperDocumentStatus } from "./PaperDocumentStatus";
 import { ShieldCheck } from "lucide-react";
 import { SubscriptionDraftCard, type Draft } from "./SubscriptionDraft";
@@ -133,6 +135,7 @@ const validationRules: Record<string, string> = {
   nonempty_text: "论断文字不能为空",
   duplicate_evidence: "同一论断不能重复引用相同片段",
   evidence_required: "每条论断必须有原文证据",
+  question_coverage: "每个子问题必须恰好回答一次，并使用本轮的问题编号",
   required_field: "缺少必填字段",
   unexpected_field: "包含未定义的字段",
   invalid_enum: "字段值不在允许范围内",
@@ -838,6 +841,8 @@ function AgentChatView({
             </p>
           )}
           <PaperReportView
+            key={`${conversationID}:${latestReport.id}`}
+            messageID={`${conversationID}:${latestReport.id}`}
             result={latestReport.result}
             content={latestReport.content}
             citations={latestReport.citations ?? []}
@@ -867,7 +872,7 @@ function AgentChatView({
             生成论文报告
           </button>
           <small>
-            短论文通常调用 6 次；长论文最多 24 次、15
+            短论文通常调用 6 次；长论文最多 30 次、15
             分钟。全文不可用时自动生成摘要版。
           </small>
         </div>
@@ -898,6 +903,7 @@ function AgentChatView({
             <strong>{m.role === "user" ? "你" : "AI 助手"}</strong>
             {m.result?.report ? (
               <PaperReportView
+                messageID={`${conversationID}:${m.id}`}
                 result={m.result}
                 disabled={reportDisabled}
                 content={m.content}
@@ -906,7 +912,23 @@ function AgentChatView({
             ) : (
               <>
                 {m.result && <PaperScope result={m.result} />}
-                <p className="agent-text">{m.content}</p>
+                {m.result?.answer ? (
+                  <PaperAnswerView
+                    answer={m.result.answer}
+                    messageID={`${conversationID}:${m.id}`}
+                    citations={m.citations ?? []}
+                  />
+                ) : (
+                  <PaperCitations
+                    messageID={`${conversationID}:${m.id}`}
+                    citations={m.citations ?? []}
+                  >
+                    <p className="agent-text">
+                      <CitationText text={m.content} />
+                    </p>
+                    <CitationDetails />
+                  </PaperCitations>
+                )}
               </>
             )}
             {m.role === "assistant" && (
@@ -914,17 +936,6 @@ function AgentChatView({
                 {m.provider} / {m.model}
               </small>
             )}
-            {(!m.result?.report ? (m.citations ?? []) : []).map((ref, i) => (
-              <details key={ref.id + i}>
-                <summary>
-                  证据 {ref.id} · {ref.page ? `第 ${ref.page} 页` : "摘要"}
-                </summary>
-                <blockquote>{ref.quote}</blockquote>
-                <a href={safeURL(ref.url)} target="_blank" rel="noreferrer">
-                  查看 arXiv 原文
-                </a>
-              </details>
-            ))}
           </article>
           {m.draft_id && drafts[m.draft_id] && (
             <SubscriptionDraftCard
@@ -1110,7 +1121,7 @@ function AgentChatView({
             助手只生成草案，确认后才会创建订阅。
           </>
         ) : (
-          `请求资料：${mode === "fulltext" ? "全文优先，最多等待 20 秒后使用摘要" : "仅标题和摘要"}`
+          `请求资料：${mode === "fulltext" ? "全文优先，最多等待 20 秒后使用摘要" : "仅标题和摘要"}；问答通常调用 3 次，最多 5 次、180 秒。`
         )
       }
       composer={

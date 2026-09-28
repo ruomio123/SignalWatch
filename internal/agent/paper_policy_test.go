@@ -40,8 +40,8 @@ func TestPaperFieldPoliciesBoundEveryFieldAndKeepSchemaImmutable(t *testing.T) {
 					assertPaperLimit(t, err, "$.claims", count, want, "claims", true)
 				}
 			}
-			schema := paperStageSchema("analyzing_" + field)
-			if schema != paperStageSchema("analyzing_"+field) || schema != paperStageSchema("repairing_"+field) {
+			schema := paperSchemasFor(field).full
+			if schema != paperSchemasFor(field).full || (field != "answer" && (schema != paperStageSchema("analyzing_"+field) || schema != paperStageSchema("repairing_"+field))) {
 				t.Fatal("schema rebuilt per request")
 			}
 			before, _ := json.Marshal(schema)
