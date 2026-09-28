@@ -8,10 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"signalwatch/internal/document"
 	"signalwatch/internal/paper"
+	"signalwatch/internal/platform/httpx"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 // Keep real document persistence while observing which operation the QA path
@@ -110,7 +115,7 @@ func TestDirectPaperQuestionsNeedNoReportAndUseThreeCalls(t *testing.T) {
 					t.Fatalf("fixture unexpectedly has a report: %v", err)
 				}
 				r := directSubmit(t, f, c, task, mode)
-				if r.Task != TaskPaperFollowup || r.WorkflowVersion != "paper-fixed-v6" {
+				if r.Task != TaskPaperFollowup || r.WorkflowVersion != PaperWorkflowVersion {
 					t.Fatalf("incorrect direct QA normalization: %+v", r)
 				}
 				f.s.process(t.Context(), f.claim(t, r.ID))
@@ -125,6 +130,42 @@ func TestDirectPaperQuestionsNeedNoReportAndUseThreeCalls(t *testing.T) {
 				directThreeStages(t, f, r)
 			})
 		}
+	}
+}
+
+func TestDirectPaperQuestionHTTPRejectsForeignConversationAndRevokedPaper(t *testing.T) {
+	f := newFixture(t)
+	c, _ := workflowPaper(t, f, nil)
+	other := newFixture(t)
+	for _, scenario := range []string{"foreign_user", "revoked_paper"} {
+		t.Run(scenario, func(t *testing.T) {
+			uid := other.u.ID
+			if scenario == "revoked_paper" {
+				uid = f.u.ID
+				must(t, f.db.Where("paper_id=?", *c.PaperID).Delete(&paper.SubscriptionPaper{}).Error)
+			}
+			router := gin.New()
+			router.Use(func(ctx *gin.Context) {
+				httpx.SetCurrentUserID(ctx, httpx.UserID(uid))
+				ctx.Next()
+			})
+			router.POST("/api/v2/agent/conversations/:id/messages", Handler{Service: f.s}.Handle)
+			body := `{"question":"解释这篇论文","provider":"glm","model":"glm-4.7-flash","idempotency_key":"unauthorized-direct-question"}`
+			request := httptest.NewRequest("POST", "/api/v2/agent/conversations/"+c.ID+"/messages", strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			var failure map[string]any
+			decodeAgentHTTPJSON(t, response, 404, &failure)
+			var runs, messages int64
+			must(t, f.db.Model(&Run{}).Where("conversation_id=?", c.ID).Count(&runs).Error)
+			must(t, f.db.Model(&Message{}).Where("conversation_id=?", c.ID).Count(&messages).Error)
+			stored, err := f.store.Conversation(t.Context(), f.u.ID, c.ID)
+			must(t, err)
+			if runs != 0 || messages != 0 || stored.ActiveRunID != nil || f.gateway.calls.Load() != 0 {
+				t.Fatalf("rejected request wrote work: runs=%d messages=%d active=%v calls=%d", runs, messages, stored.ActiveRunID, f.gateway.calls.Load())
+			}
+		})
 	}
 }
 

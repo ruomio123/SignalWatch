@@ -11,7 +11,7 @@ import (
 const (
 	TaskPaperReport      = "paper_report"
 	TaskPaperFollowup    = "paper_followup"
-	PaperWorkflowVersion = "paper-fixed-v6"
+	PaperWorkflowVersion = "paper-fixed-v7"
 	PaperReportMessage   = "快速了解论文"
 	PaperGoal            = "帮助用户快速了解当前论文"
 	paperInputLimit      = 64 << 10
@@ -59,6 +59,8 @@ type PaperFailure struct {
 }
 
 type PaperCheckpoint struct {
+	ContextCaptured     bool                       `json:"context_captured"`
+	ConversationContext PaperConversationContext   `json:"conversation_context"`
 	PreparationDeadline *time.Time                 `json:"preparation_deadline,omitempty"`
 	Failure             *PaperFailure              `json:"failure,omitempty"`
 	Sections            json.RawMessage            `json:"sections,omitempty"`
@@ -112,5 +114,5 @@ type PaperResult struct {
 func validPaperReport(message Message, hash string) (PaperResult, bool) {
 	var result PaperResult
 	err := json.Unmarshal(message.Result, &result)
-	return result, err == nil && result.Report != nil && result.PaperHash == hash && (result.WorkflowVersion == PaperWorkflowVersion || result.WorkflowVersion == "paper-fixed-v1" || result.WorkflowVersion == "paper-fixed-v2" || result.WorkflowVersion == "paper-fixed-v3" || result.WorkflowVersion == "paper-fixed-v4" || result.WorkflowVersion == "paper-fixed-v5") && (result.ContextMode == "abstract" || result.ContextMode == "fulltext")
+	return result, err == nil && result.Report != nil && result.PaperHash == hash && (result.WorkflowVersion == PaperWorkflowVersion || result.WorkflowVersion == "paper-fixed-v1" || result.WorkflowVersion == "paper-fixed-v2" || result.WorkflowVersion == "paper-fixed-v3" || result.WorkflowVersion == "paper-fixed-v4" || result.WorkflowVersion == "paper-fixed-v5" || result.WorkflowVersion == "paper-fixed-v6") && (result.ContextMode == "abstract" || result.ContextMode == "fulltext")
 }

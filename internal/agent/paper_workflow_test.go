@@ -677,7 +677,7 @@ func TestEnglishReportClaimFailsBeforePublicationWithoutRetry(t *testing.T) {
 }
 
 func TestCompletedReportCompatibilityIncludesPreviousLanguagePolicy(t *testing.T) {
-	for _, version := range []string{"paper-fixed-v1", "paper-fixed-v2", "paper-fixed-v3", "paper-fixed-v4", "paper-fixed-v5", PaperWorkflowVersion} {
+	for _, version := range []string{"paper-fixed-v1", "paper-fixed-v2", "paper-fixed-v3", "paper-fixed-v4", "paper-fixed-v5", "paper-fixed-v6", PaperWorkflowVersion} {
 		raw, _ := json.Marshal(PaperResult{Report: &PaperReport{Problem: "An existing English report."}, PaperHash: "hash", ContextMode: "fulltext", WorkflowVersion: version})
 		if _, ok := validPaperReport(Message{Result: raw}, "hash"); !ok {
 			t.Fatal("historical report hidden:", version)

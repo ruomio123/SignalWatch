@@ -161,6 +161,7 @@ type Store interface {
 	DeleteConversation(context.Context, uint64, string) error
 	Messages(context.Context, uint64, string, uint64) ([]Message, bool, error)
 	History(context.Context, string) ([]Message, error)
+	PaperHistory(context.Context, string, string, string) (PaperConversationContext, error)
 	LatestPaperReport(context.Context, string) (Message, error)
 	Submit(context.Context, Run, SubmitInput) (Run, error)
 	RunByID(context.Context, uint64, string) (Run, error)
