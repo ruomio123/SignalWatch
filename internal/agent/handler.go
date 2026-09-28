@@ -59,13 +59,26 @@ func (h Handler) Handle(c *gin.Context) {
 			}
 			pid = &v
 		}
-		rows, err := s.Conversations(ctx, u, c.Query("kind"), pid, page)
+		rows, hasMore, err := s.Conversations(ctx, u, c.Query("kind"), pid, page)
 		if err != nil {
 			writeError(c, err)
 			return
 		}
-		c.JSON(200, gin.H{"items": rows, "page": page})
+		nextPage := 0
+		if hasMore {
+			nextPage = page + 1
+		}
+		c.JSON(200, gin.H{"items": rows, "page": page, "has_more": hasMore, "next_page": nextPage})
 	case strings.Contains(path, "/conversations/"):
+		if strings.HasSuffix(path, "/paper-report") {
+			report, err := s.PaperReport(ctx, u, id)
+			if err != nil {
+				writeError(c, err)
+				return
+			}
+			c.JSON(200, report)
+			return
+		}
 		conversation, err := s.Conversation(ctx, u, id)
 		if err != nil {
 			writeError(c, err)
@@ -90,13 +103,13 @@ func (h Handler) Handle(c *gin.Context) {
 				writeError(c, ErrInput)
 				return
 			}
-			rows, err := s.Store.Messages(ctx, u, id, before)
+			rows, hasMore, err := s.Store.Messages(ctx, u, id, before)
 			if err != nil {
 				writeError(c, err)
 				return
 			}
 			next := uint64(0)
-			if len(rows) == 50 {
+			if hasMore && len(rows) > 0 {
 				next = rows[0].ID
 			}
 			c.JSON(200, gin.H{"items": rows, "next_before": next})

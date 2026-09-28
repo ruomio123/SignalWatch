@@ -24,5 +24,5 @@ cleanup() { mysql -e "DROP DATABASE IF EXISTS $test_db"; }
 trap cleanup EXIT
 export M1_TEST_MYSQL_DSN="root:isolated-test-only@tcp(127.0.0.1:13306)/${test_db}?parseTime=true&loc=UTC"
 export SIGNALWATCH_INTEGRATION_REQUIRED=1
-goose -dir migrations mysql "$M1_TEST_MYSQL_DSN" up
+goose -env=none -dir migrations mysql "$M1_TEST_MYSQL_DSN" up
 go test -race -count=1 ./internal/agent "$@"

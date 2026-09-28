@@ -221,6 +221,8 @@ AI_ENABLED_PROVIDERS=glm,qwen,deepseek,kimi,openai
 
 全文获取或解析失败时，论文报告会降级为明确标注的摘要版。AI 任务依赖 Worker，调用次数和间隔可通过 `.env.example` 中的 `AI_*` 配置调整。
 
+论文助手单独展示最近一次已完成报告，不受消息分页影响；论文更新后，旧报告会标明已过期。助手设置支持继续加载历史对话，对话内可加载更早消息；新回答完成后保留已加载的历史记录。
+
 ## Docker Compose 部署
 
 生产编排见 [deploy/compose.prod.yaml](deploy/compose.prod.yaml)。Nginx 对外开放 80 / 443，HTTP 自动跳转 HTTPS；API、Worker、MySQL 和 Redis 通过容器网络通信。

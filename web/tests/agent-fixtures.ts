@@ -36,6 +36,14 @@ export const conversationPath = "/agent/conversations/conversation-one";
 export const assistantURL =
   "/papers?paper_id=1&assistant=paper&conversation=conversation-one";
 
+export function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 type Handler = (route: Route, url: URL) => Promise<void> | void;
 export class AgentAPI {
   private handlers = new Map<string, Handler>();
@@ -48,6 +56,14 @@ export class AgentAPI {
 
   json(method: string, path: string, value: unknown, status = 200) {
     this.on(method, path, (route) => route.fulfill({ status, json: value }));
+  }
+
+  requestsFor(method: string, path: string) {
+    return this.requests.filter(
+      (request) =>
+        request.method === method.toUpperCase() &&
+        new URL(request.path, testOrigin).pathname === `/api/v2${path}`,
+    );
   }
 
   async handle(route: Route) {
@@ -125,8 +141,17 @@ export const test = base.extend<{ api: AgentAPI }>({
         },
       ],
     });
-    api.json("GET", "/agent/conversations", { items: [conversation], page: 1 });
+    api.json("GET", "/agent/conversations", {
+      items: [conversation],
+      page: 1,
+      has_more: false,
+      next_page: 0,
+    });
     api.json("GET", conversationPath, conversation);
+    api.json("GET", `${conversationPath}/paper-report`, {
+      report: null,
+      matches_current_paper: false,
+    });
     api.json("GET", `${conversationPath}/messages`, {
       items: [],
       next_before: 0,

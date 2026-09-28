@@ -93,6 +93,11 @@ type Message struct {
 	CreatedAt      time.Time       `json:"created_at"`
 }
 
+type PaperReportResponse struct {
+	Report              *Message `json:"report"`
+	MatchesCurrentPaper bool     `json:"matches_current_paper"`
+}
+
 func (Message) TableName() string { return "agent_messages" }
 
 type Step struct {
@@ -151,10 +156,10 @@ type Store interface {
 	Stats(context.Context) (map[string]int, error)
 	EditDraft(context.Context, uint64, string, uint32, subscription.CreateInput) (subscription.Draft, error)
 	CreateConversation(context.Context, Conversation) error
-	Conversations(context.Context, uint64, string, *uint64, int) ([]Conversation, error)
+	Conversations(context.Context, uint64, string, *uint64, int) ([]Conversation, bool, error)
 	Conversation(context.Context, uint64, string) (Conversation, error)
 	DeleteConversation(context.Context, uint64, string) error
-	Messages(context.Context, uint64, string, uint64) ([]Message, error)
+	Messages(context.Context, uint64, string, uint64) ([]Message, bool, error)
 	History(context.Context, string) ([]Message, error)
 	LatestPaperReport(context.Context, string) (Message, error)
 	Submit(context.Context, Run) (Run, error)

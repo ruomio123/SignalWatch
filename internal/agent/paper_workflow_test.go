@@ -129,7 +129,7 @@ func paperOutcome(t *testing.T, f *fixture, c Conversation, r Run) (Run, []Messa
 	t.Helper()
 	end, err := f.s.RunByID(context.Background(), f.u.ID, r.ID)
 	must(t, err)
-	messages, err := f.store.Messages(context.Background(), f.u.ID, c.ID, 0)
+	messages, _, err := f.store.Messages(context.Background(), f.u.ID, c.ID, 0)
 	must(t, err)
 	return end, messages
 }
@@ -522,7 +522,7 @@ func TestFollowupHTTPRejectsBeforeAnyReport(t *testing.T) {
 	if recorder.Code != 409 || !strings.Contains(recorder.Body.String(), "PAPER_REPORT_REQUIRED") {
 		t.Fatalf("%d %s", recorder.Code, recorder.Body.String())
 	}
-	messages, err := f.store.Messages(context.Background(), f.u.ID, c.ID, 0)
+	messages, _, err := f.store.Messages(context.Background(), f.u.ID, c.ID, 0)
 	must(t, err)
 	if len(messages) != 0 {
 		t.Fatal("blocked question created a message")
@@ -672,7 +672,7 @@ func TestReportMessageLabelDoesNotChangeGoalHistoryOrFollowups(t *testing.T) {
 	must(t, err)
 	again, err := f.s.Submit(t.Context(), f.u.ID, c.ID, input)
 	must(t, err)
-	messages, err := f.store.Messages(t.Context(), f.u.ID, c.ID, 0)
+	messages, _, err := f.store.Messages(t.Context(), f.u.ID, c.ID, 0)
 	must(t, err)
 	if again.ID != r.ID || again.InputHash != r.InputHash || r.Question != PaperGoal || len(messages) != 1 || messages[0].Content != "快速了解论文" {
 		t.Fatal("message label changed execution or idempotency")
@@ -684,7 +684,7 @@ func TestReportMessageLabelDoesNotChangeGoalHistoryOrFollowups(t *testing.T) {
 	must(t, err)
 	_, err = f.s.Submit(t.Context(), f.u.ID, c.ID, SubmitInput{Task: TaskPaperFollowup, Question: PaperGoal, Provider: input.Provider, Model: input.Model, ContextMode: input.ContextMode, IdempotencyKey: rand.Text()})
 	must(t, err)
-	messages, err = f.store.Messages(t.Context(), f.u.ID, c.ID, 0)
+	messages, _, err = f.store.Messages(t.Context(), f.u.ID, c.ID, 0)
 	must(t, err)
 	if len(messages) != 3 || messages[0].Content != PaperGoal || messages[2].Content != PaperGoal {
 		t.Fatal("rewrote history or ordinary followup")

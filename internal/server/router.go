@@ -163,6 +163,7 @@ func NewRouter(dependencies Dependencies) (*gin.Engine, error) {
 	aiRoutes.GET("/agent/conversations/:id", agentHandler)
 	aiRoutes.DELETE("/agent/conversations/:id", agentHandler)
 	aiRoutes.GET("/agent/conversations/:id/messages", agentHandler)
+	aiRoutes.GET("/agent/conversations/:id/paper-report", agentHandler)
 	aiRoutes.POST("/agent/conversations/:id/messages", agentHandler)
 	aiRoutes.GET("/agent/runs/:id", agentHandler)
 	aiRoutes.POST("/agent/runs/:id/cancel", agentHandler)

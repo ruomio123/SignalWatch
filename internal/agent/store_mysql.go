@@ -32,17 +32,29 @@ func (s *MySQLStore) Conversation(ctx context.Context, u uint64, id string) (Con
 	err := s.db.WithContext(ctx).Where("id=? AND user_id=?", id, u).Take(&c).Error
 	return c, notFound(err)
 }
-func (s *MySQLStore) Conversations(ctx context.Context, u uint64, kind string, pid *uint64, page int) ([]Conversation, error) {
+func (s *MySQLStore) Conversations(ctx context.Context, u uint64, kind string, pid *uint64, page int) ([]Conversation, bool, error) {
 	rows := []Conversation{}
-	q := s.db.WithContext(ctx).Where("user_id=?", u)
+	// Match Papers.Get visibility before pagination. Historical matches remain
+	// visible when their subscription is disabled or soft-deleted. EXISTS avoids
+	// duplicating conversations whose paper matched several subscriptions.
+	q := s.db.WithContext(ctx).Where("agent_conversations.user_id=?", u).
+		Where(`(agent_conversations.paper_id IS NULL OR EXISTS (
+			SELECT 1 FROM subscription_papers sp
+			JOIN subscriptions s ON s.id=sp.subscription_id
+			WHERE sp.paper_id=agent_conversations.paper_id AND s.user_id=?
+		))`, u)
 	if kind != "" {
 		q = q.Where("kind=?", kind)
 	}
 	if pid != nil {
 		q = q.Where("paper_id=?", *pid)
 	}
-	err := q.Order("updated_at DESC,id DESC").Offset((page - 1) * 20).Limit(20).Find(&rows).Error
-	return rows, err
+	err := q.Order("updated_at DESC,id DESC").Offset((page - 1) * 20).Limit(21).Find(&rows).Error
+	hasMore := len(rows) > 20
+	if hasMore {
+		rows = rows[:20]
+	}
+	return rows, hasMore, err
 }
 func (s *MySQLStore) DeleteConversation(ctx context.Context, u uint64, id string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -57,20 +69,24 @@ func (s *MySQLStore) DeleteConversation(ctx context.Context, u uint64, id string
 		return tx.Delete(&c).Error
 	})
 }
-func (s *MySQLStore) Messages(ctx context.Context, u uint64, id string, before uint64) ([]Message, error) {
+func (s *MySQLStore) Messages(ctx context.Context, u uint64, id string, before uint64) ([]Message, bool, error) {
 	if _, err := s.Conversation(ctx, u, id); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	rows := []Message{}
 	q := s.db.WithContext(ctx).Where("conversation_id=?", id)
 	if before > 0 {
 		q = q.Where("id<?", before)
 	}
-	err := q.Order("id DESC").Limit(50).Find(&rows).Error
+	err := q.Order("id DESC").Limit(51).Find(&rows).Error
+	hasMore := len(rows) > 50
+	if hasMore {
+		rows = rows[:50]
+	}
 	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
 		rows[i], rows[j] = rows[j], rows[i]
 	}
-	return rows, err
+	return rows, hasMore, err
 }
 func (s *MySQLStore) History(ctx context.Context, id string) ([]Message, error) {
 	rows := []Message{}

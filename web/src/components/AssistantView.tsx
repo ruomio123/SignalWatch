@@ -25,6 +25,7 @@ export function AssistantView({
   status,
   composer,
   onClose,
+  scrollRef,
 }: {
   title: string;
   subtitle: string;
@@ -35,6 +36,7 @@ export function AssistantView({
   status: ReactNode;
   composer: ReactNode;
   onClose?: () => void;
+  scrollRef?: RefObject<HTMLDivElement | null>;
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsID = useId();
@@ -60,7 +62,7 @@ export function AssistantView({
           <X size={20} aria-hidden="true" />
         </IconButton>
       </header>
-      <div className="assistant-scroll">
+      <div className="assistant-scroll" ref={scrollRef}>
         <div
           className="assistant-settings"
           id={settingsID}

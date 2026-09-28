@@ -360,7 +360,7 @@ func TestPaperConversationRetrievesVersionedEvidenceAndPreservesHistory(t *testi
 	if extractions.Load() != 1 {
 		t.Fatalf("expected one document extraction, got %d", extractions.Load())
 	}
-	messages, err := f.store.Messages(ctx, f.u.ID, c.ID, 0)
+	messages, _, err := f.store.Messages(ctx, f.u.ID, c.ID, 0)
 	must(t, err)
 	if len(messages) != 4 {
 		t.Fatal(messages)

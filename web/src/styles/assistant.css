@@ -223,3 +223,18 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.paper-report-pinned {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--background);
+}
+.paper-report-pinned > h3 {
+  margin: 0 0 12px;
+}
+.paper-report-stale {
+  padding: 10px 12px;
+  border-left: 3px solid var(--primary);
+  background: var(--surface);
+}

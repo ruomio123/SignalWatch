@@ -11,7 +11,7 @@ mysql -e "CREATE DATABASE $name"
 cleanup(){ mysql -e "DROP DATABASE $name"; rm -rf "$work"; }
 trap cleanup EXIT
 dsn="root:isolated-test-only@tcp(127.0.0.1:13306)/${name}?parseTime=true&loc=UTC"
-goose -dir migrations mysql "$dsn" up-to 18
+goose -env=none -dir migrations mysql "$dsn" up-to 18
 mysql "$name" <<'SQL'
 INSERT INTO users(email,password_hash,timezone,digest_time,max_items_per_digest,status,role,created_at,updated_at) VALUES('migration@example.test','fixture','UTC','08:00:00',10,'active','user',UTC_TIMESTAMP(),UTC_TIMESTAMP());
 INSERT INTO subscriptions(user_id,source_id,name,category,keywords_json,enabled,version,max_items_per_digest,digest_ai_enabled,digest_ai_language,created_at,updated_at) SELECT 1,id,'preserved','cs.AI','["agent"]',1,7,10,1,'en',UTC_TIMESTAMP(),UTC_TIMESTAMP() FROM sources WHERE source_key='arxiv';
@@ -25,7 +25,7 @@ from pathlib import Path
 import sys
 p=Path(sys.argv[1]);s=p.read_text();i=s.index(';')+1;p.write_text(s[:i]+"\nSIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='injected migration interruption';\n"+s[i:])
 PY
-if goose -dir "$work/migrations" mysql "$dsn" up; then
+if goose -env=none -dir "$work/migrations" mysql "$dsn" up; then
   echo 'fault injection did not fail' >&2; exit 1
 fi
 version=$(mysql -N "$name" -e 'SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1')
@@ -34,9 +34,9 @@ test "$version" = 19
 mysql -e "DROP DATABASE $name; CREATE DATABASE $name"
 mysql "$name" < "$work/before.sql"
 test "$(mysql -N "$name" -e 'SELECT version FROM subscriptions WHERE name="preserved"')" = 7
-goose -dir migrations mysql "$dsn" up-to 28
+goose -env=none -dir migrations mysql "$dsn" up-to 28
 credential_before=$(mysql -N "$name" -e 'SELECT CONCAT(generation,":",config_version,":",HEX(secret_ciphertext),":",HEX(secret_nonce),":",master_key_version,":",is_default) FROM user_ai_configurations WHERE user_id=1')
-goose -dir migrations mysql "$dsn" up-to 29
+goose -env=none -dir migrations mysql "$dsn" up-to 29
 mysql "$name" <<'SQL'
 INSERT INTO papers(source_id,arxiv_id,title,abstract,comments,authors_json,categories_json,arxiv_url,pdf_url,published_at,arxiv_updated_at,first_seen_at,created_at,updated_at)
  SELECT id,'1706.03762','Migration paper','A test abstract','','[]','["cs.AI"]','https://arxiv.org/abs/1706.03762','https://arxiv.org/pdf/1706.03762',UTC_TIMESTAMP(),UTC_TIMESTAMP(),UTC_TIMESTAMP(),UTC_TIMESTAMP(),UTC_TIMESTAMP() FROM sources WHERE source_key='arxiv';
@@ -47,7 +47,7 @@ INSERT INTO agent_runs(id,conversation_id,user_id,idempotency_key,input_hash,que
 INSERT INTO agent_messages(conversation_id,run_id,role,content,citations,created_at)
  VALUES('migration-paper','migration-run','user','Preserved question','[]',UTC_TIMESTAMP());
 SQL
-goose -dir migrations mysql "$dsn" up-to 30
+goose -env=none -dir migrations mysql "$dsn" up-to 30
 # Preserve ordinary users and both active and disabled former operators.
 mysql "$name" <<'SQL'
 INSERT INTO users(email,password_hash,timezone,digest_time,max_items_per_digest,status,role,created_at,updated_at)
@@ -61,7 +61,7 @@ users_query='SELECT JSON_ARRAY(id,email,password_hash,timezone,digest_time,max_i
 users_before=$(mysql -N "$name" -e "$users_query")
 sessions_before=$(mysql -N "$name" -e 'SELECT * FROM auth_sessions ORDER BY token_hash')
 "${compose[@]}" exec -T -e MYSQL_PWD=isolated-test-only mysql mysqldump -uroot --single-transaction --skip-comments --set-gtid-purged=OFF --no-tablespaces "$name" > "$work/before-role-removal.sql"
-goose -dir migrations mysql "$dsn" up-to 31
+goose -env=none -dir migrations mysql "$dsn" up-to 31
 assert_role_removal(){
   test "$(mysql -N "$name" -e "$users_query")" = "$users_before"
   test "$(mysql -N "$name" -e 'SELECT * FROM auth_sessions ORDER BY token_hash')" = "$sessions_before"
@@ -71,20 +71,20 @@ assert_role_removal(){
 }
 assert_role_removal
 # Down restores only the schema, with user as the default for every account.
-goose -dir migrations mysql "$dsn" down-to 30
+goose -env=none -dir migrations mysql "$dsn" down-to 30
 test "$(mysql -N "$name" -e 'SELECT COUNT(*) FROM users WHERE role<>"user"')" = 0
 test "$(mysql -N "$name" -e "$users_query")" = "$users_before"
 if mysql "$name" -e "UPDATE users SET role='invalid' WHERE id=1" 2>/dev/null; then
   echo 'role CHECK was not restored by Down' >&2; exit 1
 fi
 test "$(mysql -N "$name" -e "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA='$name' AND TABLE_NAME='users' AND INDEX_NAME='idx_users_role_status'")" = 2
-goose -dir migrations mysql "$dsn" up-to 31
+goose -env=none -dir migrations mysql "$dsn" up-to 31
 assert_role_removal
 # Rehearse restoring historical assignments from the backup, then upgrading again.
 mysql -e "DROP DATABASE $name; CREATE DATABASE $name"
 mysql "$name" < "$work/before-role-removal.sql"
 test "$(mysql -N "$name" -e 'SELECT COUNT(*) FROM users WHERE role="operator"')" = 2
-goose -dir migrations mysql "$dsn" up-to 31
+goose -env=none -dir migrations mysql "$dsn" up-to 31
 assert_role_removal
 test "$(mysql -N "$name" -e 'SELECT CONCAT(generation,":",config_version,":",HEX(secret_ciphertext),":",HEX(secret_nonce),":",master_key_version,":",is_default) FROM user_ai_configurations WHERE user_id=1')" = "$credential_before"
 test "$(mysql -N "$name" -e 'SELECT name FROM user_ai_configurations WHERE user_id=1')" = 'glm API'
@@ -156,12 +156,12 @@ assert_legacy_removed(){
   test "$(mysql -N "$name" -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='$name' AND TABLE_NAME IN ('ai_daily_usage','ai_user_call_leases')")" = 0
   test "$(mysql -N "$name" -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='$name' AND TABLE_TYPE='BASE TABLE' AND TABLE_NAME<>'goose_db_version'")" = 24
 }
-goose -dir migrations mysql "$dsn" up-to 32
+goose -env=none -dir migrations mysql "$dsn" up-to 32
 assert_legacy_removed
 assert_retained_unchanged
 
 # Down must restore the exact original definitions, but never fabricate old usage.
-goose -dir migrations mysql "$dsn" down-to 31
+goose -env=none -dir migrations mysql "$dsn" down-to 31
 test "$(mysql -N "$name" -e 'SHOW CREATE TABLE ai_daily_usage; SHOW CREATE TABLE ai_user_call_leases')" = "$legacy_schema"
 test "$(mysql -N "$name" -e 'SELECT (SELECT COUNT(*) FROM ai_daily_usage)+(SELECT COUNT(*) FROM ai_user_call_leases)')" = 0
 assert_retained_unchanged
@@ -181,20 +181,20 @@ first_drop = 'DROP TABLE IF EXISTS ai_daily_usage;'
 assert s.count(first_drop) == 1
 p.write_text(s.replace(first_drop, first_drop + "\nSIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='injected cleanup interruption';", 1))
 PY
-if goose -dir "$work/cleanup-migrations" mysql "$dsn" up-to 32; then
+if goose -env=none -dir "$work/cleanup-migrations" mysql "$dsn" up-to 32; then
   echo 'cleanup fault injection did not fail' >&2; exit 1
 fi
 test "$(mysql -N "$name" -e 'SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1')" = 31
 test "$(mysql -N "$name" -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='$name' AND TABLE_NAME='ai_daily_usage'")" = 0
 test "$(mysql -N "$name" -e 'SELECT lease_token FROM ai_user_call_leases WHERE user_id=1')" = legacy-lease
 assert_retained_unchanged
-goose -dir migrations mysql "$dsn" up-to 32
+goose -env=none -dir migrations mysql "$dsn" up-to 32
 assert_legacy_removed
 assert_retained_unchanged
 
 # Empty initialization has a separate database and exercises all historic migrations.
 mysql -e "DROP DATABASE $name; CREATE DATABASE $name"
-goose -dir migrations mysql "$dsn" up
+goose -env=none -dir migrations mysql "$dsn" up
 test "$(mysql -N "$name" -e 'SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1')" = 32
 assert_legacy_removed
 echo 'migration drill: empty initialization, upgrade, interrupted DDL, backup restoration, role removal, legacy AI cleanup, 24-table preservation and rollback passed'

@@ -53,13 +53,35 @@ func (s *Service) Conversation(ctx context.Context, uid uint64, id string) (Conv
 	}
 	return c, nil
 }
-func (s *Service) Conversations(ctx context.Context, uid uint64, kind string, pid *uint64, page int) ([]Conversation, error) {
-	if page < 1 || page > 100000 || (kind != "" && kind != "paper" && kind != "subscription") {
-		return nil, ErrInput
-	}
-	rows, err := s.Store.Conversations(ctx, uid, kind, pid, page)
+func (s *Service) PaperReport(ctx context.Context, uid uint64, id string) (PaperReportResponse, error) {
+	c, err := s.Store.Conversation(ctx, uid, id)
 	if err != nil {
-		return nil, err
+		return PaperReportResponse{}, err
+	}
+	if c.Kind != "paper" || c.PaperID == nil {
+		return PaperReportResponse{}, ErrNotFound
+	}
+	p, err := s.Papers.Get(ctx, uid, *c.PaperID)
+	if err != nil {
+		return PaperReportResponse{}, ErrNotFound
+	}
+	report, err := s.Store.LatestPaperReport(ctx, c.ID)
+	if errors.Is(err, ErrNotFound) {
+		return PaperReportResponse{}, nil
+	}
+	if err != nil {
+		return PaperReportResponse{}, err
+	}
+	_, matches := validPaperReport(report, paperSnapshotHash(p))
+	return PaperReportResponse{Report: &report, MatchesCurrentPaper: matches}, nil
+}
+func (s *Service) Conversations(ctx context.Context, uid uint64, kind string, pid *uint64, page int) ([]Conversation, bool, error) {
+	if page < 1 || page > 100000 || (kind != "" && kind != "paper" && kind != "subscription") {
+		return nil, false, ErrInput
+	}
+	rows, hasMore, err := s.Store.Conversations(ctx, uid, kind, pid, page)
+	if err != nil {
+		return nil, false, err
 	}
 	out := []Conversation{}
 	for _, c := range rows {
@@ -70,12 +92,12 @@ func (s *Service) Conversations(ctx context.Context, uid uint64, kind string, pi
 				if errors.Is(err, ErrNotFound) {
 					continue
 				}
-				return nil, err
+				return nil, false, err
 			}
 		}
 		out = append(out, c)
 	}
-	return out, nil
+	return out, hasMore, nil
 }
 func (s *Service) Submit(ctx context.Context, uid uint64, id string, input SubmitInput) (Run, error) {
 	c, err := s.Conversation(ctx, uid, id)

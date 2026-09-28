@@ -2,6 +2,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
@@ -45,6 +46,22 @@ type Message = {
   draft_id?: string;
   provider: string;
   model: string;
+};
+type ReportSnapshot = {
+  report: Message | null;
+  matches_current_paper: boolean;
+};
+function mergeMessages(previous: Message[], incoming: Message[]) {
+  return [
+    ...new Map([...previous, ...incoming].map((m) => [m.id, m])).values(),
+  ].sort((a, b) => a.id - b.id);
+}
+type AgentChatProps = {
+  kind: "paper" | "subscription";
+  paperID?: number;
+  paperTitle?: string;
+  onCreated?: () => void;
+  onClose?: () => void;
 };
 type FailedStep = { tool?: string; call_id?: string; failure_code?: string };
 type Run = {
@@ -119,30 +136,37 @@ const failures: Record<string, string> = {
   daily_limit: "今日模型调用已达上限。",
   cancelled: "本轮已停止。",
 };
-export function AgentChat({
+export function AgentChat(props: AgentChatProps) {
+  const { token } = useSession();
+  return (
+    <AgentChatView
+      key={JSON.stringify([token, props.kind, props.paperID])}
+      {...props}
+    />
+  );
+}
+function AgentChatView({
   kind,
   paperID,
   paperTitle,
   onCreated,
   onClose,
-}: {
-  kind: "paper" | "subscription";
-  paperID?: number;
-  paperTitle?: string;
-  onCreated?: () => void;
-  onClose?: () => void;
-}) {
+}: AgentChatProps) {
   const { token } = useSession();
-  const scope = useRequestScope();
   const location = useLocation();
   const [params, setParams] = useSearchParams();
   const conversationID = params.get("conversation") ?? "";
+  const scope = useRequestScope(conversationID);
   const [credentials, setCredentials] = useState<Configuration[]>();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [provider, setProvider] = useState("");
   const [credentialID, setCredentialID] = useState("");
   const [model, setModel] = useState("");
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [nextConversationPage, setNextConversationPage] = useState(0);
+  const [loadingConversations, setLoadingConversations] = useState(false);
+  const conversationPage = useRef(1);
+  const conversationLoading = useRef(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [current, setCurrent] = useState<Conversation>();
@@ -152,8 +176,18 @@ export function AgentChat({
   const [error, setError] = useState<unknown>();
   const [busy, setBusy] = useState(false);
   const [older, setOlder] = useState(0);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const olderLoading = useRef(false);
+  const historyLoaded = useRef(false);
+  const [reportSnapshot, setReportSnapshot] = useState<ReportSnapshot>();
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollAnchor = useRef<{ id: string; offset: number } | undefined>(
+    undefined,
+  );
   const reloadVersion = useRef(0);
+  const newConversation = useRef<string | undefined>(undefined);
+  const submitting = useRef(false);
   const submission = useRef<{ key: string; body: string } | undefined>(
     undefined,
   );
@@ -168,12 +202,28 @@ export function AgentChat({
       { replace: true },
     );
   const list = useCallback(
-    async (signal: AbortSignal) => {
-      const result = await request<{ items: Conversation[] }>(
-        `/agent/conversations?kind=${kind}${paperID ? `&paper_id=${paperID}` : ""}`,
+    async (signal: AbortSignal, page = 1) => {
+      const result = await request<{
+        items: Conversation[];
+        has_more: boolean;
+        next_page: number;
+      }>(
+        `/agent/conversations?kind=${kind}${paperID ? `&paper_id=${paperID}` : ""}&page=${page}`,
         { token, signal },
       );
-      setConversations(result.items);
+      if (signal.aborted) return;
+      setConversations((old) => {
+        const ordered =
+          page === 1 ? [...result.items, ...old] : [...old, ...result.items];
+        const values = new Map<string, Conversation>();
+        for (const c of ordered) if (!values.has(c.id)) values.set(c.id, c);
+        for (const c of result.items) values.set(c.id, c);
+        return [...values.values()];
+      });
+      if (page >= conversationPage.current) {
+        conversationPage.current = page;
+        setNextConversationPage(result.has_more ? result.next_page : 0);
+      }
     },
     [token, kind, paperID],
   );
@@ -224,9 +274,15 @@ export function AgentChat({
             `/agent/conversations/${targetID}/messages`,
             { token, signal },
           ),
+          kind === "paper"
+            ? request<ReportSnapshot>(
+                `/agent/conversations/${targetID}/paper-report`,
+                { token, signal },
+              )
+            : Promise.resolve(undefined),
         ]);
-      let [c, m] = await loadSnapshot();
-      if (kind === "paper" && (c.kind !== "paper" || c.paper_id !== paperID)) {
+      let [c, m, report] = await loadSnapshot();
+      if (c.kind !== kind || (kind === "paper" && c.paper_id !== paperID)) {
         throw new Error("该对话不属于当前论文，请在助手设置中选择新对话。");
       }
       const latestRun = c.active_run_id ?? m.items[m.items.length - 1]?.run_id;
@@ -249,7 +305,7 @@ export function AgentChat({
           latest.state === "completed" &&
           !m.items.some((v) => v.run_id === latestRun && v.role === "assistant")
         ) {
-          [c, m] = await loadSnapshot();
+          [c, m, report] = await loadSnapshot();
         }
       }
       const ids = [
@@ -266,15 +322,33 @@ export function AgentChat({
       // publish it before its messages and drafts have finished loading.
       if (signal.aborted || revision !== reloadVersion.current) return;
       setCurrent(c);
-      setMessages(m.items);
-      setOlder(m.next_before);
-      setDrafts(Object.fromEntries(ds.map((d) => [d.id, d])));
+      setMessages((old) => mergeMessages(old, m.items));
+      if (!historyLoaded.current) setOlder(m.next_before);
+      setDrafts((old) => ({
+        ...old,
+        ...Object.fromEntries(ds.map((d) => [d.id, d])),
+      }));
+      setReportSnapshot(report);
       setRun(latest);
     },
     [conversationID, token, kind, paperID],
   );
-  useEffect(() => {
+  useLayoutEffect(() => {
     const controller = new AbortController();
+    reloadVersion.current++;
+    olderLoading.current = false;
+    conversationLoading.current = false;
+    historyLoaded.current = false;
+    scrollAnchor.current = undefined;
+    newConversation.current = undefined;
+    submitting.current = false;
+    submission.current = undefined;
+    setOlder(0);
+    setLoadingOlder(false);
+    setLoadingConversations(false);
+    setReportSnapshot(undefined);
+    setBusy(false);
+    setQuestion("");
     setMessages([]);
     setRun(undefined);
     setCurrent(undefined);
@@ -285,6 +359,20 @@ export function AgentChat({
     });
     return () => controller.abort();
   }, [reload]);
+  useLayoutEffect(() => {
+    const anchor = scrollAnchor.current;
+    const root = scrollRef.current;
+    if (!anchor || !root) return;
+    const element = root.querySelector<HTMLElement>(
+      `[data-message-id="${anchor.id}"]`,
+    );
+    if (element)
+      root.scrollTop +=
+        element.getBoundingClientRect().top -
+        root.getBoundingClientRect().top -
+        anchor.offset;
+    scrollAnchor.current = undefined;
+  }, [messages]);
   const active = !!run && ["pending", "running"].includes(run.state);
   const activeRunID = active ? run.id : undefined;
   useEffect(() => {
@@ -323,8 +411,9 @@ export function AgentChat({
   }, [activeRunID, reload, list, token]);
   const canFollowup =
     kind !== "paper" ||
-    (current?.id === conversationID && current?.paper_report_ready === true);
-  const submitting = useRef(false);
+    (current?.id === conversationID &&
+      current?.paper_report_ready === true &&
+      reportSnapshot?.matches_current_paper === true);
   async function send(e?: FormEvent, task?: "paper_report" | "paper_followup") {
     e?.preventDefault();
     if (
@@ -339,6 +428,7 @@ export function AgentChat({
     )
       return;
     submitting.current = true;
+    const signal = scope();
     setBusy(true);
     setError(undefined);
     const text = task === "paper_report" ? "" : question;
@@ -353,22 +443,22 @@ export function AgentChat({
     if (submission.current?.body !== body)
       submission.current = { key: crypto.randomUUID(), body };
     try {
-      let id = conversationID;
+      let id = conversationID || newConversation.current;
       if (!id) {
         const c = await request<Conversation>("/agent/conversations", {
           token,
-          signal: scope(),
+          signal,
           method: "POST",
           body: { kind, ...(paperID ? { paper_id: paperID } : {}) },
         });
         id = c.id;
-        chooseConversation(id);
+        newConversation.current = id;
       }
       const value = await request<{ run_id: string; run: Run }>(
         `/agent/conversations/${id}/messages`,
         {
           token,
-          signal: scope(),
+          signal,
           method: "POST",
           body: {
             ...JSON.parse(body),
@@ -376,17 +466,25 @@ export function AgentChat({
           },
         },
       );
-      if (scope().aborted) return;
+      if (signal.aborted) return;
       submission.current = undefined;
       if (task !== "paper_report") setQuestion("");
+      // Only navigate after both writes finish. The new view owns its reads;
+      // switching the URL earlier would cancel this legitimate submission.
+      if (!conversationID) {
+        chooseConversation(id);
+        return;
+      }
       setRun(value.run);
-      await reload(scope(), id);
-      await list(scope());
+      await reload(signal, id);
+      await list(signal);
     } catch (e) {
-      if (!scope().aborted) setError(e);
+      if (!signal.aborted) setError(e);
     } finally {
-      submitting.current = false;
-      if (!scope().aborted) setBusy(false);
+      if (!signal.aborted) {
+        submitting.current = false;
+        setBusy(false);
+      }
     }
   }
   async function confirm(d: Draft) {
@@ -400,34 +498,104 @@ export function AgentChat({
       return;
     setBusy(true);
     setError(undefined);
+    const signal = scope();
     try {
       await request(`/agent/subscription-drafts/${d.id}/confirm`, {
         token,
-        signal: scope(),
+        signal,
         method: "POST",
         body: { version: d.version },
       });
-      await reload(scope());
-      onCreated?.();
+      await reload(signal);
+      if (!signal.aborted) onCreated?.();
     } catch (e) {
-      if (!scope().aborted) setError(e);
+      if (!signal.aborted) setError(e);
     } finally {
-      if (!scope().aborted) setBusy(false);
+      if (!signal.aborted) setBusy(false);
+    }
+  }
+  function refresh() {
+    const signal = scope();
+    setError(undefined);
+    void reload(signal).catch((error) => {
+      if (!signal.aborted) setError(error);
+    });
+  }
+  async function loadOlder() {
+    if (olderLoading.current || !older || current?.id !== conversationID)
+      return;
+    const signal = scope();
+    olderLoading.current = true;
+    setLoadingOlder(true);
+    try {
+      const page = await request<{ items: Message[]; next_before: number }>(
+        `/agent/conversations/${conversationID}/messages?before=${older}`,
+        { token, signal },
+      );
+      const ids = [
+        ...new Set(
+          page.items.map((m) => m.draft_id).filter((id): id is string => !!id),
+        ),
+      ];
+      const loadedDrafts = await Promise.all(
+        ids.map((id) =>
+          request<Draft>(`/agent/subscription-drafts/${id}`, { token, signal }),
+        ),
+      );
+      if (signal.aborted) return;
+      const root = scrollRef.current;
+      if (root) {
+        const bounds = root.getBoundingClientRect();
+        const top = bounds.top;
+        const firstVisible = [
+          ...root.querySelectorAll<HTMLElement>("[data-message-id]"),
+        ].find((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.bottom > top && rect.top < bounds.bottom;
+        });
+        if (firstVisible)
+          scrollAnchor.current = {
+            id: firstVisible.dataset.messageId!,
+            offset: firstVisible.getBoundingClientRect().top - top,
+          };
+      }
+      historyLoaded.current = true;
+      setMessages((old) => mergeMessages(old, page.items));
+      setDrafts((old) => ({
+        ...old,
+        ...Object.fromEntries(loadedDrafts.map((d) => [d.id, d])),
+      }));
+      setOlder(page.next_before);
+    } catch (error) {
+      if (!signal.aborted) setError(error);
+    } finally {
+      if (!signal.aborted) {
+        olderLoading.current = false;
+        setLoadingOlder(false);
+      }
+    }
+  }
+  async function loadConversations() {
+    if (conversationLoading.current || !nextConversationPage) return;
+    const signal = scope();
+    conversationLoading.current = true;
+    setLoadingConversations(true);
+    try {
+      await list(signal, nextConversationPage);
+    } catch (error) {
+      if (!signal.aborted) setError(error);
+    } finally {
+      if (!signal.aborted) {
+        conversationLoading.current = false;
+        setLoadingConversations(false);
+      }
     }
   }
   const usable = credentials?.filter((c) => c.usable) ?? [];
   const returnTo = location.pathname + location.search;
   const errorNotice = (
     <>
-      {!!error && (
-        <ErrorNotice
-          error={error}
-          retry={() => {
-            setError(undefined);
-            void reload(scope()).catch(setError);
-          }}
-        />
-      )}
+      {!!error && <ErrorNotice error={error} retry={refresh} />}
     </>
   );
   const historyControls = (
@@ -441,6 +609,11 @@ export function AgentChat({
             disabled={busy}
           >
             <option value="">新对话</option>
+            {current && !conversations.some((c) => c.id === current.id) && (
+              <option value={current.id}>
+                {current.title} · {current.id.slice(0, 6)}
+              </option>
+            )}
             {conversations.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.title} · {c.id.slice(0, 6)}
@@ -448,24 +621,38 @@ export function AgentChat({
             ))}
           </select>
         </label>
+        {nextConversationPage > 0 && (
+          <button
+            className="button"
+            disabled={loadingConversations}
+            onClick={() => void loadConversations()}
+          >
+            {loadingConversations ? "正在加载对话…" : "加载更多对话"}
+          </button>
+        )}
         {conversationID && (
           <button
             className="button"
             disabled={busy}
             onClick={async () => {
+              const signal = scope();
               setBusy(true);
               try {
                 await request(`/agent/conversations/${conversationID}`, {
                   token,
-                  signal: scope(),
+                  signal,
                   method: "DELETE",
                 });
-                chooseConversation("");
-                await list(scope());
+                if (signal.aborted) return;
+                setConversations((old) =>
+                  old.filter((c) => c.id !== conversationID),
+                );
+                await list(signal);
+                if (!signal.aborted) chooseConversation("");
               } catch (e) {
-                setError(e);
+                if (!signal.aborted) setError(e);
               } finally {
-                setBusy(false);
+                if (!signal.aborted) setBusy(false);
               }
             }}
           >
@@ -543,7 +730,7 @@ export function AgentChat({
         </p>
       </>
     ) : null;
-  const latestReport = [...messages].reverse().find((m) => m.result?.report);
+  const latestReport = reportSnapshot?.report;
   const reportDisabled =
     busy ||
     active ||
@@ -553,6 +740,26 @@ export function AgentChat({
     (!!conversationID && current?.id !== conversationID);
   const messagesView = (
     <div className="agent-messages" aria-live="polite" aria-label="对话记录">
+      {kind === "paper" && latestReport?.result?.report && (
+        <section className="paper-report-pinned" aria-label="论文报告">
+          <h3>论文报告</h3>
+          {!reportSnapshot?.matches_current_paper && (
+            <p role="status" className="paper-report-stale">
+              这份报告对应旧版论文材料，请重新生成后再追问。
+            </p>
+          )}
+          <PaperReportView
+            result={latestReport.result}
+            content={latestReport.content}
+            citations={latestReport.citations ?? []}
+            onRegenerate={() => void send(undefined, "paper_report")}
+            disabled={reportDisabled}
+          />
+          <small>
+            {latestReport.provider} / {latestReport.model}
+          </small>
+        </section>
+      )}
       {kind === "paper" && !latestReport && (
         <div className="paper-report-start">
           <p>固定解读论文问题、方法、实验、结果与局限；完成后可以继续追问。</p>
@@ -579,35 +786,23 @@ export function AgentChat({
       {older > 0 && (
         <button
           className="button"
-          onClick={async () => {
-            try {
-              const m = await request<{
-                items: Message[];
-                next_before: number;
-              }>(
-                `/agent/conversations/${conversationID}/messages?before=${older}`,
-                { token, signal: scope() },
-              );
-              setMessages((old) => [...m.items, ...old]);
-              setOlder(m.next_before);
-            } catch (e) {
-              setError(e);
-            }
-          }}
+          disabled={loadingOlder}
+          onClick={() => void loadOlder()}
         >
-          加载更早消息
+          {loadingOlder ? "正在加载消息…" : "加载更早消息"}
         </button>
       )}
-      {!messages.length && (
+      {!messages.length && !latestReport && (
         <p className="settings-description">
           {kind === "paper"
             ? "请先点击「生成论文报告」，成功完成后即可继续追问。"
             : "描述你想关注的研究方向，例如：关注 cs.AI 中视觉语言模型的论文。"}
         </p>
       )}
-      {messages.map((m) => (
+      {messages.filter((m) => m.id !== latestReport?.id).map((m) => (
         <Fragment key={m.id}>
           <article
+            data-message-id={m.id}
             className={`agent-message ${m.role}`}
             aria-label={m.role === "user" ? "你的消息" : "助手回复"}
           >
@@ -615,11 +810,6 @@ export function AgentChat({
             {m.result?.report ? (
               <PaperReportView
                 result={m.result}
-                onRegenerate={
-                  m.id === latestReport?.id
-                    ? () => void send(undefined, "paper_report")
-                    : undefined
-                }
                 disabled={reportDisabled}
                 content={m.content}
                 citations={m.citations ?? []}
@@ -654,7 +844,7 @@ export function AgentChat({
               disabled={busy || active}
               onConfirm={confirm}
               onAdjust={() => inputRef.current?.focus()}
-              onSaved={() => void reload(scope()).catch(setError)}
+              onSaved={refresh}
             />
           )}
         </Fragment>
@@ -725,15 +915,16 @@ export function AgentChat({
             <button
               className="button"
               onClick={async () => {
+                const signal = scope();
                 try {
                   await request(`/agent/runs/${run.id}/cancel`, {
                     token,
-                    signal: scope(),
+                    signal,
                     method: "POST",
                   });
-                  setRun({ ...run, state: "cancelled" });
+                  if (!signal.aborted) await reload(signal);
                 } catch (e) {
-                  setError(e);
+                  if (!signal.aborted) setError(e);
                 }
               }}
             >
@@ -777,6 +968,7 @@ export function AgentChat({
       ?.name ?? model;
   return (
     <AssistantView
+      scrollRef={scrollRef}
       title={kind === "paper" ? "AI 论文助手" : "订阅助手"}
       subtitle={
         kind === "paper"

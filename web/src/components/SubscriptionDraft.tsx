@@ -170,7 +170,7 @@ function DraftEditor({
   setEditing: (value: boolean) => void;
 }) {
   const { token } = useSession();
-  const scope = useRequestScope();
+  const scope = useRequestScope(`${token}:${draft.id}`);
   const [value, setValue] = useState(draft.payload);
   const [keywords, setKeywords] = useState(
     draft.payload.rules.keywords.join(", "),
@@ -199,10 +199,11 @@ function DraftEditor({
         if (busy || disabled) return;
         setBusy(true);
         setError(undefined);
+        const signal = scope();
         try {
           await request(`/agent/subscription-drafts/${draft.id}`, {
             token,
-            signal: scope(),
+            signal,
             method: "PATCH",
             body: {
               version: draft.version,
@@ -218,12 +219,14 @@ function DraftEditor({
               },
             },
           });
-          setEditing(false);
-          saved();
+          if (!signal.aborted) {
+            setEditing(false);
+            saved();
+          }
         } catch (e) {
-          setError(e);
+          if (!signal.aborted) setError(e);
         } finally {
-          setBusy(false);
+          if (!signal.aborted) setBusy(false);
         }
       }}
     >
