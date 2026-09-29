@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const paperRetrieverVersion = "passage-bm25-rrf60-v1"
+const paperRetrieverVersion = "passage-structured-bm25-rrf60-v2"
 const paperInitialPassageLimit = 24
 
 type PaperAnswerInput struct {
@@ -27,37 +27,74 @@ type PaperQACheckpoint struct {
 // Priorities are preserved when packing; the selected passages themselves are
 // immutable server-owned text, never model-generated or clipped quotations.
 func rankPaperEvidence(evidence []Citation, queries []string, limit int) []Citation {
+	limit = min(limit, paperTotalPassageLimit)
+	if limit <= 0 {
+		return []Citation{}
+	}
 	passages := make([]document.SearchPassage, 0, len(evidence))
 	index := evidenceIndex(evidence)
 	for _, source := range evidence {
 		var page, chunk, start int
-		if _, err := fmt.Sscanf(source.ID, "p%d-c%d-s%d", &page, &chunk, &start); err != nil {
-			continue
+		if source.SourceType != "html" {
+			if _, err := fmt.Sscanf(source.ID, "p%d-c%d-s%d", &page, &chunk, &start); err != nil {
+				continue
+			}
 		}
 		passages = append(passages, document.SearchPassage{ID: source.ID, Page: page, Chunk: chunk, Start: start, Text: source.Quote})
 	}
 	out := []Citation{}
+	seen := map[string]bool{}
+	add := func(source Citation) {
+		if !seen[source.ID] && len(out) < limit {
+			out = append(out, source)
+			seen[source.ID] = true
+		}
+	}
+	for _, source := range explicitPaperStructures(evidence, queries) {
+		add(source)
+	}
 	for _, passage := range document.RankPassages(passages, queries, limit) {
-		out = append(out, index[passage.ID])
+		add(index[passage.ID])
 	}
 	return out
 }
 
 func packPaperAnswerInput(r Run, pc *PaperCheckpoint, questions []PaperQuestion, candidates []Citation) (PaperAnswerInput, error) {
-	selected := append([]Citation{}, candidates[:min(len(candidates), paperInitialPassageLimit)]...)
-	for {
+	serialize := func(selected []Citation) ([]byte, error) {
 		request := paperInput(pc, "answer", selected)
-		request["question"] = r.Question
-		request["original_question"] = r.Question
-		request["questions"] = questions
-		request["coverage"] = "retrieved_passages"
+		request["question"], request["original_question"] = r.Question, r.Question
+		request["questions"], request["coverage"] = questions, "retrieved_passages"
 		projected, err := paperInputWithContext(request, pc.ConversationContext)
+		if err != nil {
+			return nil, err
+		}
+		return boundedPaperInput(projected)
+	}
+	selected := []Citation{}
+	// An indivisible unit that cannot fit by itself must not evict all usable
+	// lower-priority evidence. History is reduced by the same serializer first.
+	for _, candidate := range candidates {
+		if len(selected) == paperInitialPassageLimit {
+			break
+		}
+		if _, err := serialize([]Citation{candidate}); err != nil {
+			if candidate.SourceType == "html" {
+				pc.StructuredGap = "input_budget"
+			}
+			continue
+		}
+		selected = append(selected, candidate)
+	}
+	for {
+		raw, err := serialize(selected)
 		if err == nil {
-			raw, err := boundedPaperInput(projected)
-			return PaperAnswerInput{Request: string(raw), Evidence: selected}, err
+			return PaperAnswerInput{Request: string(raw), Evidence: selected}, nil
 		}
 		if len(selected) == 0 {
 			return PaperAnswerInput{}, err
+		}
+		if selected[len(selected)-1].SourceType == "html" {
+			pc.StructuredGap = "input_budget"
 		}
 		selected = selected[:len(selected)-1]
 	}
@@ -127,7 +164,7 @@ func (s *Service) processPaperQuestion(ctx context.Context, r Run, c Conversatio
 		if pc.Mode == "fulltext" {
 			queries := make([]string, 0, len(questions))
 			for _, question := range questions {
-				queries = append(queries, question.Query)
+				queries = append(queries, question.Question+" "+question.Query)
 			}
 			selected = rankPaperEvidence(evidence, queries, paperInitialPassageLimit)
 		}

@@ -265,8 +265,8 @@ func (s *MySQLStore) Finish(ctx context.Context, r Run, state, code string, m *M
 				if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).Where("id=?", *c.PaperID).Take(&p).Error; err != nil {
 					return err
 				}
+				var snapshot Checkpoint
 				if r.WorkflowVersion == PaperWorkflowVersion {
-					var snapshot Checkpoint
 					var stored Run
 					if err := tx.Where("id=?", r.ID).Take(&stored).Error; err != nil {
 						return err
@@ -284,7 +284,11 @@ func (s *MySQLStore) Finish(ctx context.Context, r Run, state, code string, m *M
 					return ErrOutput
 				}
 				for _, ref := range refs {
-					if ref.Page == 0 {
+					if ref.SourceType == "html" {
+						if ref.DocumentID != document.Identity(document.Source{PaperID: p.ID, ArXivID: p.ArXivID, PDFURL: p.PDFURL, UpdatedAt: p.ArXivUpdatedAt}) || !frozenStructuredCitation(snapshot.Paper, ref) {
+							return ErrConflict
+						}
+					} else if ref.Page == 0 {
 						h := sha256.Sum256([]byte(p.Title + "\n" + p.Abstract))
 						if ref.ContentHash != hex.EncodeToString(h[:]) {
 							return ErrConflict

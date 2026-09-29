@@ -1,4 +1,6 @@
-import { createContext, useContext, useId, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import katex from "katex";
+import "katex/dist/katex.min.css";
 import { safeURL } from "./Common";
 
 export type PaperCitation = {
@@ -6,7 +8,74 @@ export type PaperCitation = {
   page: number;
   quote: string;
   url: string;
+  content_hash?: string;
+  source_type?: "html";
+  source_version?: string;
+  source_hash?: string;
+  parser_version?: string;
+  anchor?: string;
+  label?: string;
+  kind?: "table" | "formula";
+  table?: { headers: string[]; rows: string[][]; caption: string; notes: string[] };
+  formula?: { tex: string; context: string };
 };
+
+function EvidenceFormula({ tex }: { tex: string }) {
+  const target = useRef<HTMLDivElement>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    const element = target.current;
+    if (!element) return;
+    element.replaceChildren();
+    try {
+      if (new TextEncoder().encode(tex).length > 16_384) throw new Error("formula size");
+      katex.render(tex, element, {
+        displayMode: true,
+        throwOnError: true,
+        trust: false,
+        strict: "error",
+        maxExpand: 200,
+        maxSize: 10,
+        // KaTeX may mutate macros through \\gdef. Never share them with another source.
+        macros: {},
+        globalGroup: false,
+      });
+      setFailed(false);
+    } catch {
+      element.replaceChildren();
+      setFailed(true);
+    }
+  }, [tex]);
+  return (
+    <>
+      <div className="paper-evidence-formula" ref={target} hidden={failed} />
+      {failed && <pre className="paper-evidence-formula-fallback"><code>{tex}</code></pre>}
+    </>
+  );
+}
+
+function StructuredEvidence({ reference }: { reference: PaperCitation }) {
+  const { table, formula } = reference;
+  if (reference.kind === "table" && table) {
+    return <>
+      <div className="paper-evidence-table" role="region" aria-label={table.caption || "原文表格"} tabIndex={0}>
+        <table>
+          {table.caption && <caption>{table.caption}</caption>}
+          <thead><tr>{table.headers.map((header, index) => <th scope="col" key={index}>{header}</th>)}</tr></thead>
+          <tbody>{table.rows.map((row, index) => <tr key={index}>{row.map((cell, column) => <td key={column}>{cell}</td>)}</tr>)}</tbody>
+        </table>
+      </div>
+      {table.notes.length > 0 && <ul className="paper-evidence-notes">{table.notes.map((note, index) => <li key={index}>{note}</li>)}</ul>}
+    </>;
+  }
+  if (reference.kind === "formula" && formula) {
+    return <>
+      <EvidenceFormula tex={formula.tex} />
+      {formula.context && <p className="paper-evidence-context">{formula.context}</p>}
+    </>;
+  }
+  return null;
+}
 
 type CitationContextValue = {
   references: PaperCitation[];
@@ -88,9 +157,12 @@ export function CitationDetails({ ids }: { ids?: string[] }) {
             className="paper-citation-detail"
           >
             <summary>
-              证据 {ref.id} · {ref.page ? `第 ${ref.page} 页` : "摘要"}
+              证据 {ref.id} · {ref.source_type === "html" ? "HTML 原文" : ref.page ? `第 ${ref.page} 页` : "摘要"}
+              {ref.label && ` · ${ref.label}`}
             </summary>
+            <StructuredEvidence reference={ref} />
             <blockquote>{ref.quote}</blockquote>
+            {ref.source_version && <small>来源版本：{ref.source_version}</small>}
             <a href={safeURL(ref.url)} target="_blank" rel="noreferrer">
               查看 arXiv 原文
             </a>

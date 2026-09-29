@@ -21,7 +21,7 @@ func OpenAgent(database *gorm.DB, service *ai.Service, limiter pdf.Limiter) (*ag
 	}
 	documents := document.NewMySQLStore(database)
 	sources := source.NewService(source.NewRepository(database))
-	a := agent.New(agent.Dependencies{Store: agent.NewMySQLStore(database), Gateway: agentGateway{service.Configurations()}, Papers: paper.NewQueryService(paper.NewQueryRepository(database)), Sources: sources, Subscriptions: subscription.NewService(subscription.NewRepository(database), sources, service.Configurations()), Documents: documents})
+	a := agent.New(agent.Dependencies{Store: agent.NewMySQLStore(database), Gateway: agentGateway{service.Configurations()}, Papers: paper.NewQueryService(paper.NewQueryRepository(database)), Sources: sources, Subscriptions: subscription.NewService(subscription.NewRepository(database), sources, service.Configurations()), Documents: documents, Structured: document.NewStructuredService(documents, pdf.New(limiter))})
 	return a, &document.Service{Store: documents, Extractor: pdf.New(limiter)}
 }
 

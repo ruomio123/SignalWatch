@@ -17,7 +17,8 @@ import type { Configuration, Provider } from "../lib/types";
 import { AssistantView, AssistantComposer } from "./AssistantView";
 import { PaperReportView, PaperScope, type PaperResult } from "./PaperReport";
 import { PaperAnswerView } from "./PaperAnswer";
-import { CitationDetails, CitationText, PaperCitations } from "./PaperCitations";
+import { CitationDetails, CitationText, PaperCitations, type PaperCitation } from "./PaperCitations";
+import { PaperMessageExport } from "./PaperMessageExport";
 import { PaperDocumentStatus } from "./PaperDocumentStatus";
 import { ShieldCheck } from "lucide-react";
 import { SubscriptionDraftCard, type Draft } from "./SubscriptionDraft";
@@ -31,11 +32,7 @@ type Conversation = {
   active_run_id?: string;
   latest_draft_id?: string;
 };
-type Citation = {
-  id: string;
-  quote: string;
-  page: number;
-  url: string;
+type Citation = PaperCitation & {
   document_id: string;
   content_hash: string;
 };
@@ -983,6 +980,9 @@ function AgentChatView({
                   </PaperCitations>
                 )}
               </>
+            )}
+            {kind === "paper" && m.role === "assistant" && !m.result?.report && (
+              <PaperMessageExport messageID={`${conversationID}:${m.id}`} result={m.result} content={m.content} citations={m.citations ?? []} />
             )}
             {m.role === "assistant" && (
               <small>

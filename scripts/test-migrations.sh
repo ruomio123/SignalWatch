@@ -192,9 +192,18 @@ goose -env=none -dir migrations mysql "$dsn" up-to 32
 assert_legacy_removed
 assert_retained_unchanged
 
+# Structured HTML is an additive cache; upgrading and dropping it preserve PDF and history.
+goose -env=none -dir migrations mysql "$dsn" up-to 33
+assert_retained_unchanged
+mysql "$name" -e "INSERT INTO paper_document_structures(id,document_id,source_version,parser_version,content_hash,payload,created_at) VALUES(REPEAT('f',64),REPEAT('d',64),'1706.03762v1','arxiv-html-structure-v1',REPEAT('a',64),'{}',UTC_TIMESTAMP())"
+test "$(mysql -N "$name" -e 'SELECT COUNT(*) FROM paper_document_structures')" = 1
+goose -env=none -dir migrations mysql "$dsn" down-to 32
+assert_retained_unchanged
+assert_legacy_removed
+
 # Empty initialization has a separate database and exercises all historic migrations.
 mysql -e "DROP DATABASE $name; CREATE DATABASE $name"
 goose -env=none -dir migrations mysql "$dsn" up
-test "$(mysql -N "$name" -e 'SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1')" = 32
-assert_legacy_removed
-echo 'migration drill: empty initialization, upgrade, interrupted DDL, backup restoration, role removal, legacy AI cleanup, 24-table preservation and rollback passed'
+test "$(mysql -N "$name" -e 'SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1')" = 33
+test "$(mysql -N "$name" -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='$name' AND TABLE_TYPE='BASE TABLE' AND TABLE_NAME<>'goose_db_version'")" = 25
+echo 'migration drill: empty initialization, upgrade, interrupted DDL, backup restoration, role removal, legacy AI cleanup, 24-table preservation, structured-source cache upgrade and rollback passed'

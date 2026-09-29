@@ -10,6 +10,10 @@ const paperPassageLimit = 1000
 func paperEvidence(chunks []Citation) []Citation {
 	out := []Citation{}
 	for _, chunk := range chunks {
+		if chunk.SourceType == "html" {
+			out = append(out, chunk)
+			continue
+		}
 		for _, passage := range document.Passages(chunk.Quote, paperPassageLimit) {
 			source := chunk
 			source.ID = fmt.Sprintf("%s-s%d", chunk.ID, passage.Start)

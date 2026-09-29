@@ -335,6 +335,7 @@ func (s *Service) preparePaper(ctx context.Context, r Run, c Conversation, cp *C
 		if r.Deadline != nil && r.Deadline.Before(deadline) {
 			deadline = *r.Deadline
 		}
+		pc.PreparationDeadline = &deadline
 		// Persist the absolute budget before any potentially blocking document
 		// I/O. A recovery reuses it, even if the document has since become ready.
 		if err = s.Store.Save(ctx, r, *cp, "preparing_document", nil); err != nil {
@@ -399,7 +400,10 @@ func (s *Service) preparePaper(ctx context.Context, r Run, c Conversation, cp *C
 	for _, chunk := range chunks {
 		evidence = append(evidence, Citation{ID: fmt.Sprintf("p%d-c%d", chunk.Page, chunk.Number), DocumentID: doc.ID, ContentHash: doc.ContentHash, Page: chunk.Page, Quote: chunk.Text, URL: fmt.Sprintf("https://arxiv.org/pdf/%s#page=%d", doc.SourceVersion, chunk.Page)})
 	}
-	return doc, paperEvidence(evidence), nil
+	if err := s.capturePaperStructure(ctx, r, cp, doc, check); err != nil {
+		return doc, nil, err
+	}
+	return doc, append(paperEvidence(evidence), pc.StructuredEvidence...), nil
 }
 
 func freezePaperAbstract(cp *Checkpoint, reason string) {
@@ -454,6 +458,9 @@ func (s *Service) awaitPaperDocument(ctx, preparation context.Context, task stri
 
 func paperInput(pc *PaperCheckpoint, field string, evidence []Citation) map[string]any {
 	input := map[string]any{"goal": PaperGoal, "paper": pc.Context, "context_mode": pc.Mode, "field": field, "sections": pc.Sections, "evidence": evidencePassages(evidence)}
+	if pc.StructuredGap != "" {
+		input["structured_material_gap"] = pc.StructuredGap
+	}
 	if field != "answer" {
 		input["output_language"] = "zh-CN"
 	}
@@ -582,7 +589,7 @@ func renderPaperResult(r Run, cp *Checkpoint, fields []string, analyses map[stri
 	if pc.Mode == "abstract" {
 		coverage = "abstract_only"
 	}
-	result := PaperResult{Fields: map[string]PaperFieldResult{}, ContextMode: pc.Mode, FallbackReason: pc.FallbackReason, DocumentID: cp.DocumentID, SourceVersion: pc.SourceVersion, ContentHash: pc.ContentHash, PaperHash: pc.PaperHash, WorkflowVersion: PaperWorkflowVersion, Coverage: coverage}
+	result := PaperResult{OriginalQuestion: r.Question, PaperTitle: pc.Context.Title, StructuredGap: pc.StructuredGap, Fields: map[string]PaperFieldResult{}, ContextMode: pc.Mode, FallbackReason: pc.FallbackReason, DocumentID: cp.DocumentID, SourceVersion: pc.SourceVersion, ContentHash: pc.ContentHash, PaperHash: pc.PaperHash, WorkflowVersion: PaperWorkflowVersion, Coverage: coverage}
 	values := map[string]string{}
 	citations := []Citation{}
 	parts := []string{}

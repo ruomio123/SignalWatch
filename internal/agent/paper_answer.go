@@ -284,7 +284,7 @@ func renderPaperAnswer(r Run, cp *Checkpoint, questions []PaperQuestion, analysi
 		coverage = "abstract_only"
 	}
 	answer := &PaperAnswer{Status: "complete", Parts: []PaperAnswerPart{}}
-	result := PaperResult{Answer: answer, Fields: map[string]PaperFieldResult{}, ContextMode: pc.Mode, FallbackReason: pc.FallbackReason, DocumentID: cp.DocumentID, SourceVersion: pc.SourceVersion, ContentHash: pc.ContentHash, PaperHash: pc.PaperHash, WorkflowVersion: r.WorkflowVersion, Coverage: coverage}
+	result := PaperResult{OriginalQuestion: r.Question, PaperTitle: pc.Context.Title, StructuredGap: pc.StructuredGap, Answer: answer, Fields: map[string]PaperFieldResult{}, ContextMode: pc.Mode, FallbackReason: pc.FallbackReason, DocumentID: cp.DocumentID, SourceVersion: pc.SourceVersion, ContentHash: pc.ContentHash, PaperHash: pc.PaperHash, WorkflowVersion: r.WorkflowVersion, Coverage: coverage}
 	if result.WorkflowVersion == "" {
 		result.WorkflowVersion = PaperWorkflowVersion
 	}

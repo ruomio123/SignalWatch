@@ -6,6 +6,7 @@ import {
   type PaperCitation,
 } from "./PaperCitations";
 import type { PaperAnswer } from "./PaperAnswer";
+import { PaperMessageExport } from "./PaperMessageExport";
 
 export const reportFields = [
   ["problem", "论文问题"],
@@ -16,6 +17,9 @@ export const reportFields = [
 ] as const;
 export type ReportField = (typeof reportFields)[number][0];
 export type PaperResult = {
+  paper_title?: string;
+  original_question?: string;
+  structured_gap?: "unavailable" | "incomplete" | "preparation_budget" | "input_budget";
   report?: Record<ReportField, string>;
   answer?: PaperAnswer;
   fields: Record<string, { status: string; citation_ids: string[] }>;
@@ -37,10 +41,20 @@ const fallbackReasons: Record<string, string> = {
   invalid_pdf: "下载内容不是有效 PDF",
   ocr_failed: "OCR 未能可靠识别全文",
 };
+export function structuredGapMessage(gap: PaperResult["structured_gap"]): string {
+  if (!gap) return "";
+  const reasons = {
+    unavailable: "本轮未能取得结构化表格和公式，相关判断可能需要核对原文。",
+    incomplete: "本轮仅提取到部分结构化表格和公式，未展示的内容仍需核对原文。",
+    preparation_budget: "材料准备时间有限，本轮未完整提取结构化表格和公式。",
+    input_budget: "受本轮材料容量限制，部分结构化表格和公式未纳入分析。",
+  };
+  return reasons[gap] ?? "本轮结构化材料不完整，相关判断可能需要核对原文。";
+}
 export function PaperScope({
   result,
 }: {
-  result: Pick<PaperResult, "context_mode" | "fallback_reason">;
+  result: Pick<PaperResult, "context_mode" | "fallback_reason" | "structured_gap">;
 }) {
   return (
     <p className="paper-report-scope">
@@ -54,6 +68,7 @@ export function PaperScope({
           {fallbackReasons[result.fallback_reason] ?? "全文不可用"}。
         </span>
       )}
+      {result.structured_gap && <span> {structuredGapMessage(result.structured_gap)}</span>}
     </p>
   );
 }
@@ -84,12 +99,12 @@ export function PaperReportView({
       return [field, ids];
     }),
   );
-  async function copy(kind: "JSON" | "Markdown") {
+  async function copy() {
     try {
       await navigator.clipboard.writeText(
-        kind === "JSON" ? JSON.stringify(result.report, null, 2) : content,
+        JSON.stringify(result.report, null, 2),
       );
-      setCopied(kind);
+      setCopied("JSON");
       setError("");
     } catch {
       setError("复制失败，请允许浏览器访问剪贴板后重试。");
@@ -105,15 +120,13 @@ export function PaperReportView({
               重新生成论文报告
             </button>
           )}
-          <button className="button" onClick={() => void copy("JSON")}>
+          <button className="button" onClick={() => void copy()}>
             复制 JSON
-          </button>
-          <button className="button" onClick={() => void copy("Markdown")}>
-            复制 Markdown
           </button>
           {copied && <span role="status">已复制 {copied}</span>}
         </div>
         {error && <p role="alert">{error}</p>}
+        <PaperMessageExport messageID={messageID} result={result} content={content} citations={citations} />
         {reportFields.map(([field, label]) => (
           <section className="paper-report-field" key={field} aria-label={label}>
             <h3>{label}</h3>

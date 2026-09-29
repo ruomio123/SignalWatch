@@ -13,6 +13,7 @@
     "pretypecheck": "node scripts/check-node.cjs"
   },
   "dependencies": {
+    "katex": "0.18.9",
     "lucide-react": "0.563.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

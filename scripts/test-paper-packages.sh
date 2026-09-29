@@ -18,6 +18,8 @@ chmod 700 .cache
 # acceptance entry point. Every selected test is self-contained and tracked.
 for test_file in \
   internal/document/paper_retrieval_test.go \
+  internal/document/structured_test.go \
+  internal/platform/document/structured_html_test.go \
   internal/generation/paper_schema_test.go \
   internal/ai/paper_budget_test.go \
   internal/bootstrap/paper_budget_test.go \

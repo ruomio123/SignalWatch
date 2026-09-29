@@ -125,3 +125,7 @@ __pycache__/
 !/internal/agent/paper_question_test.go
 !/internal/agent/paper_supplement_test.go
 !/internal/document/paper_retrieval_test.go
+!/internal/document/structured_test.go
+!/internal/platform/document/structured_html_test.go
+
+!/internal/agent/paper_structured_test.go

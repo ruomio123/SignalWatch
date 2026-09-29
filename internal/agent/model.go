@@ -76,12 +76,21 @@ type Run struct {
 func (Run) TableName() string { return "agent_runs" }
 
 type Citation struct {
-	ID          string `json:"id"`
-	DocumentID  string `json:"document_id"`
-	ContentHash string `json:"content_hash"`
-	Page        int    `json:"page"`
-	Quote       string `json:"quote"`
-	URL         string `json:"url"`
+	ID            string                      `json:"id"`
+	DocumentID    string                      `json:"document_id"`
+	ContentHash   string                      `json:"content_hash"`
+	Page          int                         `json:"page"`
+	Quote         string                      `json:"quote"`
+	URL           string                      `json:"url"`
+	SourceType    string                      `json:"source_type,omitempty"`
+	SourceVersion string                      `json:"source_version,omitempty"`
+	SourceHash    string                      `json:"source_hash,omitempty"`
+	ParserVersion string                      `json:"parser_version,omitempty"`
+	Anchor        string                      `json:"anchor,omitempty"`
+	Label         string                      `json:"label,omitempty"`
+	Kind          string                      `json:"kind,omitempty"`
+	Table         *document.StructuredTable   `json:"table,omitempty"`
+	Formula       *document.StructuredFormula `json:"formula,omitempty"`
 }
 type Message struct {
 	Result         json.RawMessage `json:"result,omitempty"`
@@ -196,6 +205,7 @@ type Dependencies struct {
 	Sources       SourceReader
 	Subscriptions Subscriptions
 	Documents     document.Store
+	Structured    document.StructuredProvider
 }
 type Service struct {
 	Dependencies

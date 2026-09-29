@@ -11,7 +11,7 @@ import (
 const (
 	TaskPaperReport      = "paper_report"
 	TaskPaperFollowup    = "paper_followup"
-	PaperWorkflowVersion = "paper-fixed-v11"
+	PaperWorkflowVersion = "paper-fixed-v12"
 	PaperReportMessage   = "快速了解论文"
 	PaperGoal            = "帮助用户快速了解当前论文"
 	paperInputLimit      = 64 << 10
@@ -90,6 +90,9 @@ type PaperRepairSummary struct {
 }
 
 type PaperCheckpoint struct {
+	StructuredCaptured  bool                       `json:"structured_captured,omitempty"`
+	StructuredEvidence  []Citation                 `json:"structured_evidence,omitempty"`
+	StructuredGap       string                     `json:"structured_gap,omitempty"`
 	QA                  *PaperQACheckpoint         `json:"qa,omitempty"`
 	CurrentStage        string                     `json:"current_stage,omitempty"`
 	Repair              *PaperRepair               `json:"repair,omitempty"`
@@ -135,21 +138,24 @@ type PaperFieldResult struct {
 	CitationIDs []string `json:"citation_ids"`
 }
 type PaperResult struct {
-	Answer          *PaperAnswer                `json:"answer,omitempty"`
-	Report          *PaperReport                `json:"report,omitempty"`
-	Fields          map[string]PaperFieldResult `json:"fields"`
-	ContextMode     string                      `json:"context_mode"`
-	FallbackReason  string                      `json:"fallback_reason,omitempty"`
-	DocumentID      string                      `json:"document_id,omitempty"`
-	SourceVersion   string                      `json:"source_version,omitempty"`
-	ContentHash     string                      `json:"content_hash,omitempty"`
-	PaperHash       string                      `json:"paper_hash"`
-	WorkflowVersion string                      `json:"workflow_version"`
-	Coverage        string                      `json:"coverage"`
+	OriginalQuestion string                      `json:"original_question,omitempty"`
+	PaperTitle       string                      `json:"paper_title,omitempty"`
+	StructuredGap    string                      `json:"structured_gap,omitempty"`
+	Answer           *PaperAnswer                `json:"answer,omitempty"`
+	Report           *PaperReport                `json:"report,omitempty"`
+	Fields           map[string]PaperFieldResult `json:"fields"`
+	ContextMode      string                      `json:"context_mode"`
+	FallbackReason   string                      `json:"fallback_reason,omitempty"`
+	DocumentID       string                      `json:"document_id,omitempty"`
+	SourceVersion    string                      `json:"source_version,omitempty"`
+	ContentHash      string                      `json:"content_hash,omitempty"`
+	PaperHash        string                      `json:"paper_hash"`
+	WorkflowVersion  string                      `json:"workflow_version"`
+	Coverage         string                      `json:"coverage"`
 }
 
 func validPaperReport(message Message, hash string) (PaperResult, bool) {
 	var result PaperResult
 	err := json.Unmarshal(message.Result, &result)
-	return result, err == nil && result.Report != nil && result.PaperHash == hash && (result.WorkflowVersion == PaperWorkflowVersion || result.WorkflowVersion == "paper-fixed-v1" || result.WorkflowVersion == "paper-fixed-v2" || result.WorkflowVersion == "paper-fixed-v3" || result.WorkflowVersion == "paper-fixed-v4" || result.WorkflowVersion == "paper-fixed-v5" || result.WorkflowVersion == "paper-fixed-v6" || result.WorkflowVersion == "paper-fixed-v7" || result.WorkflowVersion == "paper-fixed-v8" || result.WorkflowVersion == "paper-fixed-v9" || result.WorkflowVersion == "paper-fixed-v10") && (result.ContextMode == "abstract" || result.ContextMode == "fulltext")
+	return result, err == nil && result.Report != nil && result.PaperHash == hash && (result.WorkflowVersion == PaperWorkflowVersion || result.WorkflowVersion == "paper-fixed-v1" || result.WorkflowVersion == "paper-fixed-v2" || result.WorkflowVersion == "paper-fixed-v3" || result.WorkflowVersion == "paper-fixed-v4" || result.WorkflowVersion == "paper-fixed-v5" || result.WorkflowVersion == "paper-fixed-v6" || result.WorkflowVersion == "paper-fixed-v7" || result.WorkflowVersion == "paper-fixed-v8" || result.WorkflowVersion == "paper-fixed-v9" || result.WorkflowVersion == "paper-fixed-v10" || result.WorkflowVersion == "paper-fixed-v11") && (result.ContextMode == "abstract" || result.ContextMode == "fulltext")
 }

@@ -10,6 +10,20 @@ import {
   documentStatus,
   paper,
 } from "./agent-fixtures";
+import { readFile } from "node:fs/promises";
+import type { Page } from "@playwright/test";
+
+async function captureClipboard(page: Page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      writeText: async (text: string) => { (window as Window & { copiedMarkdown?: string }).copiedMarkdown = text; },
+    } });
+  });
+}
+
+async function copiedMarkdown(page: Page) {
+  return page.evaluate(() => (window as Window & { copiedMarkdown?: string }).copiedMarkdown ?? "");
+}
 
 function questionReply(
   round: number,
@@ -1473,7 +1487,7 @@ test("insufficient structured answers show a bounded gap and accurate call budge
   const reply = page.locator('[data-message-id="24"]');
   await expect(reply.getByText("证据不足", { exact: true })).toBeVisible();
   await expect(reply.getByText("当前材料不足以可靠回答这部分问题。", { exact: true })).toBeVisible();
-  await expect(reply.getByRole("button")).toHaveCount(0);
+  await expect(reply.getByRole("button", { name: /^查看证据 / })).toHaveCount(0);
   await expect(reply.locator("details")).toHaveCount(0);
   await expect(reply.getByText(message.content, { exact: true })).toHaveCount(0);
   await expect(page.getByText(/短论文通常调用 6 次；长论文最多 30 次、15 分钟/)).toBeVisible();
@@ -1500,7 +1514,7 @@ test("report and legacy answer markers share evidence controls without crossing 
   expect(await reportMarker.getAttribute("aria-controls")).not.toBe(await answerMarker.getAttribute("aria-controls"));
   await expect(reply.getByText(/<b>旧回答保留原文<\/b>/)).toBeVisible();
   await expect(reply.getByText(/\[unknown-id\]/)).toBeVisible();
-  await expect(reply.getByRole("button")).toHaveCount(1);
+  await expect(reply.getByRole("button", { name: /^查看证据 / })).toHaveCount(1);
   await expect(reply.locator("b")).toHaveCount(0);
   await expect(reply.getByRole("link", { name: "外部链接" })).toHaveCount(0);
   await reportMarker.click();
@@ -1701,3 +1715,198 @@ for (const failure of [
     expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
   });
 }
+
+function structuredCitation(id: string, kind: "table" | "formula") {
+  return {
+    id, page: 0, document_id: "fixture-html", content_hash: "fixture-content-hash",
+    source_type: "html", source_version: "1706.03762v1", source_hash: "frozen-source-hash",
+    parser_version: "arxiv-html-v1", anchor: kind === "table" ? "S3.T1" : "S2.E1",
+    label: kind === "table" ? "Table 1" : "Equation 1", kind,
+    url: `https://arxiv.org/html/1706.03762v1#${kind === "table" ? "S3.T1" : "S2.E1"}`,
+    quote: kind === "table" ? "Method | Accuracy\nBaseline | 88\nOurs | 93" : "E = mc^2, where m is mass.",
+    ...(kind === "table" ? { table: { headers: ["Method", "Accuracy"], rows: [["Baseline", "88"], ["Ours", "93"]], caption: "Comparison of methods", notes: ["All runs use the same test set."] } }
+      : { formula: { tex: "E = mc^2", context: "where m is mass and c is the speed of light." } }),
+  };
+}
+
+test("structured evidence cards preserve tables, formula context, source versions and HTML anchors on mobile", async ({ page, api }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const message = citationAnswer(50);
+  const table = structuredCitation("table-source", "table");
+  table.table!.rows[0][0] = "<img src=x onerror=alert(1)> Baseline";
+  const formula = structuredCitation("formula-source", "formula");
+  api.json("GET", `${conversationPath}/messages`, { items: [{ ...message, citations: [table, formula], result: { ...message.result, workflow_version: "paper-fixed-v12", answer: { status: "complete", parts: [{ question_id: "q1", question: "表格与公式说明什么？", status: "supported", claims: [{ text: "表格展示方法比较，公式说明质量与能量关系。", citation_ids: [table.id, formula.id] }] }] } } }], next_before: 0 });
+  api.json("GET", "/agent/runs/citation-run-50", completedCitationRun(50));
+  await page.goto(assistantURL);
+  const reply = page.locator('[data-message-id="50"]');
+  await reply.getByRole("button", { name: "查看证据 table-source", exact: true }).press("Enter");
+  const tableCard = reply.locator("details").filter({ has: page.getByRole("table") });
+  await expect(tableCard.locator("summary")).toBeFocused();
+  await expect(tableCard.locator("summary")).toHaveText("证据 table-source · HTML 原文 · Table 1");
+  await expect(tableCard.getByRole("columnheader", { name: "Accuracy", exact: true })).toBeVisible();
+  await expect(tableCard.getByRole("cell", { name: table.table!.rows[0][0], exact: true })).toBeVisible();
+  await expect(tableCard.getByText(table.table!.notes[0], { exact: true })).toBeVisible();
+  await expect(tableCard.getByText("来源版本：1706.03762v1", { exact: true })).toBeVisible();
+  await expect(tableCard.locator("blockquote")).toHaveText(table.quote);
+  await expect(tableCard.locator("img, script")).toHaveCount(0);
+  await reply.getByRole("button", { name: "查看证据 formula-source", exact: true }).press("Space");
+  const formulaCard = reply.locator("details").filter({ has: page.locator(".paper-evidence-formula") });
+  await expect(formulaCard.locator(".katex")).toBeVisible();
+  await expect(formulaCard.getByText(formula.formula!.context, { exact: true })).toBeVisible();
+  await expect(formulaCard.locator("blockquote")).toHaveText(formula.quote);
+  await expect(formulaCard.getByRole("link", { name: "查看 arXiv 原文" })).toHaveAttribute("href", formula.url);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.context().route("https://arxiv.org/html/1706.03762v1", (route) => route.fulfill({ contentType: "text/html", body: '<p id="S2.E1">Mock equation</p>' }));
+  const [source] = await Promise.all([page.waitForEvent("popup"), formulaCard.getByRole("link", { name: "查看 arXiv 原文" }).click()]);
+  await expect(source).toHaveURL(formula.url);
+  await source.close();
+});
+
+test("formula rendering bounds expansion and size, isolates macros and never trusts source HTML or URLs", async ({ page, api }) => {
+  const message = citationAnswer(52);
+  const inputs = [
+    "\\gdef\\isolated{PRIVATE_MACRO}x",
+    "\\isolated",
+    "\\def\\recurse{\\recurse}\\recurse",
+    "\\href{javascript:alert(1)}{unsafe-link}",
+    "\\includegraphics{https://invalid.example/image.png}",
+    "\\htmlClass{injected}{x}",
+    "\\rule{1000000em}{1000000em}",
+    "x".repeat(16_385),
+  ];
+  const citations = inputs.map((tex, index) => ({ ...structuredCitation(`formula-${index}`, "formula"), formula: { tex, context: `Formula context ${index}` } }));
+  api.json("GET", `${conversationPath}/messages`, { items: [{ ...message, citations, result: { ...message.result, answer: { status: "complete", parts: [{ question_id: "q1", question: "公式证据", status: "supported", claims: [{ text: "来源公式。", citation_ids: citations.map((ref) => ref.id) }] }] } } }], next_before: 0 });
+  api.json("GET", "/agent/runs/citation-run-52", completedCitationRun(52));
+  await page.goto(assistantURL);
+  const reply = page.locator('[data-message-id="52"]');
+  for (const ref of citations) await reply.getByRole("button", { name: `查看证据 ${ref.id}`, exact: true }).click();
+  const cards = reply.locator("details");
+  await expect(cards.nth(0).locator(".katex")).toBeVisible();
+  for (const index of [1, 2, 5, 7]) await expect(cards.nth(index).locator(".paper-evidence-formula-fallback")).toHaveText(inputs[index]);
+  await expect(reply.locator(".paper-evidence-formula a, .paper-evidence-formula img, .paper-evidence-formula script, .paper-evidence-formula .injected")).toHaveCount(0);
+  await expect(cards.nth(1).getByText("PRIVATE_MACRO", { exact: false })).toHaveCount(0);
+  const size = await cards.nth(6).locator(".katex .katex-rule").boundingBox();
+  expect(size?.height).toBeLessThan(500);
+  expect(size?.width).toBeLessThan(500);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+test("single approved answer Markdown copies and downloads tables, TeX and safe gaps without drafts or unused sources", async ({ page, api }) => {
+  await captureClipboard(page);
+  const message = citationAnswer(54);
+  const table = structuredCitation("table-source", "table");
+  table.table!.rows[0][0] = "A | B\n<script>literal</script>";
+  const formula = structuredCitation("formula-source", "formula");
+  formula.formula!.tex = "E = mc^2 % ``` literal fence";
+  const citations = [table, formula, { ...table, id: "table-alias" }, { ...table, id: "rejected-source", quote: "PRIVATE_REJECTED_EVIDENCE" }];
+  const result = { ...message.result, paper_title: "Frozen title <b>literal</b>", original_question: "请说明论文表格和公式，并讨论未验证场景。", workflow_version: "paper-fixed-v12", structured_gap: "incomplete", checkpoint: { query: "PRIVATE_QUERY", candidate: "PRIVATE_DRAFT" }, answer: { status: "partial", parts: [
+    { question_id: "q1", question: "表格和公式？", status: "supported", claims: [{ text: "已审核结论 <script>literal</script>", citation_ids: [table.id, formula.id, table.id, "table-alias"] }] },
+    { question_id: "q2", question: "未验证的场景？", status: "insufficient_evidence", claims: [], gap: { reason: "review_rejected", text: "PRIVATE_REJECTED_TEXT" } },
+  ] } };
+  api.json("GET", `${conversationPath}/messages`, { items: [{ id: 53, role: "user", content: "我的提问 PRIVATE_USER_HISTORY", citations: [] }, { ...message, content: "PRIVATE_RAW_DRAFT", result, citations }], next_before: 0 });
+  api.json("GET", "/agent/runs/citation-run-54", completedCitationRun(54));
+  await page.goto(assistantURL);
+  const reply = page.locator('[data-message-id="54"]');
+  await expect(page.locator('[data-message-id="53"]').getByRole("button", { name: /Markdown/ })).toHaveCount(0);
+  await reply.getByRole("button", { name: "复制 Markdown", exact: true }).click();
+  await expect(reply.getByRole("status")).toHaveText("已复制 Markdown");
+  const markdown = await copiedMarkdown(page);
+  expect(markdown).toContain("Frozen title &lt;b&gt;literal&lt;/b&gt;");
+  expect(markdown).toContain("已审核结论 &lt;script&gt;literal&lt;/script&gt;");
+  expect(markdown).toContain(`原问题：${result.original_question}`);
+  expect(markdown).toContain("| Method | Accuracy |");
+  expect(markdown).toContain("A \\| B<br>&lt;script&gt;literal&lt;/script&gt;");
+  expect(markdown).toContain(`\n\`\`\`\`tex\n${formula.formula!.tex}\n\`\`\`\``);
+  expect(markdown).toContain(formula.formula!.context.replaceAll(".", "\\."));
+  expect(markdown).toContain("https://arxiv.org/html/1706.03762v1#S3.T1");
+  expect(markdown).toContain("原文位置：S2\\.E1");
+  expect(markdown).toContain("这部分结论未通过证据审核，未予展示。");
+  expect(markdown).toContain("本轮仅提取到部分结构化表格和公式");
+  expect(markdown).not.toMatch(/PRIVATE_|<script>|<b>|rejected-source/);
+  expect(markdown.match(/### 证据 table\\-source/g)).toHaveLength(1);
+  expect(markdown).toContain("### 证据 table\\-source、table\\-alias");
+  expect(markdown.match(/\| Method \| Accuracy \|/g)).toHaveLength(1);
+  const [download] = await Promise.all([page.waitForEvent("download"), reply.getByRole("button", { name: "下载 Markdown", exact: true }).click()]);
+  expect(download.suggestedFilename()).toBe("signalwatch-paper-conversation-one-54.md");
+  expect(await readFile((await download.path())!, "utf8")).toBe(markdown);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+test("report Markdown includes the five public fields and source appendix while JSON copy stays compatible", async ({ page, api }) => {
+  await captureClipboard(page);
+  const message = reportMessage("fulltext");
+  const table = structuredCitation("problem-1-1", "table");
+  const reportReply = { ...message, content: "PRIVATE_OLD_RENDERED_CONTENT", result: { ...message.result, paper_title: "Frozen report title", structured_gap: "input_budget" }, citations: [table] };
+  api.json("GET", `${conversationPath}/messages`, { items: [reportReply], next_before: 0 });
+  api.json("GET", `${conversationPath}/paper-report`, { report: reportReply, matches_current_paper: false });
+  api.json("GET", "/agent/runs/report-run", { run: { id: "report-run", state: "completed", progress: "completed", task: "paper_report" }, steps: [] });
+  await page.goto(assistantURL);
+  const pinned = page.getByRole("region", { name: "论文报告", exact: true });
+  await pinned.getByRole("button", { name: "复制 Markdown", exact: true }).click();
+  await expect(pinned.getByRole("status").filter({ hasText: "已复制 Markdown" })).toBeVisible();
+  const markdown = await copiedMarkdown(page);
+  for (const title of ["论文问题", "核心方法", "实验验证", "主要结果", "局限性"]) expect(markdown).toContain(`## ${title}\n`);
+  expect(markdown).toContain("# Frozen report title — 论文报告");
+  expect(markdown).toContain("## 原文证据");
+  expect(markdown).toContain("| Baseline | 88 |");
+  expect(markdown).toContain("受本轮材料容量限制");
+  expect(markdown).not.toContain("PRIVATE_");
+  const [download] = await Promise.all([page.waitForEvent("download"), pinned.getByRole("button", { name: "下载 Markdown", exact: true }).click()]);
+  expect(await readFile((await download.path())!, "utf8")).toBe(markdown);
+  await pinned.getByRole("button", { name: "复制 JSON", exact: true }).click();
+  await expect(pinned.getByText("已复制 JSON", { exact: true })).toBeVisible();
+  expect(JSON.parse(await copiedMarkdown(page))).toEqual(report);
+});
+
+test("legacy Markdown keeps unknown markers and unsafe links literal and exports only sources actually cited", async ({ page, api }) => {
+  await captureClipboard(page);
+  const message = citationAnswer(56);
+  const legacy = { ...message, result: { ...questionReply(28, "abstract", "").result }, content: "旧回答 [shared-source] [unknown] [click](javascript:alert(1)) <script>literal</script>", citations: [...message.citations, { ...message.citations[0], id: "unused", quote: "PRIVATE_UNUSED_SOURCE" }] };
+  api.json("GET", `${conversationPath}/messages`, { items: [legacy], next_before: 0 });
+  api.json("GET", "/agent/runs/citation-run-56", completedCitationRun(56));
+  await page.goto(assistantURL);
+  const reply = page.locator('[data-message-id="56"]');
+  await reply.getByRole("button", { name: "复制 Markdown", exact: true }).click();
+  await expect(reply.getByRole("status")).toHaveText("已复制 Markdown");
+  const markdown = await copiedMarkdown(page);
+  expect(markdown).toContain("仅基于摘要");
+  expect(markdown).toContain("\\[unknown\\]");
+  expect(markdown).toContain("\\[click\\]\\(javascript:alert\\(1\\)\\)");
+  expect(markdown).toContain("&lt;script&gt;literal&lt;/script&gt;");
+  expect(markdown).toContain("https://arxiv.org/pdf/1706.03762v1#page=3");
+  expect(markdown).toContain("第 3 页");
+  expect(markdown).not.toMatch(/PRIVATE_|### 证据 unused/);
+});
+
+test("structured material gaps use fixed text for known reasons and never display internal reason values", async ({ page, api }) => {
+  const reasons = ["unavailable", "incomplete", "preparation_budget", "input_budget", "PRIVATE_STRUCTURED_REASON"];
+  const messages = reasons.map((reason, index) => ({ ...citationAnswer(60 + index * 2), result: { ...citationAnswer(60 + index * 2).result, structured_gap: reason } }));
+  api.json("GET", `${conversationPath}/messages`, { items: messages, next_before: 0 });
+  api.json("GET", "/agent/runs/citation-run-68", completedCitationRun(68));
+  await page.goto(assistantURL);
+  for (const [index, expected] of ["本轮未能取得结构化表格和公式", "本轮仅提取到部分结构化表格和公式", "材料准备时间有限", "受本轮材料容量限制", "本轮结构化材料不完整"].entries()) {
+    await expect(page.locator(`[data-message-id="${60 + index * 2}"]`).getByText(expected, { exact: false })).toBeVisible();
+  }
+  await expect(page.getByText("PRIVATE_STRUCTURED_REASON", { exact: false })).toHaveCount(0);
+});
+
+test("Markdown copy failure offers a local download without exporting an unfinished answer", async ({ page, api }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => { throw new Error("blocked"); } } });
+  });
+  const message = citationAnswer(70);
+  api.json("GET", conversationPath, { ...conversation, active_run_id: "pending-export-run" });
+  api.json("GET", `${conversationPath}/messages`, { items: [message, { id: 71, role: "user", content: "正在等待的新问题", citations: [] }], next_before: 0 });
+  api.json("GET", "/agent/runs/pending-export-run", { run: { id: "pending-export-run", task: "paper_followup", state: "running", progress: "analyzing_answer", candidate: "PRIVATE_PENDING_ANSWER" }, steps: [] });
+  await page.goto(assistantURL);
+  await expect(page.getByRole("article", { name: "助手回复", exact: true })).toHaveCount(1);
+  const reply = page.locator('[data-message-id="70"]');
+  await reply.getByRole("button", { name: "复制 Markdown", exact: true }).click();
+  await expect(reply.getByRole("alert")).toContainText("可点击“下载 Markdown”保存文件");
+  await expect(page.getByRole("button", { name: "下载 Markdown", exact: true })).toHaveCount(1);
+  const [download] = await Promise.all([page.waitForEvent("download"), reply.getByRole("button", { name: "下载 Markdown", exact: true }).click()]);
+  const markdown = await readFile((await download.path())!, "utf8");
+  expect(markdown).toContain("该方法由本轮论文原文支持。");
+  expect(markdown).not.toMatch(/PRIVATE_|正在等待的新问题/);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
