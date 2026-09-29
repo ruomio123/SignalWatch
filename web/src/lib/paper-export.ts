@@ -1,6 +1,7 @@
 import { reportFields, structuredGapMessage, type PaperResult } from "../components/PaperReport";
 import type { PaperCitation } from "../components/PaperCitations";
 import { safeURL } from "../components/Common";
+import { reproductionGapMessage } from "../components/PaperReproduction";
 
 export type PaperExportContent = {
   result?: PaperResult;
@@ -43,7 +44,8 @@ export function paperMarkdown({ result, content, citations }: PaperExportContent
         ? marker(part.slice(1, -1)) : literal(part),
     ).join("");
   }
-  const lines = [`# ${literal(result?.paper_title || "论文解读")} — ${result?.report ? "论文报告" : "论文问答"}`];
+  const kind = result?.report ? "论文报告" : result?.reproduction ? "复现清单" : "论文问答";
+  const lines = [`# ${literal(result?.paper_title || "论文解读")} — ${kind}`];
   if (result) {
     lines.push(result.context_mode === "abstract"
       ? "仅基于摘要；缺失判断不代表论文全文没有相关内容。"
@@ -55,6 +57,14 @@ export function paperMarkdown({ result, content, citations }: PaperExportContent
   if (result?.report) {
     for (const [field, label] of reportFields) {
       lines.push(`## ${label}`, citedText(result.report[field]));
+    }
+  } else if (result?.reproduction) {
+    const reproduction = result.reproduction;
+    if (reproduction.status !== "complete") lines.push(reproduction.status === "partial" ? "部分项目仍有证据缺口" : "当前证据不足");
+    for (const category of reproduction.categories) {
+      lines.push(`## ${literal(category.title)}`);
+      for (const item of category.items) lines.push(`${item.number}. ${literal(item.text)} ${[...new Set(item.citation_ids)].map(marker).join(" ")}`.trim());
+      if (category.gap || category.status !== "supported") lines.push(reproductionGapMessage(category.gap?.reason));
     }
   } else if (result?.answer) {
     const answer = result.answer;

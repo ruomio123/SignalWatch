@@ -99,9 +99,10 @@ func (s *Service) runPaperRepair(ctx context.Context, r Run, cp *Checkpoint, che
 	}
 	prompt := fieldPromptFor(repair.Field, true)
 	if contract.Kind == "answer" {
-		prompt = paperAnswerPrompt
-		if repair.Stage == paperSupplementStage {
-			prompt = paperSupplementAnswerPrompt
+		workflow := paperQuestionPolicy(r.Task)
+		prompt = workflow.AnalysisPrompt
+		if repair.Stage == workflow.SupplementStage {
+			prompt = workflow.SupplementPrompt
 		}
 	}
 	return s.paperCall(ctx, r, cp, check, stage, paperRepairPrompt+"\n"+prompt, paperSerializedInput(repair.Request), func(raw []byte) error {

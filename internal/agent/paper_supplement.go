@@ -32,9 +32,10 @@ type PaperRetrievalSummary struct {
 var errPaperSupplementSkipped = errors.New("paper supplemental analysis skipped before calling")
 
 func paperSupplementBudget(ctx context.Context, r Run, cp *Checkpoint, now time.Time) string {
-	remainingCalls, remainingTime := 4, 125*time.Second
+	remainingCalls, remainingTime := paperReviewLimit(r.Task)+2, time.Duration(paperReviewLimit(r.Task)+2)*30*time.Second+5*time.Second
 	if cp.Paper.Repair != nil && cp.Paper.Repair.Attempted {
-		remainingCalls, remainingTime = 3, 95*time.Second
+		remainingCalls--
+		remainingTime -= 30 * time.Second
 	}
 	if paperCallLimit(r.Task)-cp.Calls < remainingCalls {
 		return "call_budget"
@@ -141,7 +142,7 @@ func packPaperSupplementInput(r Run, pc *PaperCheckpoint, questions []PaperQuest
 	}
 	for len(fresh) > 0 {
 		selected := append(append(append([]Citation{}, pinned...), fresh...), optional...)
-		request := paperInput(pc, "answer", selected)
+		request := paperInput(pc, paperQuestionPolicy(r.Task).Field, selected)
 		request["question"], request["original_question"] = r.Question, r.Question
 		request["questions"], request["coverage"] = questions, "retrieved_passages"
 		request["initial_answer"] = json.RawMessage(candidate)
@@ -165,6 +166,7 @@ func packPaperSupplementInput(r Run, pc *PaperCheckpoint, questions []PaperQuest
 }
 
 func (s *Service) supplementPaperAnswer(ctx context.Context, r Run, cp *Checkpoint, check func(context.Context) error, allEvidence []Citation, candidate []byte, initialAnalysis PaperAnswerAnalysis) (PaperAnswerAnalysis, *PaperAnswerInput, error) {
+	workflow := paperQuestionPolicy(r.Task)
 	qa := cp.Paper.QA
 	fail := func(err error) (PaperAnswerAnalysis, *PaperAnswerInput, error) {
 		return PaperAnswerAnalysis{}, nil, err
@@ -223,7 +225,7 @@ func (s *Service) supplementPaperAnswer(ctx context.Context, r Run, cp *Checkpoi
 		}
 		old := evidenceIndex(qa.Initial.Evidence)
 		fresh := []Citation{}
-		for _, source := range rankPaperEvidence(allEvidence, queries, paperTotalPassageLimit) {
+		for _, source := range rankPaperEvidenceForTask(r.Task, allEvidence, queries, paperTotalPassageLimit) {
 			if _, exists := old[source.ID]; !exists && len(fresh) < paperSupplementPassageLimit {
 				fresh = append(fresh, source)
 			}
@@ -250,8 +252,8 @@ func (s *Service) supplementPaperAnswer(ctx context.Context, r Run, cp *Checkpoi
 		return fail(err)
 	}
 	input := supplement.Input
-	raw, err := s.paperCall(ctx, r, cp, check, paperSupplementStage, paperSupplementAnswerPrompt, paperSerializedInput(input.Request), func(raw []byte) error {
-		return paperContract(paperSupplementStage).Validate(raw, paperStageValidation{Evidence: input.Evidence, Questions: qa.Questions})
+	raw, err := s.paperCall(ctx, r, cp, check, workflow.SupplementStage, workflow.SupplementPrompt, paperSerializedInput(input.Request), func(raw []byte) error {
+		return paperContract(workflow.SupplementStage).Validate(raw, paperStageValidation{Evidence: input.Evidence, Questions: qa.Questions})
 	})
 	if errors.Is(err, errPaperSupplementSkipped) {
 		return skip(supplement.Reason)
@@ -259,6 +261,6 @@ func (s *Service) supplementPaperAnswer(ctx context.Context, r Run, cp *Checkpoi
 	if err != nil {
 		return fail(err)
 	}
-	analysis, err := decodePaperSupplementAnswer(raw, input.Evidence, qa.Questions)
+	analysis, err := workflow.DecodeAnalysis(raw, input.Evidence, qa.Questions, false)
 	return analysis, input, err
 }

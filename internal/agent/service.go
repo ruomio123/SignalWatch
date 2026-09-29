@@ -109,11 +109,14 @@ func (s *Service) Submit(ctx context.Context, uid uint64, id string, input Submi
 		if input.Task == "" {
 			input.Task = TaskPaperFollowup
 		}
-		if input.Task != TaskPaperReport && input.Task != TaskPaperFollowup {
+		if input.Task != TaskPaperReport && input.Task != TaskPaperFollowup && input.Task != TaskPaperReproduction {
 			return Run{}, ErrInput
 		}
 		if input.Task == TaskPaperReport {
 			input.Question = PaperGoal
+		}
+		if input.Task == TaskPaperReproduction {
+			input.Question = PaperReproductionGoal
 		}
 		workflow = PaperWorkflowVersion
 	} else if input.Task != "" {

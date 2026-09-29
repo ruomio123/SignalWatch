@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const paperRetrieverVersion = "passage-structured-bm25-rrf60-v2"
+const paperRetrieverVersion = "passage-structured-bm25-rrf60-v3"
 const paperInitialPassageLimit = 24
 
 type PaperAnswerInput struct {
@@ -27,6 +27,10 @@ type PaperQACheckpoint struct {
 // Priorities are preserved when packing; the selected passages themselves are
 // immutable server-owned text, never model-generated or clipped quotations.
 func rankPaperEvidence(evidence []Citation, queries []string, limit int) []Citation {
+	return rankPaperEvidenceForTask(TaskPaperFollowup, evidence, queries, limit)
+}
+
+func rankPaperEvidenceForTask(task string, evidence []Citation, queries []string, limit int) []Citation {
 	limit = min(limit, paperTotalPassageLimit)
 	if limit <= 0 {
 		return []Citation{}
@@ -53,15 +57,22 @@ func rankPaperEvidence(evidence []Citation, queries []string, limit int) []Citat
 	for _, source := range explicitPaperStructures(evidence, queries) {
 		add(source)
 	}
-	for _, passage := range document.RankPassages(passages, queries, limit) {
+	var ranked []document.SearchPassage
+	if task == TaskPaperReproduction {
+		ranked = document.RankReproductionPassages(passages, queries, limit)
+	} else {
+		ranked = document.RankPassages(passages, queries, limit)
+	}
+	for _, passage := range ranked {
 		add(index[passage.ID])
 	}
 	return out
 }
 
 func packPaperAnswerInput(r Run, pc *PaperCheckpoint, questions []PaperQuestion, candidates []Citation) (PaperAnswerInput, error) {
+	field := paperQuestionPolicy(r.Task).Field
 	serialize := func(selected []Citation) ([]byte, error) {
-		request := paperInput(pc, "answer", selected)
+		request := paperInput(pc, field, selected)
 		request["question"], request["original_question"] = r.Question, r.Question
 		request["questions"], request["coverage"] = questions, "retrieved_passages"
 		projected, err := paperInputWithContext(request, pc.ConversationContext)
@@ -101,6 +112,7 @@ func packPaperAnswerInput(r Run, pc *PaperCheckpoint, questions []PaperQuestion,
 }
 
 func (s *Service) processPaperQuestion(ctx context.Context, r Run, c Conversation, cp *Checkpoint, check func(context.Context) error, evidence []Citation) error {
+	workflow := paperQuestionPolicy(r.Task)
 	pc := cp.Paper
 	if !pc.ContextCaptured {
 		if len(pc.Outputs) > 0 {
@@ -136,17 +148,17 @@ func (s *Service) processPaperQuestion(ctx context.Context, r Run, c Conversatio
 			return err
 		}
 		qa.NormalizationRequest = string(raw)
-		if err := s.Store.Save(ctx, r, *cp, "normalizing_question", nil); err != nil {
+		if err := s.Store.Save(ctx, r, *cp, workflow.PlanStage, nil); err != nil {
 			return err
 		}
 	}
-	raw, err := s.paperCall(ctx, r, cp, check, "normalizing_question", paperQuestionPrompt, paperSerializedInput(qa.NormalizationRequest), func(raw []byte) error {
-		return paperContract("normalizing_question").Validate(raw, paperStageValidation{})
+	raw, err := s.paperCall(ctx, r, cp, check, workflow.PlanStage, workflow.PlanPrompt, paperSerializedInput(qa.NormalizationRequest), func(raw []byte) error {
+		return paperContract(workflow.PlanStage).Validate(raw, paperStageValidation{})
 	})
 	if err != nil {
 		return err
 	}
-	questions, err := decodePaperQuestions(raw)
+	questions, err := workflow.DecodePlan(raw)
 	if err != nil {
 		return err
 	}
@@ -166,11 +178,11 @@ func (s *Service) processPaperQuestion(ctx context.Context, r Run, c Conversatio
 			for _, question := range questions {
 				queries = append(queries, question.Question+" "+question.Query)
 			}
-			selected = rankPaperEvidence(evidence, queries, paperInitialPassageLimit)
+			selected = rankPaperEvidenceForTask(r.Task, evidence, queries, paperInitialPassageLimit)
 		}
 		input, err := packPaperAnswerInput(r, pc, questions, selected)
 		if err != nil {
-			return s.failPaperStage(ctx, r, cp, "analyzing_answer", err, nil)
+			return s.failPaperStage(ctx, r, cp, workflow.AnalysisStage, err, nil)
 		}
 		qa.Initial = &input
 		pc.CurrentStage = "retrieving_evidence"
@@ -185,13 +197,13 @@ func (s *Service) processPaperQuestion(ctx context.Context, r Run, c Conversatio
 	if err := validatePaperAnswerInput(input, questions); err != nil {
 		return err
 	}
-	raw, err = s.paperCall(ctx, r, cp, check, "analyzing_answer", paperAnswerPrompt, paperSerializedInput(input.Request), func(raw []byte) error {
-		return paperContract("analyzing_answer").Validate(raw, paperStageValidation{Evidence: input.Evidence, Questions: questions})
+	raw, err = s.paperCall(ctx, r, cp, check, workflow.AnalysisStage, workflow.AnalysisPrompt, paperSerializedInput(input.Request), func(raw []byte) error {
+		return paperContract(workflow.AnalysisStage).Validate(raw, paperStageValidation{Evidence: input.Evidence, Questions: questions})
 	})
 	if err != nil {
 		return err
 	}
-	analysis, err := decodePaperAnswer(raw, input.Evidence, questions)
+	analysis, err := workflow.DecodeAnalysis(raw, input.Evidence, questions, true)
 	if err != nil {
 		return err
 	}
@@ -204,7 +216,7 @@ func (s *Service) processPaperQuestion(ctx context.Context, r Run, c Conversatio
 	if err != nil {
 		return err
 	}
-	content, result, citations := renderPaperAnswer(r, cp, questions, analysis, input.Evidence, verdicts)
+	content, result, citations := workflow.Render(r, cp, questions, analysis, input.Evidence, verdicts)
 	if err := check(ctx); err != nil {
 		return err
 	}

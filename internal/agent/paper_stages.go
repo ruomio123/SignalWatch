@@ -71,6 +71,20 @@ var paperStageContracts = func() map[string]paperStageContract {
 				return err
 			}}
 	}
+	stages["planning_reproduction"] = paperStageContract{Kind: "question", Tokens: 4096, Schema: paperReproductionPlanSchema, Validate: func(raw []byte, _ paperStageValidation) error { _, err := decodePaperReproductionPlan(raw); return err }}
+	for _, supplemental := range []bool{false, true} {
+		stage, repairStage, schemas := "analyzing_reproduction", "repairing_reproduction", paperReproductionSchemas
+		if supplemental {
+			stage, repairStage, schemas = paperReproductionSupplementStage, "repairing_reproduction_supplement", paperReproductionSupplementSchemas
+		}
+		contract := paperStageContract{Kind: "answer", Field: "reproduction", Tokens: 8192, Schema: schemas.full, RepairStage: repairStage, Validate: func(raw []byte, input paperStageValidation) error {
+			_, err := decodePaperReproduction(raw, input.Evidence, input.Questions, !supplemental)
+			return err
+		}}
+		stages[stage] = contract
+		contract.OriginalStage, contract.RepairStage = stage, ""
+		stages[repairStage] = contract
+	}
 	return stages
 }()
 

@@ -17,6 +17,9 @@ func paperReviewStage(index int) string {
 }
 
 func paperReviewLimit(task string) int {
+	if task == TaskPaperReproduction {
+		return 4
+	}
 	if task == TaskPaperReport {
 		return 6
 	}

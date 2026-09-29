@@ -1910,3 +1910,198 @@ test("Markdown copy failure offers a local download without exporting an unfinis
   expect(markdown).not.toMatch(/PRIVATE_|正在等待的新问题/);
   expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
 });
+
+const reproductionCategories = [
+  ["data", "数据与预处理"], ["model", "模型配置"], ["training", "训练设置"],
+  ["evaluation", "评估协议"], ["compute", "计算环境"], ["resources", "代码与资源"],
+] as const;
+
+function reproductionMessage(id: number) {
+  const message = citationAnswer(id);
+  return {
+    ...message, run_id: `reproduction-run-${id}`, content: "PRIVATE_REPRODUCTION_DRAFT",
+    result: {
+      ...questionReply(id / 2, "fulltext", "").result,
+      paper_title: "Frozen reproduction paper", workflow_version: "paper-fixed-v13",
+      reproduction: {
+        status: "complete",
+        categories: reproductionCategories.map(([category, title], index) => ({
+          id: category, title, status: "supported",
+          items: [1, 2].map((offset) => ({ number: index * 2 + offset, text: `${title}的原文设置 ${index * 2 + offset}。`, citation_ids: ["shared-source"] })),
+        })),
+      },
+    },
+  };
+}
+
+function reproductionRun(id: number, state = "completed", progress = "completed") {
+  return { run: { id: `reproduction-run-${id}`, task: "paper_reproduction", state, progress }, steps: [] };
+}
+
+test("reproduction is an explicit task with no report prerequisite and preserves the unsent question", async ({ page, api }) => {
+  const message = reproductionMessage(80);
+  let generated = false;
+  api.on("GET", `${conversationPath}/messages`, (route) => route.fulfill({ json: { items: generated ? [message] : [], next_before: 0 } }));
+  api.on("POST", `${conversationPath}/messages`, (route) => {
+    generated = true;
+    return route.fulfill({ status: 202, json: { run_id: message.run_id, ...reproductionRun(80, "pending", "queued") } });
+  });
+  api.json("GET", "/agent/runs/reproduction-run-80", reproductionRun(80));
+  await page.goto(assistantURL);
+  const input = page.getByRole("textbox", { name: "你的问题" });
+  await input.fill("暂存的问题，不应被清单按钮发送或清空。");
+  await expect(page.getByText(/复现清单最多 8 次调用、300 秒，合计最多 12 项/)).toBeVisible();
+  await expect(page.getByText(/问答通常调用 3 次，最多 6 次、180 秒/)).toBeVisible();
+  await expect(page.getByText(/短论文通常调用 6 次；长论文最多 30 次/)).toBeVisible();
+  await page.getByRole("button", { name: "生成复现清单", exact: true }).click();
+  const reply = page.locator('[data-message-id="80"]');
+  await expect(reply.getByRole("heading", { name: "复现清单", exact: true })).toBeVisible();
+  for (const [, title] of reproductionCategories) await expect(reply.getByRole("heading", { name: title, exact: true })).toBeVisible();
+  await expect(reply.locator("ol > li")).toHaveCount(12);
+  expect(await reply.locator("ol > li").evaluateAll((items) => items.map((item) => (item as HTMLLIElement).value))).toEqual(Array.from({ length: 12 }, (_, index) => index + 1));
+  await expect(input).toHaveValue("暂存的问题，不应被清单按钮发送或清空。");
+  await expect(reply.getByText("PRIVATE_REPRODUCTION_DRAFT", { exact: false })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
+  const writes = api.requestsFor("POST", `${conversationPath}/messages`);
+  expect(writes).toHaveLength(1);
+  expect(writes[0].body).toMatchObject({ task: "paper_reproduction", question: "", context_mode: "fulltext", provider: credential.provider });
+});
+
+test("reproduction cards keep controlled gaps, exact numbered follow-ups and scoped keyboard evidence", async ({ page, api }) => {
+  const message = reproductionMessage(82);
+  const result = { ...message.result, reproduction: { status: "partial", categories: message.result.reproduction.categories.map((category, index) => ({
+    ...category,
+    status: index === 5 ? "insufficient_evidence" : index === 2 ? "partial" : "supported",
+    items: index === 5 ? [] : category.items.map((item) => item.number === 4 ? { ...item, text: "<script>literal</script> 精确设置：batch size = 32。" } : item),
+    ...(index === 5 ? { gap: { reason: "insufficient_evidence" } } : index === 2 ? { gap: { reason: "review_rejected", text: "PRIVATE_REJECTED_ITEM" } } : {}),
+  })) } };
+  api.json("GET", `${conversationPath}/messages`, { items: [{ ...message, result, citations: [...message.citations, { ...message.citations[0], id: "rejected-source", quote: "PRIVATE_REJECTED_SOURCE" }] }], next_before: 0 });
+  api.json("GET", "/agent/runs/reproduction-run-82", reproductionRun(82));
+  const writes: unknown[] = [];
+  api.on("POST", `${conversationPath}/messages`, (route) => {
+    writes.push(route.request().postDataJSON());
+    return route.fulfill({ status: 202, json: { run_id: "followup-reproduction-item", run: { id: "followup-reproduction-item", task: "paper_followup", state: "pending", progress: "queued" } } });
+  });
+  await page.goto(assistantURL);
+  const reply = page.locator('[data-message-id="82"]');
+  await expect(reply.getByText("部分项目仍有证据缺口", { exact: true })).toBeVisible();
+  await expect(reply.getByText("部分项目未通过证据审核，当前材料不足以完整列出该类复现信息。", { exact: true })).toBeVisible();
+  await expect(reply.getByText("当前材料不足以完整列出该类复现信息。", { exact: true })).toBeVisible();
+  await expect(reply.getByText(/PRIVATE_/)).toHaveCount(0);
+  await expect(reply.locator("script")).toHaveCount(0);
+  const marker = reply.getByRole("button", { name: "查看证据 shared-source", exact: true }).first();
+  await marker.press("Enter");
+  await expect(reply.locator("summary")).toBeFocused();
+  await expect(reply.locator("details")).toHaveAttribute("open", "");
+  await reply.getByRole("button", { name: "追问第 4 项", exact: true }).click();
+  const input = page.getByRole("textbox", { name: "你的问题" });
+  const question = "请详细解释这份复现清单第 4 项：<script>literal</script> 精确设置：batch size = 32。";
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue(question);
+  expect(writes).toEqual([]);
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0]).toMatchObject({ task: "paper_followup", question });
+});
+
+test("reproduction Markdown exports only numbered public items with shared structured source appendices", async ({ page, api }) => {
+  await captureClipboard(page);
+  const message = reproductionMessage(84);
+  const table = structuredCitation("shared-source", "table");
+  const formula = structuredCitation("formula-source", "formula");
+  const result = { ...message.result, checkpoint: "PRIVATE_CHECKPOINT", reproduction: { status: "partial", categories: message.result.reproduction.categories.map((category, index) => ({
+    ...category, status: index === 5 ? "insufficient_evidence" : "supported",
+    items: index === 5 ? [] : category.items.map((item) => ({ ...item, citation_ids: item.number === 2 ? ["formula-source", "table-alias"] : item.citation_ids })),
+    ...(index === 5 ? { gap: { reason: "review_rejected", text: "PRIVATE_REJECTED_ITEM" } } : {}),
+  })) } };
+  api.json("GET", `${conversationPath}/messages`, { items: [{ ...message, result, citations: [table, { ...table, id: "table-alias" }, formula, { ...table, id: "unused-source", quote: "PRIVATE_UNUSED_EVIDENCE" }] }], next_before: 0 });
+  api.json("GET", "/agent/runs/reproduction-run-84", reproductionRun(84));
+  await page.goto(assistantURL);
+  const reply = page.locator('[data-message-id="84"]');
+  await reply.getByRole("button", { name: "复制 Markdown", exact: true }).click();
+  await expect(reply.getByRole("status")).toHaveText("已复制 Markdown");
+  const markdown = await copiedMarkdown(page);
+  expect(markdown).toContain("# Frozen reproduction paper — 复现清单");
+  for (const [, title] of reproductionCategories) expect(markdown).toContain(`## ${title}\n`);
+  expect(markdown).toContain("1. 数据与预处理的原文设置 1。");
+  expect(markdown).toContain("10. 计算环境的原文设置 10。");
+  expect(markdown).toContain("部分项目未通过证据审核，当前材料不足以完整列出该类复现信息。");
+  expect(markdown).toContain("```tex\nE = mc^2\n```");
+  expect(markdown.match(/\| Method \| Accuracy \|/g)).toHaveLength(1);
+  expect(markdown).toContain("### 证据 shared\\-source、table\\-alias");
+  expect(markdown).not.toMatch(/PRIVATE_|unused-source|11\. |12\. /);
+  const [download] = await Promise.all([page.waitForEvent("download"), reply.getByRole("button", { name: "下载 Markdown", exact: true }).click()]);
+  expect(await readFile((await download.path())!, "utf8")).toBe(markdown);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+test("reproduction progress survives reload and publishes only after supplement, repair and review complete", async ({ page, api }) => {
+  test.setTimeout(35_000);
+  const runID = "reproduction-run-86";
+  let phase: "planning" | "analyzing" | "retrieving" | "supplement" | "repairing" | "reviewing" | "completed" = "planning";
+  const previous = reproductionMessage(78);
+  const message = reproductionMessage(86);
+  api.on("GET", conversationPath, (route) => route.fulfill({ json: { ...conversation, active_run_id: runID } }));
+  api.on("GET", `${conversationPath}/messages`, (route) => route.fulfill({ json: { items: phase === "completed" ? [previous, message] : [previous], next_before: 0 } }));
+  api.on("GET", `/agent/runs/${runID}`, (route) => {
+    const stages = { planning: "planning_reproduction", analyzing: "analyzing_reproduction", retrieving: "retrieving_supplement", supplement: "analyzing_reproduction_supplement", repairing: "repairing_reproduction_supplement", reviewing: "validating_paper", completed: "completed" };
+    const retrieval = phase === "retrieving" ? "pending" : ["supplement", "repairing"].includes(phase) ? "calling" : ["reviewing", "completed"].includes(phase) ? "completed" : "initial_ready";
+    return route.fulfill({ json: { run: { id: runID, task: "paper_reproduction", state: phase === "completed" ? "completed" : "running", progress: stages[phase],
+      retrieval_summary: { state: retrieval, selected: 6, added: 2, query: "PRIVATE_REPRODUCTION_QUERY", candidate: "PRIVATE_REPRODUCTION_CANDIDATE" },
+      ...(["repairing", "reviewing", "completed"].includes(phase) ? { repair_summary: { field: "reproduction_supplement", state: phase === "repairing" ? "calling" : "completed", attempted: true } } : {}),
+      ...(phase === "reviewing" ? { review_progress: { completed: 0, total: 1 } } : {}),
+    }, steps: [] } });
+  });
+  await page.goto(assistantURL);
+  await expect(page.getByText("正在规划复现清单", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "生成复现清单", exact: true })).toBeDisabled();
+  await expect(page.locator('[data-message-id="78"]').getByRole("button", { name: "追问第 1 项", exact: true })).toBeDisabled();
+  await expect(page.locator('[data-message-id="78"]').getByRole("button", { name: "下载 Markdown", exact: true })).toBeEnabled();
+  for (const [next, label] of [
+    ["analyzing", "正在生成复现清单"], ["retrieving", "正在补充检索论文证据"], ["supplement", "正在生成补充复现清单"],
+  ] as const) {
+    phase = next;
+    await expect(page.getByText(label, { exact: true })).toBeVisible();
+    await expect(page.locator('[data-message-id="86"]')).toHaveCount(0);
+  }
+  await expect(page.getByText("正在结合 2 段补充证据完善复现清单。", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("正在生成补充复现清单", { exact: true })).toBeVisible();
+  phase = "repairing";
+  await expect(page.getByText("正在整理补充复现清单", { exact: true })).toBeVisible();
+  await expect(page.getByText("本轮正在进行唯一一次自动整理。", { exact: true })).toBeVisible();
+  phase = "reviewing";
+  await expect(page.getByText("正在审核证据 1/1", { exact: true })).toBeVisible();
+  await expect(page.getByText("已完成一次自动整理：补充复现清单。", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-message-id="86"]')).toHaveCount(0);
+  phase = "completed";
+  await expect(page.getByText("本轮已完成", { exact: true })).toBeVisible();
+  const reply = page.locator('[data-message-id="86"]');
+  await expect(reply.getByRole("heading", { name: "复现清单", exact: true })).toBeVisible();
+  await expect(reply.getByRole("button", { name: "追问第 12 项", exact: true })).toBeEnabled();
+  await expect(page.getByText(/PRIVATE_REPRODUCTION_QUERY|PRIVATE_REPRODUCTION_CANDIDATE|PRIVATE_REPRODUCTION_DRAFT/)).toHaveCount(0);
+  await page.reload();
+  await expect(reply.getByRole("heading", { name: "复现清单", exact: true })).toBeVisible();
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+for (const [stage, expected] of [
+  ["planning_reproduction", "规划复现清单"], ["analyzing_reproduction", "生成复现清单"],
+  ["repairing_reproduction", "整理复现清单"], ["analyzing_reproduction_supplement", "生成补充复现清单"],
+  ["repairing_reproduction_supplement", "整理补充复现清单"],
+] as const) {
+  test(`failed reproduction ${stage} shows the actual stage without a partial checklist or automatic resubmission`, async ({ page, api }) => {
+    const runID = `failed-${stage}`;
+    api.json("GET", conversationPath, { ...conversation, active_run_id: runID });
+    api.json("GET", `/agent/runs/${runID}`, { run: { id: runID, task: "paper_reproduction", state: "failed", progress: stage, failure_stage: stage, failure_code: "timeout", failure_detail: { code: "output_limit_exceeded", path: "$.answers", count: 13, limit: 12, unit: "claims", rule: "" }, ...(stage.startsWith("repairing_") ? { repair_summary: { field: stage.slice(10), state: "failed", attempted: true } } : {}) }, steps: [] });
+    await page.goto(assistantURL);
+    await expect(page.getByText("模型响应超时，本次调用未重试。", { exact: true })).toBeVisible();
+    await page.getByText("失败详情", { exact: true }).click();
+    await expect(page.getByText(`失败步骤：${expected}`, { exact: true })).toBeVisible();
+    await expect(page.getByText("结论 13 条，上限 12 条", { exact: false })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "重新编辑上次问题", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("article", { name: "助手回复", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "生成复现清单", exact: true })).toBeEnabled();
+    expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+  });
+}

@@ -129,7 +129,7 @@ func (s *MySQLStore) Submit(ctx context.Context, r Run, input SubmitInput) (out 
 		if c.ActiveRunID != nil {
 			return ErrConflict
 		}
-		if r.Task == TaskPaperFollowup {
+		if r.Task == TaskPaperFollowup || r.Task == TaskPaperReproduction {
 			if c.PaperID == nil {
 				return ErrInput
 			}

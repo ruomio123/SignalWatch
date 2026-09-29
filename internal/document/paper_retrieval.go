@@ -34,6 +34,15 @@ const (
 // at most eight new passages. Keeping the corpus intact preserves exact neighbor
 // relationships. The caller owns the serialized model-input byte budget.
 func RankPassages(passages []SearchPassage, queries []string, limit int) []SearchPassage {
+	return rankPassages(passages, queries, limit, paperSearchQueryLimit)
+}
+
+// Reproduction searches all six fixed categories without changing normal QA.
+func RankReproductionPassages(passages []SearchPassage, queries []string, limit int) []SearchPassage {
+	return rankPassages(passages, queries, limit, 6)
+}
+
+func rankPassages(passages []SearchPassage, queries []string, limit, queryLimit int) []SearchPassage {
 	limit = min(limit, paperSearchPassageLimit)
 	if limit < 1 || len(passages) == 0 {
 		return []SearchPassage{}
@@ -104,7 +113,7 @@ func RankPassages(passages []SearchPassage, queries []string, limit int) []Searc
 		if key == "" || seenQueries[key] {
 			continue
 		}
-		if len(seenQueries) == paperSearchQueryLimit {
+		if len(seenQueries) == queryLimit {
 			break
 		}
 		seenQueries[key] = true

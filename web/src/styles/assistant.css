@@ -264,6 +264,45 @@
 .paper-message-export .react-actions {
   flex-wrap: wrap;
 }
+.paper-reproduction-start {
+  display: grid;
+  gap: 10px;
+  padding-block: 12px;
+}
+.paper-reproduction-start small,
+.paper-reproduction-hint {
+  color: var(--muted);
+  line-height: 1.6;
+}
+.paper-reproduction h3 {
+  margin: 12px 0;
+}
+.paper-reproduction-category {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-block: 12px;
+}
+.paper-reproduction-category h4 {
+  margin: 0 0 8px;
+}
+.paper-reproduction-category ol {
+  margin: 0;
+  padding-left: 1.75em;
+}
+.paper-reproduction-category li + li {
+  margin-top: 12px;
+}
+.paper-reproduction-category li::marker {
+  font-weight: 600;
+}
+.paper-reproduction-category .agent-text {
+  margin-block: 6px;
+}
+.paper-reproduction-followup {
+  font-size: 12px;
+  padding: 4px 8px;
+}
 .paper-answer-part + .paper-answer-part {
   margin-top: 16px;
 }

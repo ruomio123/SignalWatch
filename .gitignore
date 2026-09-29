@@ -129,3 +129,6 @@ __pycache__/
 !/internal/platform/document/structured_html_test.go
 
 !/internal/agent/paper_structured_test.go
+
+!/internal/agent/paper_reproduction_test.go
+!/internal/agent/paper_reproduction_workflow_test.go

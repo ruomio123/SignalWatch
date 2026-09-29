@@ -21,6 +21,8 @@ type paperFieldPolicy struct {
 func paperFieldPolicyFor(field string) paperFieldPolicy {
 	maxClaims := 6
 	switch field {
+	case "reproduction":
+		maxClaims = 12
 	case "experiments", "results":
 		maxClaims = 8
 	case "problem", "method", "limitations", "answer":

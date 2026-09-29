@@ -6,6 +6,7 @@ import {
   type PaperCitation,
 } from "./PaperCitations";
 import type { PaperAnswer } from "./PaperAnswer";
+import type { PaperReproduction } from "./PaperReproduction";
 import { PaperMessageExport } from "./PaperMessageExport";
 
 export const reportFields = [
@@ -22,6 +23,7 @@ export type PaperResult = {
   structured_gap?: "unavailable" | "incomplete" | "preparation_budget" | "input_budget";
   report?: Record<ReportField, string>;
   answer?: PaperAnswer;
+  reproduction?: PaperReproduction;
   fields: Record<string, { status: string; citation_ids: string[] }>;
   context_mode: "abstract" | "fulltext";
   fallback_reason?: string;

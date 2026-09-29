@@ -17,6 +17,7 @@ import type { Configuration, Provider } from "../lib/types";
 import { AssistantView, AssistantComposer } from "./AssistantView";
 import { PaperReportView, PaperScope, type PaperResult } from "./PaperReport";
 import { PaperAnswerView } from "./PaperAnswer";
+import { PaperReproductionView } from "./PaperReproduction";
 import { CitationDetails, CitationText, PaperCitations, type PaperCitation } from "./PaperCitations";
 import { PaperMessageExport } from "./PaperMessageExport";
 import { PaperDocumentStatus } from "./PaperDocumentStatus";
@@ -88,7 +89,7 @@ type Run = {
     attempted: boolean;
   };
   failedStep?: FailedStep;
-  task?: "paper_report" | "paper_followup";
+  task?: "paper_report" | "paper_followup" | "paper_reproduction";
   effective_context_mode?: "abstract" | "fulltext";
   fallback_reason?: string;
   batch_total?: number;
@@ -103,6 +104,7 @@ type Run = {
 const progress: Record<string, string> = {
   queued: "等待处理",
   planning_paper: "正在准备固定分析任务",
+  planning_reproduction: "正在规划复现清单",
   normalizing_question: "正在理解追问",
   analyzing_problem: "正在分析论文问题",
   analyzing_method: "正在分析核心方法",
@@ -111,6 +113,8 @@ const progress: Record<string, string> = {
   analyzing_limitations: "正在分析局限性",
   analyzing_answer: "正在分析追问",
   analyzing_answer_supplement: "正在生成补充回答",
+  analyzing_reproduction: "正在生成复现清单",
+  analyzing_reproduction_supplement: "正在生成补充复现清单",
   validating_paper: "正在校验结论与论文证据",
   retrieving_evidence: "正在检索论文证据",
   retrieving_supplement: "正在补充检索论文证据",
@@ -133,6 +137,8 @@ const paperFields: Record<string, string> = {
   limitations: "局限性",
   answer: "追问回答",
   answer_supplement: "补充回答",
+  reproduction: "复现清单",
+  reproduction_supplement: "补充复现清单",
 };
 const validationRules: Record<string, string> = {
   chinese_text_required: "报告论断需要使用中文叙述，专业名称与公式可保留原文",
@@ -142,6 +148,7 @@ const validationRules: Record<string, string> = {
   duplicate_evidence: "同一论断不能重复引用相同片段",
   evidence_required: "每条论断必须有原文证据",
   question_coverage: "每个子问题必须恰好回答一次，并使用本轮的问题编号",
+  category_coverage: "复现清单必须恰好覆盖六个固定类别",
   required_field: "缺少必填字段",
   unexpected_field: "包含未定义的字段",
   invalid_enum: "字段值不在允许范围内",
@@ -206,6 +213,7 @@ function repairSummary(run: Run): string | undefined {
 function retrievalSummary(run: Run): string | undefined {
   const retrieval = run.retrieval_summary;
   if (!retrieval) return undefined;
+  const output = run.task === "paper_reproduction" ? "复现清单" : "回答";
   const selected = Number.isSafeInteger(retrieval.selected) && retrieval.selected >= 0
     ? retrieval.selected : undefined;
   const added = Number.isSafeInteger(retrieval.added) && retrieval.added >= 0
@@ -213,7 +221,7 @@ function retrievalSummary(run: Run): string | undefined {
   if (
     !["pending", "running"].includes(run.state) &&
     ["pending", "ready", "calling"].includes(retrieval.state)
-  ) return "本轮未完成补充回答。";
+  ) return `本轮未完成补充${output}。`;
   switch (retrieval.state) {
     case "initial_ready":
       return selected === undefined
@@ -223,16 +231,16 @@ function retrievalSummary(run: Run): string | undefined {
       return "正在进行本轮唯一一次补充检索。";
     case "ready":
       return added === undefined
-        ? "补充证据已就绪，等待生成补充回答。"
-        : `已找到 ${added} 段补充证据，等待生成补充回答。`;
+        ? `补充证据已就绪，等待生成补充${output}。`
+        : `已找到 ${added} 段补充证据，等待生成补充${output}。`;
     case "calling":
       return added === undefined
-        ? "正在结合补充证据完善回答。"
-        : `正在结合 ${added} 段补充证据完善回答。`;
+        ? `正在结合补充证据完善${output}。`
+        : `正在结合 ${added} 段补充证据完善${output}。`;
     case "completed":
       return added === undefined
-        ? "已完成一次补充检索与回答。"
-        : `已完成一次补充检索与回答，新增 ${added} 段证据。`;
+        ? `已完成一次补充检索与${output}。`
+        : `已完成一次补充检索与${output}，新增 ${added} 段证据。`;
     case "skipped":
       switch (retrieval.reason) {
         case "no_queries": return "本轮没有新的检索方向，未进行补充检索。";
@@ -270,9 +278,9 @@ function finalFailedStep(run: Run, steps: FailedStep[] = []): FailedStep | undef
 }
 const failures: Record<string, string> = {
   document_unavailable: "全文不可用。",
-  context_too_large: "论文或汇总证据超出本次输入上限，未输出部分报告。",
-  invalid_output: "本次输出或证据校验未通过，未发布报告。请手动重试。",
-  workflow_changed: "论文助手已升级，旧任务已停止。请重新提问，或手动生成论文报告。",
+  context_too_large: "论文或汇总证据超出本次输入上限，未输出部分结果。",
+  invalid_output: "本次输出或证据校验未通过，未发布结果。请手动重试。",
+  workflow_changed: "论文助手已升级，旧任务已停止。请重新提问，或手动生成论文报告、复现清单。",
   result_unknown: "模型调用结果未知，本次调用未再次执行。你可以手动重新发送。",
   timeout: "模型响应超时，本次调用未重试。",
   invalid_citation: "本次回答的证据校验未通过，请手动重试。",
@@ -556,10 +564,11 @@ function AgentChatView({
       controller.abort();
     };
   }, [activeRunID, reload, list, token]);
-  async function send(e?: FormEvent, task?: "paper_report" | "paper_followup") {
+  async function send(e?: FormEvent, task?: "paper_report" | "paper_followup" | "paper_reproduction") {
     e?.preventDefault();
+    const fixedTask = task === "paper_report" || task === "paper_reproduction";
     if (
-      (task !== "paper_report" && !question.trim()) ||
+      (!fixedTask && !question.trim()) ||
       submitting.current ||
       busy ||
       active ||
@@ -573,7 +582,7 @@ function AgentChatView({
     const signal = scope();
     setBusy(true);
     setError(undefined);
-    const text = task === "paper_report" ? "" : question;
+    const text = fixedTask ? "" : question;
     const body = JSON.stringify({
       ...(kind === "paper" ? { task: task ?? "paper_followup" } : {}),
       question: text,
@@ -610,7 +619,7 @@ function AgentChatView({
       );
       if (signal.aborted) return;
       submission.current = undefined;
-      if (task !== "paper_report") setQuestion("");
+      if (!fixedTask) setQuestion("");
       // Only navigate after both writes finish. The new view owns its reads;
       // switching the URL earlier would cancel this legitimate submission.
       if (!conversationID) {
@@ -927,6 +936,15 @@ function AgentChatView({
           </small>
         </div>
       )}
+      {kind === "paper" && (
+        <div className="paper-reproduction-start">
+          <p>按数据、模型、训练、评估、计算环境和资源整理有证据支持的复现信息。</p>
+          <button className="button" disabled={reportDisabled} onClick={() => void send(undefined, "paper_reproduction")}>
+            生成复现清单
+          </button>
+          <small>复现清单最多 8 次调用、300 秒，合计最多 12 项；缺失信息会明确标注。</small>
+        </div>
+      )}
       {older > 0 && (
         <button
           className="button"
@@ -962,7 +980,18 @@ function AgentChatView({
             ) : (
               <>
                 {m.result && <PaperScope result={m.result} />}
-                {m.result?.answer ? (
+                {m.result?.reproduction ? (
+                  <PaperReproductionView
+                    reproduction={m.result.reproduction}
+                    messageID={`${conversationID}:${m.id}`}
+                    citations={m.citations ?? []}
+                    disabled={busy || active}
+                    onFollowUp={(item) => {
+                      setQuestion(`请详细解释这份复现清单第 ${item.number} 项：${item.text}`);
+                      inputRef.current?.focus();
+                    }}
+                  />
+                ) : m.result?.answer ? (
                   <PaperAnswerView
                     answer={m.result.answer}
                     messageID={`${conversationID}:${m.id}`}
@@ -1091,6 +1120,7 @@ function AgentChatView({
       )}
       {run &&
         run.task !== "paper_report" &&
+        run.task !== "paper_reproduction" &&
         !active &&
         run.state !== "completed" && (
           <button

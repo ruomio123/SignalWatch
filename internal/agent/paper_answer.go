@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"signalwatch/internal/generation"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -92,9 +93,13 @@ type PaperAnswerAnalysis struct {
 }
 
 func newPaperAnswerSchemas(queryLimit int) paperFieldSchemas {
+	return newPaperAnswerSchemasFor(queryLimit, paperQuestionLimit, "answer")
+}
+
+func newPaperAnswerSchemasFor(queryLimit, maxQuestions int, field string) paperFieldSchemas {
 	schema := generation.SchemaFor[paperAnswerOutput]()
-	one, zero, maximum := 1, 0, paperQuestionLimit
-	policy := paperFieldPolicyFor("answer")
+	one, zero, maximum := 1, 0, maxQuestions
+	policy := paperFieldPolicyFor(field)
 	answers := schema.Properties["answers"]
 	answers.MinItems, answers.MaxItems = &one, &maximum
 	claims := answers.Items.Properties["claims"]
@@ -132,16 +137,26 @@ func decodePaperSupplementAnswer(raw []byte, evidence []Citation, questions []Pa
 }
 
 func decodePaperAnswerFor(raw []byte, evidence []Citation, questions []PaperQuestion, allowSupplement bool) (PaperAnswerAnalysis, error) {
+	return decodePaperAnswerPolicy(raw, evidence, questions, allowSupplement, "answer", paperQuestionLimit)
+}
+
+func decodePaperAnswerPolicy(raw []byte, evidence []Citation, questions []PaperQuestion, allowSupplement bool, field string, maxQuestions int) (PaperAnswerAnalysis, error) {
 	var wire paperAnswerOutput
 	var value PaperAnswerAnalysis
 	schemas := paperAnswerSchemas
 	if !allowSupplement {
 		schemas = paperSupplementAnswerSchemas
 	}
+	if field == "reproduction" {
+		schemas = paperReproductionSchemas
+		if !allowSupplement {
+			schemas = paperReproductionSupplementSchemas
+		}
+	}
 	if err := paperSchemaJSON(raw, &wire, schemas.structure); err != nil {
 		return value, err
 	}
-	if len(questions) == 0 || len(questions) > paperQuestionLimit {
+	if len(questions) == 0 || len(questions) > maxQuestions {
 		return value, paperError("invalid_checkpoint")
 	}
 	expected := make(map[string]int, len(questions))
@@ -154,7 +169,7 @@ func decodePaperAnswerFor(raw []byte, evidence []Citation, questions []PaperQues
 	if len(wire.Answers) != len(questions) {
 		return value, outputRule("output_schema_mismatch", "$.answers", "question_coverage")
 	}
-	policy := paperFieldPolicyFor("answer")
+	policy := paperFieldPolicyFor(field)
 	total := 0
 	for _, answer := range wire.Answers {
 		total += len(answer.Claims)
@@ -199,6 +214,9 @@ func decodePaperAnswerFor(raw []byte, evidence []Citation, questions []PaperQues
 			refs, err := resolveEvidence(claim.Evidence, evidence, policy.MaxEvidence, at+".evidence")
 			if err != nil {
 				return value, err
+			}
+			if field == "reproduction" && !strings.ContainsFunc(claim.Text, func(r rune) bool { return unicode.Is(unicode.Han, r) }) {
+				return value, outputRule("output_language_mismatch", at+".text", "chinese_text_required")
 			}
 			part.Claims = append(part.Claims, PaperClaim{Text: claim.Text, Evidence: refs})
 		}

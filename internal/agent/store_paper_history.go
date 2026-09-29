@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 
 	"gorm.io/gorm"
 )
@@ -14,14 +15,28 @@ func (s *MySQLStore) PaperHistory(ctx context.Context, conversation, paperHash, 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Filter before LIMIT: unrelated snapshots, partial pairs, and failed
 		// tasks must not crowd a valid older question out of the three turns.
-		if err := tx.Table("agent_messages a").Select("u.content AS question, a.content AS answer").
+		var rows []struct {
+			Question string
+			Answer   string
+			Result   json.RawMessage
+		}
+		if err := tx.Table("agent_messages a").Select("u.content AS question, a.content AS answer, a.result AS result").
 			Joins("JOIN agent_runs r ON r.id=a.run_id AND r.conversation_id=a.conversation_id").
 			Joins("JOIN agent_messages u ON u.run_id=r.id AND u.conversation_id=a.conversation_id AND u.role='user'").
-			Where("a.conversation_id=? AND a.role='assistant' AND r.task=? AND r.state='completed' AND r.id<>?", conversation, TaskPaperFollowup, excludeRunID).
+			Where("a.conversation_id=? AND a.role='assistant' AND r.task IN ? AND r.state='completed' AND r.id<>?", conversation, []string{TaskPaperFollowup, TaskPaperReproduction}, excludeRunID).
 			Where("JSON_UNQUOTE(JSON_EXTRACT(a.result, '$.paper_hash'))=?", paperHash).
 			Where("TRIM(u.content)<>'' AND TRIM(a.content)<>''").
-			Order("a.id DESC").Limit(4).Scan(&out.Turns).Error; err != nil {
+			Order("a.id DESC").Limit(4).Scan(&rows).Error; err != nil {
 			return err
+		}
+		for _, row := range rows {
+			var result PaperResult
+			if json.Unmarshal(row.Result, &result) == nil && result.Reproduction != nil {
+				summary, clipped := reproductionContextSummary(result.Reproduction)
+				row.Answer = summary
+				out.Truncated = out.Truncated || clipped
+			}
+			out.Turns = append(out.Turns, PaperConversationTurn{Question: row.Question, Answer: row.Answer})
 		}
 		// One extra eligible pair tells the model that earlier discussion was
 		// omitted, while the captured context still contains at most three.

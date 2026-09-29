@@ -9,18 +9,22 @@ import (
 )
 
 const (
-	TaskPaperReport      = "paper_report"
-	TaskPaperFollowup    = "paper_followup"
-	PaperWorkflowVersion = "paper-fixed-v12"
-	PaperReportMessage   = "快速了解论文"
-	PaperGoal            = "帮助用户快速了解当前论文"
-	paperInputLimit      = 64 << 10
+	TaskPaperReport       = "paper_report"
+	TaskPaperFollowup     = "paper_followup"
+	TaskPaperReproduction = "paper_reproduction"
+	PaperWorkflowVersion  = "paper-fixed-v13"
+	PaperReportMessage    = "快速了解论文"
+	PaperGoal             = "帮助用户快速了解当前论文"
+	paperInputLimit       = 64 << 10
 )
 
 var paperFields = []string{"problem", "method", "experiments", "results", "limitations"}
-var paperLabels = map[string]string{"problem": "论文问题", "method": "核心方法", "experiments": "实验验证", "results": "主要结果", "limitations": "局限性", "answer": "回答"}
+var paperLabels = map[string]string{"problem": "论文问题", "method": "核心方法", "experiments": "实验验证", "results": "主要结果", "limitations": "局限性", "answer": "回答", "reproduction": "复现清单"}
 
 func runDuration(r Run) time.Duration {
+	if r.Task == TaskPaperReproduction {
+		return 300 * time.Second
+	}
 	if r.Task == TaskPaperReport {
 		return 15 * time.Minute
 	}
@@ -138,6 +142,7 @@ type PaperFieldResult struct {
 	CitationIDs []string `json:"citation_ids"`
 }
 type PaperResult struct {
+	Reproduction     *PaperReproduction          `json:"reproduction,omitempty"`
 	OriginalQuestion string                      `json:"original_question,omitempty"`
 	PaperTitle       string                      `json:"paper_title,omitempty"`
 	StructuredGap    string                      `json:"structured_gap,omitempty"`
@@ -157,5 +162,5 @@ type PaperResult struct {
 func validPaperReport(message Message, hash string) (PaperResult, bool) {
 	var result PaperResult
 	err := json.Unmarshal(message.Result, &result)
-	return result, err == nil && result.Report != nil && result.PaperHash == hash && (result.WorkflowVersion == PaperWorkflowVersion || result.WorkflowVersion == "paper-fixed-v1" || result.WorkflowVersion == "paper-fixed-v2" || result.WorkflowVersion == "paper-fixed-v3" || result.WorkflowVersion == "paper-fixed-v4" || result.WorkflowVersion == "paper-fixed-v5" || result.WorkflowVersion == "paper-fixed-v6" || result.WorkflowVersion == "paper-fixed-v7" || result.WorkflowVersion == "paper-fixed-v8" || result.WorkflowVersion == "paper-fixed-v9" || result.WorkflowVersion == "paper-fixed-v10" || result.WorkflowVersion == "paper-fixed-v11") && (result.ContextMode == "abstract" || result.ContextMode == "fulltext")
+	return result, err == nil && result.Report != nil && result.PaperHash == hash && (result.WorkflowVersion == PaperWorkflowVersion || result.WorkflowVersion == "paper-fixed-v1" || result.WorkflowVersion == "paper-fixed-v2" || result.WorkflowVersion == "paper-fixed-v3" || result.WorkflowVersion == "paper-fixed-v4" || result.WorkflowVersion == "paper-fixed-v5" || result.WorkflowVersion == "paper-fixed-v6" || result.WorkflowVersion == "paper-fixed-v7" || result.WorkflowVersion == "paper-fixed-v8" || result.WorkflowVersion == "paper-fixed-v9" || result.WorkflowVersion == "paper-fixed-v10" || result.WorkflowVersion == "paper-fixed-v11" || result.WorkflowVersion == "paper-fixed-v12") && (result.ContextMode == "abstract" || result.ContextMode == "fulltext")
 }

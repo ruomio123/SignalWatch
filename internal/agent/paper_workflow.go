@@ -45,6 +45,9 @@ func boundedPaperInput(value any) ([]byte, error) {
 }
 
 func paperCallLimit(task string) int {
+	if task == TaskPaperReproduction {
+		return 8
+	}
 	if task == TaskPaperReport {
 		return 30
 	}
@@ -114,7 +117,7 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 		if err := check(ctx); err != nil {
 			return nil, s.failPaperStage(ctx, r, cp, stage, err, nil)
 		}
-		if stage == paperSupplementStage {
+		if paperSupplementAnalysisStage(stage) {
 			if reason := paperSupplementBudget(ctx, r, cp, time.Now()); reason != "" {
 				cp.Paper.QA.Supplement.Reason = reason
 				return nil, errPaperSupplementSkipped
@@ -136,7 +139,7 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 				if err := call.Err(); err != nil {
 					return err
 				}
-				if stage == paperSupplementStage {
+				if paperSupplementAnalysisStage(stage) {
 					if reason := paperSupplementBudget(call, r, cp, time.Now()); reason != "" {
 						cp.Paper.QA.Supplement.Reason, optionalSkip = reason, true
 						return errPaperSupplementSkipped
@@ -149,7 +152,7 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 				previousFailure, previousStage := cp.Paper.Failure, cp.Paper.CurrentStage
 				previousRepairState, previousAttempted := "", false
 				previousSupplementState := ""
-				if stage == paperSupplementStage {
+				if paperSupplementAnalysisStage(stage) {
 					previousSupplementState = cp.Paper.QA.Supplement.State
 					cp.Paper.QA.Supplement.State = "calling"
 				}
@@ -173,7 +176,7 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 					// A process death after Save still leaves calling on disk.
 					cp.Calls, cp.Phase = previousCalls, previousPhase
 					cp.Paper.Failure, cp.Paper.CurrentStage = previousFailure, previousStage
-					if stage == paperSupplementStage {
+					if paperSupplementAnalysisStage(stage) {
 						cp.Paper.QA.Supplement.State = previousSupplementState
 					}
 					if cp.Paper.Repair != nil {
@@ -245,7 +248,7 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 					return nil, s.failPaperStage(ctx, r, cp, stage, callErr, &step)
 				}
 				cp.Phase = "ready"
-				if stage == paperSupplementStage {
+				if paperSupplementAnalysisStage(stage) {
 					cp.Paper.QA.Supplement.State = "ready"
 				}
 				cp.Paper.CurrentStage = paperContract(stage).RepairStage
@@ -262,7 +265,7 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 			cp.Paper.Outputs[repair.Stage] = append(json.RawMessage(nil), result.Content...)
 			repair.State = "completed"
 		}
-		if stage == paperSupplementStage || paperContract(stage).OriginalStage == paperSupplementStage {
+		if paperSupplementAnalysisStage(stage) || paperSupplementAnalysisStage(paperContract(stage).OriginalStage) {
 			cp.Paper.QA.Supplement.State = "completed"
 		}
 		cp.Paper.Failure = nil
@@ -318,7 +321,7 @@ func (s *Service) preparePaper(ctx context.Context, r Run, c Conversation, cp *C
 		}
 		cp.DocumentID = id
 		deadline := time.Now().Add(105 * time.Second)
-		if r.Task == TaskPaperFollowup {
+		if r.Task == TaskPaperFollowup || r.Task == TaskPaperReproduction {
 			if pc.PreparationDeadline == nil {
 				timeout := s.paperPreparationTimeout
 				if timeout <= 0 {
@@ -501,7 +504,7 @@ func (s *Service) processPaper(ctx context.Context, r Run, c Conversation, cp *C
 	if err != nil {
 		return err
 	}
-	if r.Task == TaskPaperFollowup {
+	if r.Task == TaskPaperFollowup || r.Task == TaskPaperReproduction {
 		return s.processPaperQuestion(ctx, r, c, cp, check, evidence)
 	}
 	fields := paperFields
@@ -583,7 +586,7 @@ func (s *Service) processPaper(ctx context.Context, r Run, c Conversation, cp *C
 func renderPaperResult(r Run, cp *Checkpoint, fields []string, analyses map[string]FieldAnalysis, available map[string][]Citation, verdicts map[string]bool) (string, PaperResult, []Citation) {
 	pc := cp.Paper
 	coverage := "all_extracted_text"
-	if r.Task == TaskPaperFollowup {
+	if r.Task == TaskPaperFollowup || r.Task == TaskPaperReproduction {
 		coverage = "retrieved_passages"
 	}
 	if pc.Mode == "abstract" {
