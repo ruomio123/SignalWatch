@@ -145,6 +145,21 @@ func (s *ConfigurationService) Providers() []generation.Provider {
 	return s.catalog.Providers(s.enabled)
 }
 
+func (s *ConfigurationService) ModelLimits(provider, model string) generation.ModelLimits {
+	if catalog, ok := s.catalog.(interface {
+		ModelLimits(string, string) generation.ModelLimits
+	}); ok {
+		if limits := catalog.ModelLimits(provider, model); limits.Valid() {
+			return limits
+		}
+	}
+	return generation.DefaultModelLimits()
+}
+
+func (s *ConfigurationService) PaperCallTimeout() time.Duration {
+	return s.calls.policy.timeout(FeaturePaperQA)
+}
+
 func (s *ConfigurationService) Get(ctx context.Context, userID uint64) (PublicConfiguration, error) {
 	row, err := s.store.Read(ctx, userID)
 	if errors.Is(err, ErrConfigurationRequired) {

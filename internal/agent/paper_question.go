@@ -70,16 +70,19 @@ func rankPaperEvidenceForTask(task string, evidence []Citation, queries []string
 }
 
 func packPaperAnswerInput(r Run, pc *PaperCheckpoint, questions []PaperQuestion, candidates []Citation) (PaperAnswerInput, error) {
-	field := paperQuestionPolicy(r.Task).Field
+	workflow := paperQuestionPolicy(r.Task)
+	fit := func(input any) ([]byte, error) {
+		return paperFitsInput(pc, workflow.AnalysisStage, workflow.AnalysisPrompt, input)
+	}
 	serialize := func(selected []Citation) ([]byte, error) {
-		request := paperInput(pc, field, selected)
+		request := paperInput(pc, workflow.Field, selected)
 		request["question"], request["original_question"] = r.Question, r.Question
 		request["questions"], request["coverage"] = questions, "retrieved_passages"
-		projected, err := paperInputWithContext(request, pc.ConversationContext)
+		projected, err := paperInputWithContextBudget(request, pc.ConversationContext, fit)
 		if err != nil {
 			return nil, err
 		}
-		return boundedPaperInput(projected)
+		return fit(projected)
 	}
 	selected := []Citation{}
 	// An indivisible unit that cannot fit by itself must not evict all usable
@@ -139,11 +142,14 @@ func (s *Service) processPaperQuestion(ctx context.Context, r Run, c Conversatio
 		return paperError("invalid_checkpoint")
 	}
 	if qa.NormalizationRequest == "" {
-		input, err := paperInputWithContext(map[string]any{"paper": pc.Context, "question": r.Question}, pc.ConversationContext)
+		fit := func(input any) ([]byte, error) {
+			return paperFitsInput(pc, workflow.PlanStage, workflow.PlanPrompt, input)
+		}
+		input, err := paperInputWithContextBudget(map[string]any{"paper": pc.Context, "question": r.Question}, pc.ConversationContext, fit)
 		if err != nil {
 			return err
 		}
-		raw, err := boundedPaperInput(input)
+		raw, err := fit(input)
 		if err != nil {
 			return err
 		}
@@ -214,6 +220,9 @@ func (s *Service) processPaperQuestion(ctx context.Context, r Run, c Conversatio
 	claims := paperAnswerReviewClaims(analysis)
 	verdicts, err := s.reviewPaper(ctx, r, cp, check, claims, evidenceIndex(input.Evidence))
 	if err != nil {
+		return err
+	}
+	if err := s.checkPaperPublication(ctx, r, cp, verdicts); err != nil {
 		return err
 	}
 	content, result, citations := workflow.Render(r, cp, questions, analysis, input.Evidence, verdicts)

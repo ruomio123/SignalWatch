@@ -1,7 +1,9 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/mail"
 	"net/url"
@@ -10,12 +12,16 @@ import (
 	"strings"
 	"time"
 
+	"signalwatch/internal/generation"
+	"signalwatch/internal/platform/llm"
 	"signalwatch/internal/platform/secret"
 )
 
 const developmentJWTSecret = "development-only-change-me-32-bytes"
 
 type Config struct {
+	AIModelLimits                 map[string]generation.ModelLimits
+	AIPaperCallTimeout            time.Duration
 	AIEnabled                     bool
 	AIConfigTestMinInterval       time.Duration
 	AIGenerationMinInterval       time.Duration
@@ -204,6 +210,7 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg := Config{
+		AIPaperCallTimeout:      time.Minute,
 		AIEnabled:               aiEnabled,
 		AIConfigTestMinInterval: 10 * time.Second, AIGenerationMinInterval: 2 * time.Second,
 		AICredentialKeys:             os.Getenv("AI_CREDENTIAL_KEYS"),
@@ -252,6 +259,14 @@ func Load() (Config, error) {
 		SMTPTimeout:            durationEnvOrDefault(envSMTPTimeout, 10*time.Second),
 	}
 
+	if cfg.AIPaperCallTimeout, err = parsePaperCallTimeout(os.Getenv("AI_PAPER_CALL_TIMEOUT")); err != nil {
+		return cfg, err
+	}
+	cfg.AIModelLimits, err = parseModelLimits(os.Getenv("AI_MODEL_LIMITS_JSON"))
+	if err != nil {
+		return cfg, err
+	}
+
 	for _, option := range []struct {
 		name   string
 		target *time.Duration
@@ -281,6 +296,40 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func parsePaperCallTimeout(raw string) (time.Duration, error) {
+	if raw == "" {
+		return time.Minute, nil
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value < 10*time.Second || value > 120*time.Second {
+		return 0, fmt.Errorf("invalid AI_PAPER_CALL_TIMEOUT")
+	}
+	return value, nil
+}
+
+func parseModelLimits(raw string) (map[string]generation.ModelLimits, error) {
+	limits := map[string]generation.ModelLimits{}
+	if strings.TrimSpace(raw) == "" {
+		return limits, nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&limits); err != nil || limits == nil {
+		return nil, fmt.Errorf("invalid AI_MODEL_LIMITS_JSON")
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return nil, fmt.Errorf("invalid AI_MODEL_LIMITS_JSON")
+	}
+	for key, value := range limits {
+		provider, model, ok := strings.Cut(key, "/")
+		if !ok || !llm.ValidateSelection([]string{provider}, provider, model) || !value.Valid() {
+			return nil, fmt.Errorf("invalid AI_MODEL_LIMITS_JSON")
+		}
+	}
+	return limits, nil
 }
 
 /*

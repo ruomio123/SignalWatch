@@ -8,6 +8,7 @@ import {
 import type { PaperAnswer } from "./PaperAnswer";
 import type { PaperReproduction } from "./PaperReproduction";
 import { PaperMessageExport } from "./PaperMessageExport";
+import { paperIssueMessage, partialPaperMessage, publicPaperIssue, technicalGapMessage, type PaperIssue, type PaperTechnicalGap } from "../lib/paper-status";
 
 export const reportFields = [
   ["problem", "论文问题"],
@@ -18,13 +19,15 @@ export const reportFields = [
 ] as const;
 export type ReportField = (typeof reportFields)[number][0];
 export type PaperResult = {
+  outcome?: "complete" | "partial";
+  issues?: PaperIssue[];
   paper_title?: string;
   original_question?: string;
   structured_gap?: "unavailable" | "incomplete" | "preparation_budget" | "input_budget";
   report?: Record<ReportField, string>;
   answer?: PaperAnswer;
   reproduction?: PaperReproduction;
-  fields: Record<string, { status: string; citation_ids: string[] }>;
+  fields: Record<string, { status: string; citation_ids: string[]; gap_reason?: PaperTechnicalGap }>;
   context_mode: "abstract" | "fulltext";
   fallback_reason?: string;
   coverage: string;
@@ -56,22 +59,28 @@ export function structuredGapMessage(gap: PaperResult["structured_gap"]): string
 export function PaperScope({
   result,
 }: {
-  result: Pick<PaperResult, "context_mode" | "fallback_reason" | "structured_gap">;
+  result: Pick<PaperResult, "context_mode" | "fallback_reason" | "structured_gap" | "outcome" | "issues">;
 }) {
   return (
-    <p className="paper-report-scope">
-      {result.context_mode === "abstract"
-        ? "仅基于摘要；缺失判断不代表论文全文没有相关内容。"
-        : "基于论文提取文字；图片、公式及复杂表格可能无法可靠解析。"}
-      {result.fallback_reason && (
-        <span>
-          {" "}
-          自动降级原因：
-          {fallbackReasons[result.fallback_reason] ?? "全文不可用"}。
-        </span>
-      )}
-      {result.structured_gap && <span> {structuredGapMessage(result.structured_gap)}</span>}
-    </p>
+    <>
+      <p className="paper-report-scope">
+        {result.context_mode === "abstract"
+          ? "仅基于摘要；缺失判断不代表论文全文没有相关内容。"
+          : "基于论文提取文字；图片、公式及复杂表格可能无法可靠解析。"}
+        {result.fallback_reason && (
+          <span>
+            {" "}
+            自动降级原因：
+            {fallbackReasons[result.fallback_reason] ?? "全文不可用"}。
+          </span>
+        )}
+        {result.structured_gap && <span> {structuredGapMessage(result.structured_gap)}</span>}
+      </p>
+      {result.outcome === "partial" && <div className="paper-answer-gap">
+        <p>{partialPaperMessage}</p>
+        {!!result.issues?.length && <ul>{result.issues.map((issue, index) => <li key={index}>{paperIssueMessage(issue)}</li>)}</ul>}
+      </div>}
+    </>
   );
 }
 export function PaperReportView({
@@ -104,7 +113,10 @@ export function PaperReportView({
   async function copy() {
     try {
       await navigator.clipboard.writeText(
-        JSON.stringify(result.report, null, 2),
+        JSON.stringify(result.outcome === "partial" ? {
+          ...result.report, outcome: result.outcome,
+          issues: (result.issues ?? []).map(publicPaperIssue),
+        } : result.report, null, 2),
       );
       setCopied("JSON");
       setError("");
@@ -135,7 +147,9 @@ export function PaperReportView({
             <p className="agent-text">
               <CitationText text={result.report?.[field] ?? ""} />
             </p>
-            {result.fields[field]?.status === "insufficient_evidence" && (
+            {technicalGapMessage(result.fields[field]?.gap_reason) ? (
+              <small>{technicalGapMessage(result.fields[field]?.gap_reason)}</small>
+            ) : result.fields[field]?.status === "insufficient_evidence" && (
               <small>证据不足，未保留未经支持的结论。</small>
             )}
             <CitationDetails ids={fieldCitations[field]} />

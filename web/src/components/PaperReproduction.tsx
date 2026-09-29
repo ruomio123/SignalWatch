@@ -4,6 +4,7 @@ import {
   PaperCitations,
   type PaperCitation,
 } from "./PaperCitations";
+import { technicalGapMessage, type PaperTechnicalGap } from "../lib/paper-status";
 
 export type PaperReproductionItem = {
   number: number;
@@ -15,16 +16,16 @@ export type PaperReproduction = {
   categories: {
     id: "data" | "model" | "training" | "evaluation" | "compute" | "resources";
     title: string;
-    status: "supported" | "partial" | "insufficient_evidence";
+    status: "supported" | "partial" | "insufficient_evidence" | "processing_failed";
     items: PaperReproductionItem[];
-    gap?: { reason: "insufficient_evidence" | "review_rejected" };
+    gap?: { reason: "insufficient_evidence" | "review_rejected" | PaperTechnicalGap };
   }[];
 };
 
 export function reproductionGapMessage(reason?: string): string {
-  return reason === "review_rejected"
+  return technicalGapMessage(reason) ?? (reason === "review_rejected"
     ? "部分项目未通过证据审核，当前材料不足以完整列出该类复现信息。"
-    : "当前材料不足以完整列出该类复现信息。";
+    : "当前材料不足以完整列出该类复现信息。");
 }
 
 export function PaperReproductionView({
@@ -47,7 +48,7 @@ export function PaperReproductionView({
     <div className="paper-reproduction">
       <h3>复现清单</h3>
       {reproduction.status !== "complete" && <p className="paper-answer-status">
-        {reproduction.status === "partial" ? "部分项目仍有证据缺口" : "当前证据不足"}
+        {reproduction.categories.some((category) => technicalGapMessage(category.gap?.reason)) ? "部分清单已生成，部分处理未完成" : reproduction.status === "partial" ? "部分项目仍有证据缺口" : "当前证据不足"}
       </p>}
       <p className="paper-reproduction-hint">可按条目编号继续追问；清单仅包含当前材料支持的信息。</p>
       {reproduction.categories.map((category) => <section className="paper-reproduction-category" key={category.id} aria-label={category.title}>

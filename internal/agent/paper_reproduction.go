@@ -152,6 +152,8 @@ func reproductionContextSummary(checklist *PaperReproduction) (string, bool) {
 			gap := "[当前材料存在证据缺口]"
 			if category.Gap.Reason == "review_rejected" {
 				gap = "[部分项目未通过证据审核]"
+			} else if category.Gap.Reason == "review_incomplete" {
+				gap = "[部分项目未完成证据审核]"
 			}
 			lines = append(lines, gap)
 		}
@@ -175,6 +177,9 @@ func renderPaperReproduction(r Run, cp *Checkpoint, questions []PaperQuestion, a
 	} else if checklist.Status == "insufficient" {
 		heading += "：当前证据不足"
 	}
+	if result.Outcome == "partial" {
+		heading = "## 复现清单：部分处理未完成"
+	}
 	parts := []string{heading}
 	if cp.Paper.Mode == "abstract" {
 		parts = append(parts, "仅基于摘要；以下缺失判断仅针对当前材料，不代表论文全文没有相关内容。")
@@ -197,6 +202,8 @@ func renderPaperReproduction(r Run, cp *Checkpoint, questions []PaperQuestion, a
 			gap := "当前材料不足以完整列出该类复现信息。"
 			if part.Gap.Reason == "review_rejected" {
 				gap = "部分项目未通过证据审核，当前材料不足以完整列出该类复现信息。"
+			} else if part.Gap.Reason == "review_incomplete" {
+				gap = "该类复现信息的部分项目未完成证据审核，仅展示已通过审核的内容。"
 			}
 			lines = append(lines, gap)
 		}

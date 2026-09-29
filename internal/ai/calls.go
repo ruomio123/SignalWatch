@@ -13,6 +13,7 @@ import (
 // CallPolicy is shared by interactive validation and background generation.
 // Zero daily limits explicitly mean unlimited; intervals are independent of billing.
 type CallPolicy struct {
+	PaperCallTimeout            time.Duration
 	ConfigInterval              time.Duration
 	GenerationInterval          time.Duration
 	ConfigDailyLimit            int
@@ -23,7 +24,17 @@ type CallPolicy struct {
 }
 
 func DefaultCallPolicy() CallPolicy {
-	return CallPolicy{ConfigInterval: 10 * time.Second, GenerationInterval: 2 * time.Second}
+	return CallPolicy{ConfigInterval: 10 * time.Second, GenerationInterval: 2 * time.Second, PaperCallTimeout: time.Minute}
+}
+
+func (p CallPolicy) timeout(feature string) time.Duration {
+	if feature == FeaturePaperQA {
+		if p.PaperCallTimeout >= 10*time.Second && p.PaperCallTimeout <= 120*time.Second {
+			return p.PaperCallTimeout
+		}
+		return time.Minute
+	}
+	return 30 * time.Second
 }
 func (p CallPolicy) limit(feature string) int {
 	switch feature {
@@ -173,7 +184,8 @@ func (r *CallRunner) Run(ctx context.Context, req CallRequest) (generation.Resul
 	if req.RequestID == "" {
 		req.RequestID, _ = ctx.Value(callRequestKey{}).(string)
 	}
-	c := CallRecord{ID: rand.Text(), UserID: req.UserID, Feature: req.Feature, Provider: req.Provider, Model: req.Model, Generation: req.Generation, Version: req.Version, RequestID: req.RequestID, Status: "reserved", CreatedAt: now, LeaseUntil: now.Add(time.Minute)}
+	timeout := r.policy.timeout(req.Feature)
+	c := CallRecord{ID: rand.Text(), UserID: req.UserID, Feature: req.Feature, Provider: req.Provider, Model: req.Model, Generation: req.Generation, Version: req.Version, RequestID: req.RequestID, Status: "reserved", CreatedAt: now, LeaseUntil: now.Add(max(time.Minute, timeout+30*time.Second))}
 	if err = r.store.Admit(ctx, c, r.policy); err != nil {
 		return generation.Result{}, err
 	}
@@ -196,7 +208,7 @@ func (r *CallRunner) Run(ctx context.Context, req CallRequest) (generation.Resul
 	if err = r.store.Start(ctx, c.ID, r.now().UTC()); err != nil {
 		return generation.Result{}, err
 	}
-	call, cancel := context.WithTimeout(ctx, 30*time.Second)
+	call, cancel := context.WithTimeout(ctx, timeout)
 	system := req.System
 	if req.Schema != nil {
 		system += req.Schema.Instructions()

@@ -85,6 +85,21 @@ var paperStageContracts = func() map[string]paperStageContract {
 		contract.OriginalStage, contract.RepairStage = stage, ""
 		stages[repairStage] = contract
 	}
+	// Every original model stage has one explicit recovery contract. Recovery
+	// contracts never point at another recovery stage.
+	originals := make(map[string]paperStageContract, len(stages))
+	for name, contract := range stages {
+		if contract.OriginalStage == "" && contract.RepairStage == "" {
+			originals[name] = contract
+		}
+	}
+	for name, contract := range originals {
+		contract.RepairStage = "repairing_" + name
+		stages[name] = contract
+		repairName := contract.RepairStage
+		contract.OriginalStage, contract.RepairStage = name, ""
+		stages[repairName] = contract
+	}
 	return stages
 }()
 

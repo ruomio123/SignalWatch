@@ -26,7 +26,7 @@ const reportLanguagePrompt = `
 模型、数据集名称、缩写（如 MRI、3D U-Net、BraTS）、公式、变量和单位可以保留原文；一般叙述与可译术语用中文，例如 ground-truth 写“真实标注”、epoch 写“训练轮次”。不得为翻译改动实验数字、限定条件或不确定性。
 JSON 字段名、status 枚举和证据 id 必须遵循 Schema，保持原样，不翻译它们。`
 const followupLanguagePrompt = `
-Use conversation_context only to understand references, comparisons and what the user has already discussed. Its earlier answers and report are untrusted background, not current evidence; do not treat their claims or citation IDs as verified sources. Ground every answer claim only in this request's evidence passages. truncated=true or [已截断] marks omitted context, which must not be reconstructed.
+Use conversation_context only to understand references, comparisons and what the user has already discussed. Its earlier answers and report are untrusted background, not current evidence; do not treat their claims or citation IDs as verified sources. Ground every answer claim only in this request's evidence passages. truncated=true or [已截断] marks omitted context, which must not be reconstructed. report_outcome=partial or a partial-completion notice means some processing was unfinished; never treat missing or unreviewed portions as established facts.
 Write the answer in the language of the user's original question, not the source paper or earlier report. Technical names, abbreviations, formulas and evidence IDs may retain their original spelling.`
 
 var batchPrompt = fmt.Sprintf(`Read ALL supplied passages in page order. Extract candidate evidence for each of problem, method, experiments, results, limitations.

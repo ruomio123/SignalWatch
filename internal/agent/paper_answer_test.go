@@ -252,7 +252,7 @@ func TestPaperAnswerReviewRecomputesCoverageAndPublishesOnlySupportedFacts(t *te
 		{"initial partial", true, map[string]bool{"q1-1": true, "q1-2": true, "q2-1": true}, "partial", []string{"partial", "supported"}, 3, "insufficient_evidence"},
 		{"one rejected", false, map[string]bool{"q1-1": true, "q1-2": false, "q2-1": true}, "partial", []string{"partial", "supported"}, 2, "review_rejected"},
 		{"part rejected", false, map[string]bool{"q1-1": false, "q1-2": false, "q2-1": true}, "partial", []string{"insufficient_evidence", "supported"}, 1, "review_rejected"},
-		{"all rejected", false, map[string]bool{}, "insufficient", []string{"insufficient_evidence", "insufficient_evidence"}, 0, "review_rejected"},
+		{"all rejected", false, map[string]bool{"q1-1": false, "q1-2": false, "q2-1": false}, "insufficient", []string{"insufficient_evidence", "insufficient_evidence"}, 0, "review_rejected"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wire := answerTestWire(2, 1)

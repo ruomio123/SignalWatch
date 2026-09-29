@@ -90,3 +90,16 @@ func TestAgentGatewayPreservesPreCallWorkflowFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestAgentGatewaySelectionIncludesConfiguredPaperBudgets(t *testing.T) {
+	limits := generation.ModelLimits{ContextTokens: 65536, MaxOutputTokens: 4096}
+	factory := func([]string, string, string, string) (ai.Generator, error) {
+		return gatewayBudgetGenerator(func(int) { t.Fatal("selection must not call the model") }), nil
+	}
+	runner := ai.NewCallRunner(gatewayBudgetCalls{}, ai.CallPolicy{PaperCallTimeout: 90 * time.Second}, factory, []string{"qwen"}, time.Now, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	gateway := agentGateway{ai.NewConfigurationService(gatewayBudgetStore{}, gatewayBudgetCipher{}, []string{"qwen"}, time.Now, runner, llm.Catalog{Limits: map[string]generation.ModelLimits{"qwen/qwen3.8-flash": limits}})}
+	selection, err := gateway.Selection(t.Context(), 1, "qwen", "qwen3.8-flash", "fixture")
+	if err != nil || selection.Generation != "fixture" || selection.Version != 1 || selection.Limits != limits || selection.CallTimeout != 90*time.Second {
+		t.Fatalf("selection=%+v err=%v", selection, err)
+	}
+}

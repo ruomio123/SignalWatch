@@ -24,6 +24,8 @@ export function AssistantView({
   messages,
   status,
   composer,
+  variant,
+  actions,
   onClose,
   scrollRef,
 }: {
@@ -35,17 +37,21 @@ export function AssistantView({
   messages: ReactNode;
   status: ReactNode;
   composer: ReactNode;
+  variant?: "paper";
+  actions?: ReactNode;
   onClose?: () => void;
   scrollRef?: RefObject<HTMLDivElement | null>;
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsID = useId();
   return (
-    <section className="assistant">
+    <section className={`assistant${variant === "paper" ? " assistant-paper" : ""}`}>
       <header className="assistant-header">
-        <span className="assistant-mark">
-          <Sparkles size={22} aria-hidden="true" />
-        </span>
+        {variant !== "paper" && (
+          <span className="assistant-mark">
+            <Sparkles size={22} aria-hidden="true" />
+          </span>
+        )}
         <div className="assistant-heading">
           <h2>{title}</h2>
           <p title={subtitle}>{subtitle}</p>
@@ -74,8 +80,9 @@ export function AssistantView({
         {messages}
       </div>
       <div className="assistant-bottom">
-        <div className="assistant-status">{status}</div>
+        {status && <div className="assistant-status">{status}</div>}
         {hint && <p className="assistant-hint">{hint}</p>}
+        {actions && <div className="assistant-actions">{actions}</div>}
         {composer}
       </div>
     </section>
@@ -92,6 +99,7 @@ export function AssistantComposer({
   modelLabel,
   configurationStatus,
   placeholder,
+  compact = false,
 }: {
   inputRef: RefObject<HTMLTextAreaElement | null>;
   question: string;
@@ -102,17 +110,20 @@ export function AssistantComposer({
   modelLabel: string;
   configurationStatus: string;
   placeholder: string;
+  compact?: boolean;
 }) {
   const composing = useRef(false);
+  const shortModelLabel = modelLabel.split(" · ").at(-1)?.trim() ?? "";
+  const showConfigurationStatus = !compact || configurationStatus !== "配置可用";
   return (
-    <form className="assistant-composer" onSubmit={onSend}>
+    <form className={`assistant-composer${compact ? " assistant-composer-compact" : ""}`} onSubmit={onSend}>
       <div className="assistant-composer-field">
         <textarea
           ref={inputRef}
           aria-label="你的问题"
           disabled={inputDisabled}
           placeholder={placeholder}
-          rows={3}
+          rows={compact ? 2 : 3}
           maxLength={2000}
           value={question}
           onChange={(e) => onChange(e.target.value)}
@@ -145,12 +156,13 @@ export function AssistantComposer({
         </button>
       </div>
       <div className="assistant-composer-meta">
-        <span>
-          <KeyRound size={14} aria-hidden="true" />
-          {modelLabel ? `${modelLabel} · ` : ""}
-          {configurationStatus}
+        <span className="assistant-composer-model" title={modelLabel || undefined}>
+          {!compact && <KeyRound size={14} aria-hidden="true" />}
+          {compact ? shortModelLabel : modelLabel}
+          {(compact ? shortModelLabel : modelLabel) && showConfigurationStatus && configurationStatus ? " · " : ""}
+          {showConfigurationStatus && configurationStatus}
         </span>
-        <span>Enter 发送 · Shift+Enter 换行</span>
+        {!compact && <span>Enter 发送 · Shift+Enter 换行</span>}
       </div>
     </form>
   );

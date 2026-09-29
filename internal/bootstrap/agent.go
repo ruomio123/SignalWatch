@@ -32,7 +32,7 @@ func (g agentGateway) Selection(ctx context.Context, u uint64, p, m, id string) 
 	if err != nil {
 		return agent.Selection{}, agentError(err)
 	}
-	return agent.Selection{Generation: c.Generation, Version: c.Version}, nil
+	return agent.Selection{Generation: c.Generation, Version: c.Version, Limits: g.configuration.ModelLimits(p, m), CallTimeout: g.configuration.PaperCallTimeout()}, nil
 }
 func (g agentGateway) Generate(ctx context.Context, r agent.ModelRequest) (generation.Result, error) {
 	value, err := g.configuration.GenerateForCredentialLimit(ctx, r.Run.UserID, r.Run.Provider, r.Run.Model, r.Run.Generation, r.Run.Version, r.Feature, r.Run.ID, r.System, r.Input, r.MaxTokens, r.Before, func(value generation.Result) error {

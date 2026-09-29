@@ -4,15 +4,16 @@ import {
   PaperCitations,
   type PaperCitation,
 } from "./PaperCitations";
+import { technicalGapMessage, type PaperTechnicalGap } from "../lib/paper-status";
 
 export type PaperAnswer = {
   status: "complete" | "partial" | "insufficient";
   parts: {
     question_id: string;
     question: string;
-    status: "supported" | "partial" | "insufficient_evidence";
+    status: "supported" | "partial" | "insufficient_evidence" | "processing_failed";
     claims: { text: string; citation_ids: string[] }[];
-    gap?: { reason: "insufficient_evidence" | "review_rejected" };
+    gap?: { reason: "insufficient_evidence" | "review_rejected" | PaperTechnicalGap };
   }[];
 };
 
@@ -20,6 +21,10 @@ const gapMessages = {
   insufficient_evidence: "当前材料不足以可靠回答这部分问题。",
   review_rejected: "这部分结论未通过证据审核，未予展示。",
 };
+
+export function answerGapMessage(reason?: string): string {
+  return technicalGapMessage(reason) ?? (reason === "review_rejected" ? gapMessages.review_rejected : gapMessages.insufficient_evidence);
+}
 
 export function PaperAnswerView({
   answer,
@@ -43,7 +48,7 @@ export function PaperAnswerView({
       <div className="paper-answer">
         {answer.status !== "complete" && (
           <p className="paper-answer-status">
-            {answer.status === "partial" ? "部分回答" : "证据不足"}
+            {answer.parts.some((part) => technicalGapMessage(part.gap?.reason)) ? "部分回答，部分处理未完成" : answer.status === "partial" ? "部分回答" : "证据不足"}
           </p>
         )}
         {answer.parts.map((part) => (
@@ -59,9 +64,7 @@ export function PaperAnswerView({
             ))}
             {(part.gap || part.status !== "supported") && (
               <p className="paper-answer-gap">
-                {part.gap?.reason === "review_rejected"
-                  ? gapMessages.review_rejected
-                  : gapMessages.insufficient_evidence}
+                {answerGapMessage(part.gap?.reason)}
               </p>
             )}
           </section>

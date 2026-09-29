@@ -54,7 +54,11 @@ func TestPaperQuestionsPublishReviewedCoveragePerAspect(t *testing.T) {
 			r := directSubmit(t, f, c, TaskPaperFollowup, "fulltext")
 			f.s.process(t.Context(), f.claim(t, r.ID))
 			end, messages := paperOutcome(t, f, c, r)
-			if end.State != "completed" || len(messages) != 2 || len(requests) != 3 {
+			wantCalls := 3
+			if scenario == "insufficient" {
+				wantCalls = 2
+			}
+			if end.State != "completed" || len(messages) != 2 || len(requests) != wantCalls {
 				t.Fatalf("question failed: %+v messages=%d calls=%d", end, len(messages), len(requests))
 			}
 			result := directResult(t, f, r)
@@ -74,7 +78,7 @@ func TestPaperQuestionsPublishReviewedCoveragePerAspect(t *testing.T) {
 			if scenario == "review-rejected" && (result.Answer.Parts[1].Gap == nil || result.Answer.Parts[1].Gap.Reason != "review_rejected" || strings.Contains(messages[1].Content, answer.Answers[1].Claims[0].Text)) {
 				t.Fatal("rejected fact was published or its gap was hidden")
 			}
-			for i, tokens := range []int{4096, 8192, 4096} {
+			for i, tokens := range ([]int{4096, 8192, 4096})[:wantCalls] {
 				if requests[i].MaxTokens != tokens || len(requests[i].Input) > paperInputLimit {
 					t.Fatalf("stage %d budget violated: %+v", i, requests[i])
 				}
@@ -181,8 +185,8 @@ func TestPaperQuestionRecoveryReusesFrozenRequestsAndEvidence(t *testing.T) {
 			if frozen.Paper.QA.Initial != nil && !reflect.DeepEqual(completed.Paper.QA.Initial, frozen.Paper.QA.Initial) {
 				t.Fatal("recovery reselected or changed frozen evidence")
 			}
-			if completed.Calls != 3 || paperCallLimit(TaskPaperFollowup) != 6 {
-				t.Fatal("normal call counting or v11 hard limit changed")
+			if completed.Calls != 3 || paperCallLimit(TaskPaperFollowup) != 8 {
+				t.Fatal("normal call counting or hard limit changed")
 			}
 		})
 	}

@@ -52,7 +52,7 @@ func (g *paperRepairGateway) Generate(ctx context.Context, req ModelRequest) (ge
 	if err := json.Unmarshal(req.Input, &input); err != nil {
 		return generation.Result{}, err
 	}
-	repair := cp.Paper.Repair != nil && cp.Paper.Repair.Attempted && cp.Paper.Repair.State != "completed"
+	repair := cp.Paper.Repair != nil && paperContract(cp.Paper.CurrentStage).OriginalStage != ""
 	stage := "analyzing_" + input.Field
 	var value any
 	switch {
@@ -64,10 +64,10 @@ func (g *paperRepairGateway) Generate(ctx context.Context, req ModelRequest) (ge
 		var candidate fieldOutput
 		if cp.Paper.Repair.Field == "answer" {
 			var answer paperAnswerOutput
-			must(g.t, json.Unmarshal(cp.Paper.Repair.Candidate, &answer))
+			must(g.t, json.Unmarshal([]byte(cp.Paper.Repair.RawCandidate), &answer))
 			candidate = fieldOutput{Status: answer.Answers[0].Status, Claims: answer.Answers[0].Claims}
 		} else {
-			must(g.t, json.Unmarshal(cp.Paper.Repair.Candidate, &candidate))
+			must(g.t, json.Unmarshal([]byte(cp.Paper.Repair.RawCandidate), &candidate))
 		}
 		claim := candidate.Claims[0]
 		claim.Text = "整理后的结论仍受本轮原文支持。"
@@ -205,41 +205,34 @@ func TestPaperRepairOneSuccessKeepsOtherFieldsAndEvidence(t *testing.T) {
 	}
 }
 
-func TestPaperRepairOnlyOneAttemptAcrossWholeTask(t *testing.T) {
+func TestPaperRepairPerStageLimitPreservesAuditedFields(t *testing.T) {
 	for _, scenario := range []string{"repair still exceeds", "later field exceeds", "mixed reference"} {
 		t.Run(scenario, func(t *testing.T) {
 			f, c, r, g := repairWorkflowFixture(t, TaskPaperReport, "results")
-			wantCalls, wantCode, wantRepairs := 5, "output_limit_exceeded", 1
-			wantStage := "repairing_results"
+			wantCalls, wantRepairs, wantOutcome := 7, 1, "partial"
 			switch scenario {
 			case "repair still exceeds":
 				g.repairBad = true
 			case "later field exceeds":
 				g.overFields["limitations"] = true
-				wantCalls = 6
-				wantStage = "analyzing_limitations"
+				wantCalls, wantRepairs, wantOutcome = 8, 2, "complete"
 			case "mixed reference":
 				g.mixedReference = true
-				wantCalls, wantCode, wantRepairs = 4, "evidence_id_unknown", 0
-				wantStage = "analyzing_results"
+				wantCalls, wantRepairs = 6, 0
 			}
 			f.s.process(t.Context(), f.claim(t, r.ID))
 			end, messages := paperOutcome(t, f, c, r)
 			cp := directCheckpoint(t, f, r)
-			repairs := 0
-			for _, stage := range g.stages {
-				if strings.HasPrefix(stage, "repairing_") {
-					repairs++
-				}
+			var result PaperResult
+			if len(messages) != 2 {
+				t.Fatalf("messages=%d calls=%d", len(messages), len(g.calls))
 			}
-			if end.State != "failed" || end.FailureCode != wantCode || end.FailureStage != wantStage || len(g.calls) != wantCalls || cp.Calls != wantCalls || repairs != wantRepairs || len(messages) != 1 {
-				t.Fatalf("unbounded repair or partial publication: end=%+v calls=%d repairs=%d", end, len(g.calls), repairs)
+			must(t, json.Unmarshal(messages[1].Result, &result))
+			if end.State != "completed" || result.Outcome != wantOutcome || len(g.calls) != wantCalls || cp.Calls != wantCalls || paperRecoveryUsed(cp.Paper) != wantRepairs {
+				t.Fatalf("state=%s outcome=%s calls=%d repairs=%d", end.State, result.Outcome, len(g.calls), paperRecoveryUsed(cp.Paper))
 			}
-			if end.FailureDetail == nil || end.FailureDetail.Code != wantCode {
-				t.Fatal("final output failure lost its diagnostic")
-			}
-			if scenario == "later field exceeds" && (end.FailureDetail.Count == nil || *end.FailureDetail.Count != 7 || end.FailureDetail.Limit == nil || *end.FailureDetail.Limit != 6) {
-				t.Fatal("earlier results limit hid the later limitations failure")
+			if wantOutcome == "partial" && (result.Fields["results"].GapReason != "processing_failed" || len(result.Fields["results"].CitationIDs) != 0) {
+				t.Fatal("failed result field published")
 			}
 		})
 	}
@@ -247,7 +240,7 @@ func TestPaperRepairOnlyOneAttemptAcrossWholeTask(t *testing.T) {
 
 func TestPaperRepairNeverOverridesActualCallFailure(t *testing.T) {
 	for _, stage := range []string{"analyzing_results", "repairing_results"} {
-		for _, code := range []string{"timeout", "network_error", "result_unknown", "provider_rejected", "output_truncated", "storage_failed"} {
+		for _, code := range []string{"timeout", "network_error", "result_unknown", "provider_rejected", "storage_failed"} {
 			t.Run(stage+"/"+code, func(t *testing.T) {
 				f, c, r, g := repairWorkflowFixture(t, TaskPaperReport, "results")
 				// Settlement failure can arrive after a complete response has already
@@ -414,14 +407,15 @@ func TestPaperRepairRequestContainsOnlyCandidateEvidenceAndExactLimits(t *testin
 	}
 }
 
-func TestPaperRepairOversizedSerializedRequestPreservesOriginalFailure(t *testing.T) {
+func TestPaperRepairOversizedCandidateIsOmittedWithoutLosingSnapshot(t *testing.T) {
 	f, c, r, g := repairWorkflowFixture(t, TaskPaperReport, "results")
 	r = f.claim(t, r.ID)
 	cp := directCheckpoint(t, f, r)
 	_, _, err := f.s.preparePaper(t.Context(), r, c, &cp, func(context.Context) error { return nil })
 	must(t, err)
-	// Each input and the full response fit separately. JSON HTML escaping makes
-	// their combined repair exceed 64 KiB; neither source nor claims may be cut.
+	// Keep the byte cap binding independently of the model budget. The complete
+	// candidate is preserved privately but omitted from the oversized request.
+	cp.Paper.Limits = generation.ModelLimits{ContextTokens: 131072, MaxOutputTokens: 8192}
 	evidence := []Citation{{ID: "large", Quote: strings.Repeat("<", 7800)}}
 	g.candidateText = strings.Repeat("<", 450) + "中文"
 	input := paperInput(cp.Paper, "results", evidence)
@@ -431,11 +425,16 @@ func TestPaperRepairOversizedSerializedRequestPreservesOriginalFailure(t *testin
 		t.Fatal("test original call exceeds budget")
 	}
 	_, err = f.s.paperCall(t.Context(), r, &cp, func(context.Context) error { return nil }, "analyzing_results", fieldPromptFor("results", true), input, func(raw []byte) error { _, e := decodeFieldFor(raw, evidence, "results", true); return e })
-	if paperFailureCode(err) != "output_limit_exceeded" || len(g.calls) != 1 || cp.Calls != 1 || cp.Paper.Repair == nil || cp.Paper.Repair.Attempted || cp.Paper.Repair.State != "budget_exceeded" || cp.Paper.Failure == nil || cp.Paper.Failure.Count == nil || *cp.Paper.Failure.Count != 9 {
-		t.Fatalf("oversized repair lost original failure or called model: err=%v cp=%+v calls=%d", err, cp, len(g.calls))
+	if err != nil || len(g.calls) != 2 || cp.Paper.Repair == nil || !cp.Paper.Repair.Attempted || cp.Paper.Repair.State != "completed" {
+		t.Fatalf("err=%v calls=%d repair=%+v", err, len(g.calls), cp.Paper.Repair)
+	}
+	var request map[string]json.RawMessage
+	must(t, json.Unmarshal([]byte(cp.Paper.Repair.Request), &request))
+	if _, ok := request["candidate"]; ok {
+		t.Fatal("oversized candidate remained in request")
 	}
 	var candidate fieldOutput
-	must(t, json.Unmarshal(cp.Paper.Repair.Candidate, &candidate))
+	must(t, json.Unmarshal([]byte(cp.Paper.Repair.RawCandidate), &candidate))
 	if len(candidate.Claims) != 9 || candidate.Claims[0].Text != g.candidateText {
 		t.Fatal("candidate was cut to fit repair")
 	}
@@ -454,7 +453,7 @@ func (s *paperRepairTerminalStore) Save(ctx context.Context, r Run, cp Checkpoin
 	if err := s.Store.Save(ctx, r, cp, progress, step); err != nil {
 		return err
 	}
-	if !s.tripped && cp.Phase == "failed" && cp.Paper != nil && cp.Paper.TerminalFailure != "" {
+	if !s.tripped && cp.Paper != nil && ((cp.Phase == "failed" && cp.Paper.TerminalFailure != "") || (step != nil && cp.Paper.StageFailures["analyzing_results"] != nil)) {
 		s.tripped = true
 		panic(errRepairCheckpointPause)
 	}
@@ -501,7 +500,7 @@ func TestPaperRepairTerminalFailureRecoveryDoesNotReplayPaidCall(t *testing.T) {
 				t.Fatal("failed call was not durably recorded")
 			}
 			saved := directCheckpoint(t, f, r)
-			if saved.Phase != "failed" || saved.Calls != wantCalls || saved.Paper.TerminalFailure != wantCode {
+			if saved.Calls != wantCalls || (scenario == "credential changed" && (saved.Phase != "failed" || saved.Paper.TerminalFailure != wantCode)) || (scenario != "credential changed" && (saved.Phase != "ready" || saved.Paper.StageFailures["analyzing_results"] == nil || saved.Paper.StageFailures["analyzing_results"].Code != wantCode)) {
 				t.Fatalf("wrong failed checkpoint: %+v", saved)
 			}
 			if scenario == "credential changed" {
@@ -521,8 +520,12 @@ func TestPaperRepairTerminalFailureRecoveryDoesNotReplayPaidCall(t *testing.T) {
 			must(t, f.db.Model(&Run{}).Where("id=?", r.ID).Update("lease_until", time.Now().Add(-time.Minute)).Error)
 			f.s.process(t.Context(), f.claim(t, r.ID))
 			end, messages := paperOutcome(t, f, c, r)
-			if end.State != "failed" || end.FailureCode != wantCode || len(g.calls) != wantCalls || len(messages) != 1 {
-				t.Fatalf("definite failed call was replayed: %+v calls=%d", end, len(g.calls))
+			if scenario == "credential changed" {
+				if end.State != "failed" || end.FailureCode != wantCode || len(g.calls) != wantCalls || len(messages) != 1 {
+					t.Fatal("terminal call replayed")
+				}
+			} else if end.State != "completed" || end.Outcome != "partial" || len(g.calls) != wantCalls+2 || len(messages) != 2 {
+				t.Fatalf("partial resume state=%s outcome=%s calls=%d", end.State, end.Outcome, len(g.calls))
 			}
 			if scenario == "credential changed" && (end.FailureStage != "analyzing_results" || end.FailureDetail != nil) {
 				t.Fatal("restored access hid the actual failure stage or restored stale limit details")
@@ -567,59 +570,59 @@ func TestPaperRepairChecksCancellationAndAccessBeforeStarting(t *testing.T) {
 	}
 }
 
-func TestPaperRepairFinalCallCapsIncludeOriginalFailureAndRepair(t *testing.T) {
+func TestPaperRepairFinalCallCapsReserveReview(t *testing.T) {
 	for _, task := range []string{TaskPaperReport, TaskPaperFollowup} {
-		for _, room := range []int{0, 1, 2} {
+		for _, room := range []int{0, 1, 2, 3} {
 			t.Run(fmt.Sprintf("%s/room=%d", task, room), func(t *testing.T) {
-				field, cap := "results", 30
+				field := "results"
 				if task == TaskPaperFollowup {
-					field, cap = "answer", 6
+					field = "answer"
 				}
 				f, c, r, g := repairWorkflowFixture(t, task, field)
 				r = f.claim(t, r.ID)
 				cp := directCheckpoint(t, f, r)
 				_, _, err := f.s.preparePaper(t.Context(), r, c, &cp, func(context.Context) error { return nil })
 				must(t, err)
+				cap := paperCallLimit(task)
 				cp.Calls, g.initialCalls = cap-room, cap-room
-				must(t, f.store.Save(t.Context(), r, cp, "ready", nil))
-				evidence := []Citation{{ID: "source", Quote: "paper source"}}
-				questions := []PaperQuestion{{ID: "q1", Question: "论文使用什么方法？", Query: "retrieval method experiment"}}
-				if task == TaskPaperFollowup {
-					cp.Paper.QA = &PaperQACheckpoint{RetrieverVersion: paperRetrieverVersion, Questions: questions}
-				}
-				validate := func(raw []byte) error {
-					if task == TaskPaperFollowup {
-						_, e := decodePaperAnswer(raw, evidence, questions)
-						return e
+				for _, other := range paperFields {
+					if other != field {
+						cp.Paper.Outputs["analyzing_"+other] = json.RawMessage(`{"status":"insufficient_evidence","claims":[]}`)
 					}
-					_, e := decodeFieldFor(raw, evidence, field, task == TaskPaperReport)
-					return e
 				}
+				evidence := []Citation{{ID: "source", Quote: "paper source"}}
+				questions := []PaperQuestion{{ID: "q1", Question: "方法？", Query: "method"}}
 				input := paperInput(cp.Paper, field, evidence)
 				if task == TaskPaperFollowup {
 					input["questions"] = questions
+					cp.Paper.QA = &PaperQACheckpoint{Questions: questions}
 				}
-				_, err = f.s.paperCall(t.Context(), r, &cp, func(context.Context) error { return nil }, "analyzing_"+field, fieldPromptFor(field, task == TaskPaperReport), input, validate)
-				if room == 2 {
-					must(t, err)
-					if cp.Paper.Repair == nil || !cp.Paper.Repair.Attempted || cp.Paper.Repair.State != "completed" {
-						t.Fatal("last allowed repair did not finish")
+				_, err = f.s.paperCall(t.Context(), r, &cp, func(context.Context) error { return nil }, "analyzing_"+field, fieldPromptFor(field, task == TaskPaperReport), input, func(raw []byte) error {
+					return paperContract("analyzing_"+field).Validate(raw, paperStageValidation{Evidence: evidence, Questions: questions})
+				})
+				wantCalls := 1
+				switch room {
+				case 0:
+					wantCalls = 0
+					if paperFailureCode(err) != "budget_exhausted" {
+						t.Fatal(err)
 					}
-				} else if paperFailureCode(err) != "budget_exhausted" {
-					t.Fatalf("wrong final budget failure: %v", err)
+				case 1, 2:
+					if !paperStageIncomplete(err) || paperFailureCode(err) != "output_limit_exceeded" {
+						t.Fatal(err)
+					}
+				case 3:
+					wantCalls = 2
+					must(t, err)
+					if paperRecoveryUsed(cp.Paper) != 1 {
+						t.Fatal("repair not counted")
+					}
 				}
-				if len(g.calls) != room || cp.Calls != cap {
-					t.Fatalf("wrong cap accounting: external=%d checkpoint=%d cap=%d", len(g.calls), cp.Calls, cap)
+				if len(g.calls) != wantCalls || cp.Calls != cap-room+wantCalls {
+					t.Fatalf("calls=%d reserved=%d", len(g.calls), cp.Calls)
 				}
-				// Even after a final-slot repair succeeds, review is mandatory and
-				// cannot begin without another occupied call slot.
-				_, err = f.s.paperCall(t.Context(), r, &cp, func(context.Context) error { return nil }, "validating_paper", verdictPrompt, map[string]any{"claims": []reviewClaim{}}, func([]byte) error { return nil })
-				if paperFailureCode(err) != "budget_exhausted" || len(g.calls) != room || cp.Calls != cap {
-					t.Fatal("mandatory review exceeded final call cap")
-				}
-				_, messages := paperOutcome(t, f, c, r)
-				if len(messages) != 1 {
-					t.Fatal("unreviewed final-slot repair published")
+				if room > 0 && room < 3 && cp.Paper.Repair != nil {
+					t.Fatal("repair consumed reserved review slot")
 				}
 			})
 		}
@@ -632,7 +635,8 @@ func TestPaperRepairCompleteResponseLimitNeverStartsRepair(t *testing.T) {
 	f.s.process(t.Context(), f.claim(t, r.ID))
 	end, messages := paperOutcome(t, f, c, r)
 	cp := directCheckpoint(t, f, r)
-	if end.FailureCode != "output_limit_exceeded" || cp.Paper.Repair != nil || len(g.calls) != 4 || cp.Calls != 4 || len(messages) != 1 || end.FailureDetail == nil || end.FailureDetail.Path != "$" || end.FailureDetail.Limit == nil || *end.FailureDetail.Limit != paperResponseLimit {
-		t.Fatalf("oversized complete response triggered repair: %+v", end)
+	failure := cp.Paper.StageFailures["analyzing_results"]
+	if end.State != "completed" || end.Outcome != "partial" || cp.Paper.Repair != nil || len(g.calls) != 6 || len(messages) != 2 || failure == nil || failure.Code != "output_limit_exceeded" || failure.Path != "$" || failure.Limit == nil || *failure.Limit != paperResponseLimit {
+		t.Fatalf("state=%s outcome=%s calls=%d failure=%+v", end.State, end.Outcome, len(g.calls), failure)
 	}
 }

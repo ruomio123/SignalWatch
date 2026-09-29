@@ -2,6 +2,8 @@ import { reportFields, structuredGapMessage, type PaperResult } from "../compone
 import type { PaperCitation } from "../components/PaperCitations";
 import { safeURL } from "../components/Common";
 import { reproductionGapMessage } from "../components/PaperReproduction";
+import { answerGapMessage } from "../components/PaperAnswer";
+import { paperIssueMessage, partialPaperMessage, technicalGapMessage } from "./paper-status";
 
 export type PaperExportContent = {
   result?: PaperResult;
@@ -47,6 +49,10 @@ export function paperMarkdown({ result, content, citations }: PaperExportContent
   const kind = result?.report ? "论文报告" : result?.reproduction ? "复现清单" : "论文问答";
   const lines = [`# ${literal(result?.paper_title || "论文解读")} — ${kind}`];
   if (result) {
+    if (result.outcome === "partial") {
+      lines.push(partialPaperMessage);
+      for (const issue of result.issues ?? []) lines.push(literal(paperIssueMessage(issue)));
+    }
     lines.push(result.context_mode === "abstract"
       ? "仅基于摘要；缺失判断不代表论文全文没有相关内容。"
       : "基于论文提取材料；请结合下方原文证据核对结论。");
@@ -57,10 +63,12 @@ export function paperMarkdown({ result, content, citations }: PaperExportContent
   if (result?.report) {
     for (const [field, label] of reportFields) {
       lines.push(`## ${label}`, citedText(result.report[field]));
+      const gap = technicalGapMessage(result.fields[field]?.gap_reason);
+      if (gap) lines.push(gap);
     }
   } else if (result?.reproduction) {
     const reproduction = result.reproduction;
-    if (reproduction.status !== "complete") lines.push(reproduction.status === "partial" ? "部分项目仍有证据缺口" : "当前证据不足");
+    if (reproduction.status !== "complete") lines.push(reproduction.categories.some((category) => technicalGapMessage(category.gap?.reason)) ? "部分清单已生成，部分处理未完成" : reproduction.status === "partial" ? "部分项目仍有证据缺口" : "当前证据不足");
     for (const category of reproduction.categories) {
       lines.push(`## ${literal(category.title)}`);
       for (const item of category.items) lines.push(`${item.number}. ${literal(item.text)} ${[...new Set(item.citation_ids)].map(marker).join(" ")}`.trim());
@@ -68,15 +76,13 @@ export function paperMarkdown({ result, content, citations }: PaperExportContent
     }
   } else if (result?.answer) {
     const answer = result.answer;
-    if (answer.status !== "complete") lines.push(answer.status === "partial" ? "部分回答" : "证据不足");
+    if (answer.status !== "complete") lines.push(answer.parts.some((part) => technicalGapMessage(part.gap?.reason)) ? "部分回答，部分处理未完成" : answer.status === "partial" ? "部分回答" : "证据不足");
     for (const part of answer.parts) {
       lines.push(`## ${literal(part.question)}`);
       for (const claim of part.claims) {
         lines.push(`${literal(claim.text)} ${[...new Set(claim.citation_ids)].map(marker).join(" ")}`.trim());
       }
-      if (part.gap || part.status !== "supported") lines.push(part.gap?.reason === "review_rejected"
-        ? "这部分结论未通过证据审核，未予展示。"
-        : "当前材料不足以可靠回答这部分问题。");
+      if (part.gap || part.status !== "supported") lines.push(answerGapMessage(part.gap?.reason));
     }
   } else {
     lines.push(citedText(content));

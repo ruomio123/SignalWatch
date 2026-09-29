@@ -25,6 +25,145 @@ async function copiedMarkdown(page: Page) {
   return page.evaluate(() => (window as Window & { copiedMarkdown?: string }).copiedMarkdown ?? "");
 }
 
+async function openPaperTools(page: Page) {
+  const summary = page.locator("summary").filter({ hasText: /^论文工具$/ });
+  await expect(summary).toBeVisible();
+  if (await summary.locator("..").getAttribute("open") === null) await summary.click();
+  await expect(summary.locator("..")).toHaveAttribute("open", "");
+}
+
+async function openPaperReport(page: Page) {
+  const report = page.getByRole("region", { name: "论文报告", exact: true });
+  const summary = report.locator("summary").filter({ hasText: /查看论文报告|收起论文报告/ });
+  await expect(summary).toBeVisible();
+  if (await summary.locator("..").getAttribute("open") === null) await summary.click();
+  await expect(summary.locator("..")).toHaveAttribute("open", "");
+  return report;
+}
+
+async function openUsageDetails(page: Page) {
+  const settings = page.getByRole("button", { name: "助手设置", exact: true });
+  if (await settings.getAttribute("aria-expanded") !== "true") await settings.click();
+  const summary = page.locator("summary").filter({ hasText: /^使用说明$/ });
+  await expect(summary).toBeVisible();
+  if (await summary.locator("..").getAttribute("open") === null) await summary.click();
+  await expect(summary.locator("..")).toHaveAttribute("open", "");
+}
+
+test("truncated paper output has a specific failure explanation without submitting again", async ({ page, api }) => {
+  const runID = "truncated-paper";
+  api.json("GET", conversationPath, { ...conversation, active_run_id: runID });
+  api.json("GET", `/agent/runs/${runID}`, { run: { id: runID, task: "paper_report", state: "failed", progress: "analyzing_method", failure_stage: "analyzing_method", failure_code: "output_truncated" }, steps: [] });
+  await page.goto(assistantURL);
+  await expect(page.getByText("模型回答达到输出上限，内容被截断，未发布不完整的回答。", { exact: true })).toBeVisible();
+  await page.getByText("失败详情", { exact: true }).click();
+  await expect(page.getByText("失败步骤：分析核心方法", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("模型回答达到输出上限，内容被截断，未发布不完整的回答。", { exact: true })).toBeVisible();
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+for (const recovery of [
+  { stage: "normalizing_question", label: "问题理解", kind: "format", action: "重新生成符合格式的回答", used: 1 },
+  { stage: "extracting_batch_2", label: "分批证据提取", kind: "truncated", action: "缩短回答后重新生成", used: 2 },
+  { stage: "validating_paper_2", label: "证据审核", kind: "format", action: "重新生成符合格式的回答", used: 3 },
+]) {
+  test(`bounded paper recovery explains ${recovery.stage} across reload`, async ({ page, api }) => {
+    const runID = "bounded-paper-recovery";
+    api.json("GET", conversationPath, { ...conversation, active_run_id: runID });
+    api.json("GET", `/agent/runs/${runID}`, { run: { id: runID, task: "paper_report", state: "running", progress: `repairing_${recovery.stage}`, repair_summary: { field: "", stage: recovery.stage, kind: recovery.kind, state: "calling", attempted: true, used: recovery.used, limit: 3 } }, steps: [] });
+    await page.goto(assistantURL);
+    await expect(page.getByText(`正在恢复${recovery.label}`, { exact: true })).toBeVisible();
+    const summary = `正在${recovery.action}：${recovery.label}。本轮自动恢复已使用 ${recovery.used}/3 次。`;
+    await expect(page.getByText(summary, { exact: true })).toBeVisible();
+    await expect(page.getByText(/唯一一次自动整理/)).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByText(summary, { exact: true })).toBeVisible();
+    expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+  });
+}
+
+test("partial paper report preserves technical gaps and safe exports after reload", async ({ page, api }) => {
+  await captureClipboard(page);
+  const message = reportMessage("fulltext");
+  const result = { ...message.result, outcome: "partial", issues: [{ stage: "analyzing_method", code: "output_schema_mismatch", field: "method", candidate: "PRIVATE_CANDIDATE", request: "PRIVATE_REQUEST" }], report: { ...report, method: "这部分处理未完成。" }, fields: { ...message.result.fields, method: { status: "processing_failed", citation_ids: [], gap_reason: "processing_failed" } } };
+  const partial = { ...message, content: "PRIVATE_RAW_CANDIDATE", result };
+  api.json("GET", `${conversationPath}/messages`, { items: [partial], next_before: 0 });
+  api.json("GET", `${conversationPath}/paper-report`, { report: partial, matches_current_paper: true });
+  api.json("GET", "/agent/runs/report-run", { run: { id: "report-run", task: "paper_report", state: "completed", outcome: "partial", progress: "completed" }, steps: [] });
+  await page.goto(assistantURL);
+  await expect(page.getByText("本轮部分完成，已保留通过审核的结果。", { exact: true })).toBeVisible();
+  const pinned = await openPaperReport(page);
+  await expect(pinned.getByText("部分完成", { exact: true })).toBeVisible();
+  await expect(pinned.getByText("本轮部分完成，仅保留已通过证据审核的结论。", { exact: true })).toBeVisible();
+  await expect(pinned.getByText("核心方法：模型输出的字段、类型或结构不符合约定。", { exact: true })).toBeVisible();
+  const method = pinned.getByRole("region", { name: "核心方法", exact: true });
+  await expect(method.getByText("这部分处理未完成，仅展示已通过审核的内容。", { exact: true })).toBeVisible();
+  await expect(method.getByText("证据不足，未保留未经支持的结论。", { exact: true })).toHaveCount(0);
+  await pinned.getByRole("button", { name: "复制 Markdown", exact: true }).click();
+  const markdown = await copiedMarkdown(page);
+  expect(markdown).toContain("本轮部分完成，仅保留已通过证据审核的结论。");
+  expect(markdown).toContain("核心方法：模型输出的字段、类型或结构不符合约定。");
+  expect(markdown).toContain("这部分处理未完成，仅展示已通过审核的内容。");
+  expect(markdown).not.toContain("PRIVATE_");
+  const [download] = await Promise.all([page.waitForEvent("download"), pinned.getByRole("button", { name: "下载 Markdown", exact: true }).click()]);
+  expect(await readFile((await download.path())!, "utf8")).toBe(markdown);
+  await pinned.getByRole("button", { name: "复制 JSON", exact: true }).click();
+  expect(JSON.parse(await copiedMarkdown(page))).toEqual({ ...result.report, outcome: "partial", issues: [{ stage: "analyzing_method", code: "output_schema_mismatch", field: "method" }] });
+  await page.reload();
+  await openPaperReport(page);
+  await expect(pinned.getByText("本轮部分完成，仅保留已通过证据审核的结论。", { exact: true })).toBeVisible();
+  await expect(pinned.getByRole("button", { name: "重新生成论文报告", exact: true })).toBeEnabled();
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+test("partial paper answer distinguishes unfinished review and supplemental failure from missing evidence", async ({ page, api }) => {
+  await captureClipboard(page);
+  let completed = false;
+  const message = citationAnswer(94);
+  const result = { ...message.result, outcome: "partial", issues: [{ stage: "validating_paper_2", code: "output_schema_mismatch", question_ids: ["q2"], candidate: "PRIVATE_UNREVIEWED" }], answer: { status: "partial", parts: [
+    { question_id: "q1", question: "有哪些依据？", status: "supported", claims: [{ text: "已审核的有效结论。", citation_ids: ["shared-source"] }] },
+    { question_id: "q2", question: "尚未审核的部分？", status: "processing_failed", claims: [], gap: { reason: "review_incomplete" } },
+  ] } };
+  api.json("GET", conversationPath, { ...conversation, active_run_id: "citation-run-94" });
+  api.on("GET", `${conversationPath}/messages`, (route) => route.fulfill({ json: { items: completed ? [{ ...message, result }] : [], next_before: 0 } }));
+  api.on("GET", "/agent/runs/citation-run-94", (route) => route.fulfill({ json: { run: { id: "citation-run-94", task: "paper_followup", state: completed ? "completed" : "running", outcome: completed ? "partial" : undefined, progress: completed ? "completed" : "validating_paper", retrieval_summary: { state: "failed", reason: "processing_failed", selected: 8, added: 2 } }, steps: [] } }));
+  await page.goto(assistantURL);
+  await expect(page.getByText("补充回答未完成，正在审核已有初稿。", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-message-id="94"]')).toHaveCount(0);
+  completed = true;
+  const reply = page.locator('[data-message-id="94"]');
+  await expect(reply.getByText("部分回答，部分处理未完成", { exact: true })).toBeVisible();
+  await expect(reply.getByText("这部分证据审核未完成，尚未审核的结论未予展示。", { exact: true })).toBeVisible();
+  await expect(page.getByText("补充回答未完成，已保留初稿中通过审核的内容。", { exact: true })).toBeVisible();
+  await expect(reply.getByText("当前材料不足以可靠回答这部分问题。", { exact: true })).toHaveCount(0);
+  await reply.getByRole("button", { name: "复制 Markdown", exact: true }).click();
+  const markdown = await copiedMarkdown(page);
+  expect(markdown).toContain("本轮部分完成，仅保留已通过证据审核的结论。");
+  expect(markdown).toContain("这部分证据审核未完成，尚未审核的结论未予展示。");
+  expect(markdown).not.toMatch(/PRIVATE_|证据不足|未通过证据审核/);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+test("partial reproduction exports processing gaps alongside audited numbered items", async ({ page, api }) => {
+  await captureClipboard(page);
+  const message = reproductionMessage(96);
+  const result = { ...message.result, outcome: "partial", issues: [{ stage: "validating_paper_3", code: "output_truncated" }], reproduction: { status: "partial", categories: message.result.reproduction.categories.map((category, index) => index === 5 ? { ...category, status: "processing_failed", items: [], gap: { reason: "review_incomplete" } } : category) } };
+  api.json("GET", `${conversationPath}/messages`, { items: [{ ...message, result }], next_before: 0 });
+  api.json("GET", "/agent/runs/reproduction-run-96", { run: { id: "reproduction-run-96", task: "paper_reproduction", state: "completed", outcome: "partial", progress: "completed" }, steps: [] });
+  await page.goto(assistantURL);
+  const reply = page.locator('[data-message-id="96"]');
+  await expect(reply.getByText("部分清单已生成，部分处理未完成", { exact: true })).toBeVisible();
+  await expect(reply.getByText("这部分证据审核未完成，尚未审核的结论未予展示。", { exact: true })).toBeVisible();
+  await expect(reply.locator("ol > li")).toHaveCount(10);
+  await reply.getByRole("button", { name: "复制 Markdown", exact: true }).click();
+  const markdown = await copiedMarkdown(page);
+  expect(markdown).toContain("部分清单已生成，部分处理未完成");
+  expect(markdown).toContain("这部分证据审核未完成，尚未审核的结论未予展示。");
+  expect(markdown).not.toMatch(/PRIVATE_|当前证据不足|11\. |12\. /);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
 function questionReply(
   round: number,
   mode: "abstract" | "fulltext",
@@ -104,6 +243,177 @@ function reportMessage(mode: "fulltext" | "abstract") {
   };
 }
 
+test("an empty paper assistant keeps the question and quick report visible without stacked tools or budgets", async ({ page, api }) => {
+  await page.goto(assistantURL);
+  await expect(page.getByRole("heading", { name: "围绕这篇论文提问", exact: true })).toBeVisible();
+  await expect(page.getByText("回答仅依据当前论文，并附原文引用。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "你的问题", exact: true })).toBeEnabled();
+  await expect(page.getByRole("textbox", { name: "你的问题", exact: true })).toHaveAttribute("placeholder", "询问这篇论文…");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "快速了解论文", exact: true })).toBeEnabled();
+  await expect(page.locator(".assistant-composer").getByText("Flash", { exact: true })).toBeVisible();
+
+  const tools = page.locator("summary").filter({ hasText: /^论文工具$/ });
+  await expect(tools).toBeVisible();
+  await expect(tools.locator("..")).not.toHaveAttribute("open", "");
+  await expect(page.getByRole("region", { name: "论文全文材料", exact: true })).not.toBeVisible();
+  await expect(page.getByRole("button", { name: "准备全文", exact: true })).not.toBeVisible();
+  await expect(page.getByRole("button", { name: "生成复现清单", exact: true })).not.toBeVisible();
+  for (const budget of [/问答通常调用/, /短论文通常调用/, /复现清单最多 10 次调用/])
+    await expect(page.getByText(budget)).not.toBeVisible();
+  await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("article", { name: "助手回复", exact: true })).toHaveCount(0);
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+test("paper tools open by keyboard and close with Escape, focus departure or an outside click", async ({ page, api }) => {
+  await page.goto(assistantURL);
+  const summary = page.locator("summary").filter({ hasText: /^论文工具$/ });
+  const details = summary.locator("..");
+  const input = page.getByRole("textbox", { name: "你的问题", exact: true });
+  await summary.focus();
+  await summary.press("Enter");
+  await expect(details).toHaveAttribute("open", "");
+  await summary.press("Tab");
+  const prepare = page.getByRole("button", { name: "准备全文", exact: true });
+  await expect(prepare).toBeFocused();
+  await prepare.press("Escape");
+  await expect(details).not.toHaveAttribute("open", "");
+  await expect(summary).toBeFocused();
+  await expect(input).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AI 论文助手", exact: true })).toBeVisible();
+
+  await summary.press("Space");
+  await expect(details).toHaveAttribute("open", "");
+  await summary.press("Shift+Tab");
+  await expect(page.getByRole("button", { name: "快速了解论文", exact: true })).toBeFocused();
+  await expect(details).not.toHaveAttribute("open", "");
+  await openPaperTools(page);
+  await input.click();
+  await expect(details).not.toHaveAttribute("open", "");
+  await expect(input).toBeFocused();
+  expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+});
+
+for (const viewport of [
+  { name: "mobile", width: 390, height: 844 },
+  { name: "short desktop", width: 1280, height: 540 },
+]) {
+  test(`the ${viewport.name} paper panel keeps its composer reachable without horizontal overflow`, async ({ page, api }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    api.json("GET", `${conversationPath}/messages`, { items: historyMessages(1, 20), next_before: 0 });
+    api.json("GET", "/agent/runs/history-run-20", {
+      run: { id: "history-run-20", task: "paper_followup", state: "completed", progress: "completed" }, steps: [],
+    });
+    await page.goto(assistantURL);
+    await expect(page.locator('[data-message-id="20"]')).toBeAttached();
+    const input = page.getByRole("textbox", { name: "你的问题", exact: true });
+    const send = page.getByRole("button", { name: "发送", exact: true });
+    const quickReport = page.getByRole("button", { name: "快速了解论文", exact: true });
+    await expect(input).toBeInViewport({ ratio: 1 });
+    await expect(send).toBeInViewport({ ratio: 1 });
+    await expect(quickReport).toBeInViewport({ ratio: 1 });
+    await input.fill("这个方法的关键实验是什么？");
+    await expect(send).toBeEnabled();
+    await input.press("Tab");
+    await expect(send).toBeFocused();
+    await expect(send).toBeInViewport({ ratio: 1 });
+    await openPaperTools(page);
+    const reproduction = page.getByRole("button", { name: "生成复现清单", exact: true });
+    // Short panels scroll their tools independently while the composer stays put.
+    await reproduction.scrollIntoViewIfNeeded();
+    await expect(reproduction).toBeInViewport({ ratio: 1 });
+    await expect(input).toBeInViewport({ ratio: 1 });
+    await expect(send).toBeInViewport({ ratio: 1 });
+    await page.locator("summary").filter({ hasText: /^论文工具$/ }).press("Escape");
+    await input.click();
+    await expect(input).toHaveValue("这个方法的关键实验是什么？");
+    await expect(input).toBeInViewport({ ratio: 1 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    expect(await page.locator(".assistant-paper").evaluate((panel) => panel.scrollWidth <= panel.clientWidth)).toBe(true);
+    expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+  });
+}
+
+test("a completed question keeps quick report available and a new report opens without consuming the draft question", async ({ page, api }) => {
+  let generated = false;
+  const answer = questionReply(1, "fulltext", "论文已回答核心方法。");
+  const publishedReport = { ...reportMessage("fulltext"), id: 4 };
+  api.on("GET", conversationPath, (route) => route.fulfill({ json: { ...conversation, paper_report_ready: generated } }));
+  api.on("GET", `${conversationPath}/messages`, (route) => route.fulfill({ json: {
+    items: [
+      { id: 1, run_id: answer.run_id, role: "user", content: "请解释核心方法。", citations: [] },
+      answer,
+      ...(generated ? [publishedReport] : []),
+    ], next_before: 0,
+  } }));
+  api.on("GET", `${conversationPath}/paper-report`, (route) => route.fulfill({ json: { report: generated ? publishedReport : null, matches_current_paper: generated } }));
+  api.json("GET", `/agent/runs/${answer.run_id}`, { run: { id: answer.run_id, task: "paper_followup", state: "completed", progress: "completed" }, steps: [] });
+  api.on("POST", `${conversationPath}/messages`, (route) => {
+    generated = true;
+    return route.fulfill({ status: 202, json: { run_id: "report-run", run: { id: "report-run", task: "paper_report", state: "pending", progress: "queued" } } });
+  });
+  api.json("GET", "/agent/runs/report-run", { run: { id: "report-run", task: "paper_report", state: "completed", progress: "completed" }, steps: [] });
+  await page.goto(assistantURL);
+  await expect(page.getByText(answer.content, { exact: true })).toBeVisible();
+  const input = page.getByRole("textbox", { name: "你的问题", exact: true });
+  await input.fill("暂存的下一轮问题。");
+  const quickReport = page.getByRole("button", { name: "快速了解论文", exact: true });
+  await expect(quickReport).toBeEnabled();
+  await quickReport.click();
+  const reportRegion = page.getByRole("region", { name: "论文报告", exact: true });
+  await expect(reportRegion.getByRole("heading", { name: "论文问题", exact: true })).toBeVisible();
+  await expect(reportRegion.locator("summary").filter({ hasText: "收起论文报告" })).toBeVisible();
+  await expect(input).toHaveValue("暂存的下一轮问题。");
+  await expect(page.getByText(answer.content, { exact: true })).toBeAttached();
+  await expect(quickReport).toBeEnabled();
+  const writes = api.requestsFor("POST", `${conversationPath}/messages`);
+  expect(writes).toHaveLength(1);
+  expect(writes[0].body).toMatchObject({ task: "paper_report", question: "" });
+  expect(api.requestsFor("POST", `${documentPath}/prepare`)).toHaveLength(0);
+});
+
+for (const initialSnapshot of ["missing", "previous"] as const) {
+  test(`a completed report refreshes its ${initialSnapshot} snapshot even when the new answer was already loaded`, async ({ page, api }) => {
+    let generated = false;
+    let reportReadsAfterSubmit = 0;
+    const previous = initialSnapshot === "previous" ? { ...reportMessage("fulltext"), run_id: "previous-report" } : null;
+    const current = {
+      ...reportMessage("fulltext"), id: 4,
+      result: { ...reportMessage("fulltext").result, report: { ...report, problem: "本次报告确认的新问题。" } },
+    };
+    api.on("GET", conversationPath, (route) => route.fulfill({ json: { ...conversation, paper_report_ready: generated || !!previous } }));
+    api.on("GET", `${conversationPath}/messages`, (route) => route.fulfill({ json: {
+      items: [...(previous ? [previous] : []), ...(generated ? [current] : [])], next_before: 0,
+    } }));
+    api.on("GET", `${conversationPath}/paper-report`, (route) => {
+      const snapshot = generated && ++reportReadsAfterSubmit > 1 ? current : previous;
+      return route.fulfill({ json: { report: snapshot, matches_current_paper: !!snapshot } });
+    });
+    api.json("GET", "/agent/runs/previous-report", { run: { id: "previous-report", task: "paper_report", state: "completed", progress: "completed" }, steps: [] });
+    api.on("POST", `${conversationPath}/messages`, (route) => {
+      generated = true;
+      return route.fulfill({ status: 202, json: { run_id: "report-run", run: { id: "report-run", task: "paper_report", state: "pending", progress: "queued" } } });
+    });
+    api.json("GET", "/agent/runs/report-run", { run: { id: "report-run", task: "paper_report", state: "completed", progress: "completed" }, steps: [] });
+    await page.goto(assistantURL);
+    if (previous) {
+      await openPaperReport(page);
+      await page.getByRole("button", { name: "重新生成论文报告", exact: true }).click();
+    } else {
+      await page.getByRole("button", { name: "快速了解论文", exact: true }).click();
+    }
+    const published = page.getByRole("region", { name: "论文报告", exact: true });
+    await expect(published.getByText("本次报告确认的新问题。", { exact: true })).toBeVisible();
+    await expect(published.locator("summary").filter({ hasText: "收起论文报告" })).toBeVisible();
+    expect(reportReadsAfterSubmit).toBeGreaterThanOrEqual(2);
+    expect(api.requestsFor("POST", `${conversationPath}/messages`)).toHaveLength(1);
+    await expect(page.getByRole("button", { name: "停止本轮", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("alert")).not.toBeVisible();
+  });
+}
+
 for (const mode of ["fulltext", "abstract"] as const) {
   test(`report is explicit, evidence is inspectable, and ${mode} output survives reload`, async ({
     page,
@@ -175,11 +485,12 @@ for (const mode of ["fulltext", "abstract"] as const) {
 
     await page.goto(assistantURL);
     const generate = page.getByRole("button", {
-      name: "生成论文报告",
+      name: "快速了解论文",
       exact: true,
     });
     await expect(generate).toBeEnabled();
     if (mode === "fulltext") {
+      await openPaperTools(page);
       await expect(
         page.getByRole("region", { name: "论文全文材料", exact: true }).getByRole("status"),
       ).toHaveText("全文尚未准备");
@@ -193,10 +504,12 @@ for (const mode of ["fulltext", "abstract"] as const) {
     if (mode === "fulltext") {
       // The report workflow prepared the document. Its run update must refresh
       // this card without a reload or a separate manual preparation request.
+      await openPaperTools(page);
       const material = page.getByRole("region", { name: "论文全文材料", exact: true });
       await expect(material.getByRole("status")).toHaveText("全文已就绪");
       await expect(material.getByText("下次提问可使用全文。", { exact: true })).toBeVisible();
       expect(api.requestsFor("POST", `${documentPath}/prepare`)).toHaveLength(0);
+      await page.locator("summary").filter({ hasText: /^论文工具$/ }).press("Escape");
     }
     expect(writes).toHaveLength(1);
     expect(writes[0]).toMatchObject({
@@ -241,6 +554,13 @@ for (const mode of ["fulltext", "abstract"] as const) {
       ),
     ).toBe(true);
     await page.reload();
+    const savedReport = page.getByRole("region", { name: "论文报告", exact: true });
+    await expect(savedReport.locator("summary").filter({ hasText: "查看论文报告" })).toBeVisible();
+    await expect(savedReport.getByRole("heading", { name: "论文问题", exact: true })).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "快速了解论文", exact: true })).toBeEnabled();
+    await page.getByRole("button", { name: "快速了解论文", exact: true }).click();
+    await expect(savedReport.getByRole("heading", { name: "论文问题", exact: true })).toBeVisible();
+    await expect(savedReport.locator("summary").filter({ hasText: "收起论文报告" })).toBeVisible();
     await expect(
       page.getByRole("button", { name: "重新生成论文报告" }),
     ).toBeEnabled();
@@ -368,6 +688,8 @@ test("the report remains available when it is outside the newest 50 messages", a
   await page.goto(assistantURL);
   const reportRegion = page.getByLabel("论文报告", { exact: true });
   await expect(reportRegion).toBeVisible();
+  await expect(reportRegion.getByRole("heading", { name: "论文问题", exact: true })).not.toBeVisible();
+  await openPaperReport(page);
   await expect(
     reportRegion.getByRole("heading", { name: "论文问题", exact: true }),
   ).toBeVisible();
@@ -390,6 +712,7 @@ test("a stale report is readable without blocking a new question", async ({
   });
   await page.goto(assistantURL);
   await expect(page.getByLabel("论文报告", { exact: true })).toBeVisible();
+  await openPaperReport(page);
   await expect(
     page.getByText("这份报告对应旧版论文材料，可按需重新生成。新问题会使用当前材料。", {
       exact: true,
@@ -636,12 +959,13 @@ test("poll completion preserves loaded history, its cursor, and the reading anch
   await expect(page.locator('[data-message-id="52"]')).toBeAttached();
   await expect(page.locator("[data-message-id]")).toHaveCount(101);
   await expect.poll(async () => Math.abs((await anchor.boundingBox())!.y - originalTop)).toBeLessThan(3);
-  await expect(page.getByRole("button", { name: "复制 JSON" })).toHaveCount(1);
   await earlier.click();
   await expect(page.locator('[data-message-id="3"]')).toBeAttached();
   await expect(page.locator("[data-message-id]")).toHaveCount(150);
   expect(olderCursors).toEqual(["102", "52"]);
   await expect(earlier).toHaveCount(0);
+  await openPaperReport(page);
+  await expect(page.getByRole("button", { name: "复制 JSON" })).toHaveCount(1);
   expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
   await expect(page.getByRole("alert")).not.toBeVisible();
 });
@@ -688,7 +1012,7 @@ test("creating a conversation sends its first report once and survives its own n
   });
 
   await page.goto("/papers?paper_id=1&assistant=paper");
-  const generate = page.getByRole("button", { name: "生成论文报告", exact: true });
+  const generate = page.getByRole("button", { name: "快速了解论文", exact: true });
   await expect(generate).toBeEnabled();
   try {
     await generate.evaluate((button: HTMLButtonElement) => {
@@ -703,6 +1027,7 @@ test("creating a conversation sends its first report once and survives its own n
   }
   await expect(page).toHaveURL(/conversation=conversation-one/);
   await expect(page.getByLabel("论文报告", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "论文问题", exact: true })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "你的问题" })).toBeEnabled();
   expect(api.requestsFor("POST", "/agent/conversations")).toHaveLength(1);
   expect(api.requestsFor("POST", `${conversationPath}/messages`)).toHaveLength(1);
@@ -722,6 +1047,7 @@ test("opening a paper without a conversation only reads its document status", as
     next_page: 0,
   });
   await page.goto("/papers?paper_id=1&assistant=paper");
+  await openPaperTools(page);
   const material = page.getByRole("region", { name: "论文全文材料", exact: true });
   await expect(material.getByRole("status")).toHaveText("全文尚未准备");
   await expect(
@@ -778,6 +1104,7 @@ test("explicit document preparation ignores an older read and polls until usable
   });
 
   await page.goto("/papers?paper_id=1&assistant=paper");
+  await openPaperTools(page);
   const material = page.getByRole("region", { name: "论文全文材料", exact: true });
   try {
     await initialRead.promise;
@@ -832,6 +1159,7 @@ test("failed document preparation only retries after an explicit click", async (
     return route.fulfill({ status: 202, json: snapshot() });
   });
   await page.goto("/papers?paper_id=1&assistant=paper");
+  await openPaperTools(page);
   const material = page.getByRole("region", { name: "论文全文材料", exact: true });
   await expect(material.getByRole("status")).toHaveText("全文准备失败");
   const retry = material.getByRole("button", { name: "重试解析", exact: true });
@@ -899,6 +1227,7 @@ test("a late document status for paper A cannot replace paper B's material state
     await page.getByRole("button", { name: otherPaper.title, exact: true }).click();
     await page.getByRole("button", { name: "AI 论文助手", exact: true }).click();
     await expect(page).toHaveURL(/paper_id=2/);
+    await openPaperTools(page);
     await expect(material.getByRole("status")).toHaveText("全文尚未准备");
   } finally {
     release.resolve();
@@ -978,6 +1307,7 @@ for (const fallbackReason of ["document_timeout", "document_download_failed"] as
     const input = page.getByRole("textbox", { name: "你的问题" });
     const send = page.getByRole("button", { name: "发送", exact: true });
     const material = page.getByRole("region", { name: "论文全文材料", exact: true });
+    await openPaperTools(page);
     await expect(material.getByRole("status")).toHaveText("全文尚未准备");
     await expect(input).toBeEnabled();
     await input.fill(questions[0]);
@@ -997,6 +1327,7 @@ for (const fallbackReason of ["document_timeout", "document_download_failed"] as
       idempotency_key: expect.any(String),
     });
     expect(api.requestsFor("POST", "/agent/conversations")).toHaveLength(1);
+    await openPaperTools(page);
     if (fallbackReason === "document_timeout") {
       await expect(material.getByRole("status")).toHaveText("全文等待解析");
       materialState = "ready";
@@ -1130,7 +1461,7 @@ for (const diagnostic of [
       await expect(page.getByText(/(?:结论|文字|完整响应) \d+.*上限/)).toHaveCount(0);
     await expect(page.getByText("诊断编号：fixture-failed-call", { exact: true })).toBeVisible();
     await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "生成论文报告", exact: true })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "快速了解论文", exact: true })).toBeEnabled();
     await page.reload();
     await expect(page.getByText("模型输出的条目数量或文字长度超出上限。", { exact: true })).toBeVisible();
     expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
@@ -1158,7 +1489,7 @@ test("paper evidence review shows persisted batch progress and publishes no part
 
   await page.goto(assistantURL);
   await expect(page.getByText("正在审核证据 2/3", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "生成论文报告", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "快速了解论文", exact: true })).toBeDisabled();
   await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
   await page.reload();
   await expect(page.getByText("正在审核证据 2/3", { exact: true })).toBeVisible();
@@ -1203,7 +1534,7 @@ test("one paper repair shows safe pending, calling, review, and completed summar
   phase = "calling";
   await expect(page.getByText("正在整理主要结果", { exact: true })).toBeVisible();
   await expect(page.getByText("本轮正在进行唯一一次自动整理。", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "生成论文报告", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "快速了解论文", exact: true })).toBeDisabled();
   await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
   await page.reload();
   await expect(page.getByText("正在整理主要结果", { exact: true })).toBeVisible();
@@ -1289,7 +1620,7 @@ for (const failure of [
     await expect(page.getByText("模型输出的条目数量或文字长度超出上限。", { exact: true })).toHaveCount(0);
     await expect(page.getByText(/校验位置：|未自动重复调用模型|原始候选|original-output/)).toHaveCount(0);
     await expect(page.getByRole("region", { name: "论文报告", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "生成论文报告", exact: true })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "快速了解论文", exact: true })).toBeEnabled();
     expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
   });
 }
@@ -1490,8 +1821,11 @@ test("insufficient structured answers show a bounded gap and accurate call budge
   await expect(reply.getByRole("button", { name: /^查看证据 / })).toHaveCount(0);
   await expect(reply.locator("details")).toHaveCount(0);
   await expect(reply.getByText(message.content, { exact: true })).toHaveCount(0);
-  await expect(page.getByText(/短论文通常调用 6 次；长论文最多 30 次、15 分钟/)).toBeVisible();
-  await expect(page.getByText(/问答通常调用 3 次，最多 6 次、180 秒/)).toBeVisible();
+  await expect(page.getByText(/短论文通常调用 6 次；长论文最多 32 次、15 分钟/)).not.toBeVisible();
+  await expect(page.getByText(/问答通常调用 3 次，最多 8 次、180 秒/)).not.toBeVisible();
+  await openUsageDetails(page);
+  await expect(page.getByText(/短论文通常调用 6 次；长论文最多 32 次、15 分钟/)).toBeVisible();
+  await expect(page.getByText(/问答通常调用 3 次，最多 8 次、180 秒/)).toBeVisible();
 });
 
 test("report and legacy answer markers share evidence controls without crossing message boundaries", async ({ page, api }) => {
@@ -1507,6 +1841,7 @@ test("report and legacy answer markers share evidence controls without crossing 
   api.json("GET", `${conversationPath}/paper-report`, { report: reportReply, matches_current_paper: true });
   api.json("GET", "/agent/runs/citation-run-26", completedCitationRun(26));
   await page.goto(assistantURL);
+  await openPaperReport(page);
   const pinned = page.getByRole("region", { name: "论文报告", exact: true });
   const reply = page.locator('[data-message-id="26"]');
   const reportMarker = pinned.getByRole("button", { name: "查看证据 problem-1-1", exact: true });
@@ -1518,7 +1853,7 @@ test("report and legacy answer markers share evidence controls without crossing 
   await expect(reply.locator("b")).toHaveCount(0);
   await expect(reply.getByRole("link", { name: "外部链接" })).toHaveCount(0);
   await reportMarker.click();
-  await expect(pinned.locator("details")).toHaveAttribute("open", "");
+  await expect(pinned.locator("details[id]")).toHaveAttribute("open", "");
   await expect(reply.locator("details")).not.toHaveAttribute("open", "");
   await answerMarker.click();
   await expect(reply.locator("summary")).toBeFocused();
@@ -1841,6 +2176,7 @@ test("report Markdown includes the five public fields and source appendix while 
   api.json("GET", `${conversationPath}/paper-report`, { report: reportReply, matches_current_paper: false });
   api.json("GET", "/agent/runs/report-run", { run: { id: "report-run", state: "completed", progress: "completed", task: "paper_report" }, steps: [] });
   await page.goto(assistantURL);
+  await openPaperReport(page);
   const pinned = page.getByRole("region", { name: "论文报告", exact: true });
   await pinned.getByRole("button", { name: "复制 Markdown", exact: true }).click();
   await expect(pinned.getByRole("status").filter({ hasText: "已复制 Markdown" })).toBeVisible();
@@ -1950,9 +2286,12 @@ test("reproduction is an explicit task with no report prerequisite and preserves
   await page.goto(assistantURL);
   const input = page.getByRole("textbox", { name: "你的问题" });
   await input.fill("暂存的问题，不应被清单按钮发送或清空。");
-  await expect(page.getByText(/复现清单最多 8 次调用、300 秒，合计最多 12 项/)).toBeVisible();
-  await expect(page.getByText(/问答通常调用 3 次，最多 6 次、180 秒/)).toBeVisible();
-  await expect(page.getByText(/短论文通常调用 6 次；长论文最多 30 次/)).toBeVisible();
+  await openUsageDetails(page);
+  await expect(page.getByText(/复现清单最多 10 次调用、300 秒，合计最多 12 项/)).toBeVisible();
+  await expect(page.getByText(/问答通常调用 3 次，最多 8 次、180 秒/)).toBeVisible();
+  await expect(page.getByText(/短论文通常调用 6 次；长论文最多 32 次/)).toBeVisible();
+  await page.getByRole("button", { name: "助手设置", exact: true }).click();
+  await openPaperTools(page);
   await page.getByRole("button", { name: "生成复现清单", exact: true }).click();
   const reply = page.locator('[data-message-id="80"]');
   await expect(reply.getByRole("heading", { name: "复现清单", exact: true })).toBeVisible();
@@ -2054,6 +2393,7 @@ test("reproduction progress survives reload and publishes only after supplement,
   });
   await page.goto(assistantURL);
   await expect(page.getByText("正在规划复现清单", { exact: true })).toBeVisible();
+  await openPaperTools(page);
   await expect(page.getByRole("button", { name: "生成复现清单", exact: true })).toBeDisabled();
   await expect(page.locator('[data-message-id="78"]').getByRole("button", { name: "追问第 1 项", exact: true })).toBeDisabled();
   await expect(page.locator('[data-message-id="78"]').getByRole("button", { name: "下载 Markdown", exact: true })).toBeEnabled();
@@ -2101,6 +2441,7 @@ for (const [stage, expected] of [
     await expect(page.getByText("结论 13 条，上限 12 条", { exact: false })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "重新编辑上次问题", exact: true })).toHaveCount(0);
     await expect(page.getByRole("article", { name: "助手回复", exact: true })).toHaveCount(0);
+    await openPaperTools(page);
     await expect(page.getByRole("button", { name: "生成复现清单", exact: true })).toBeEnabled();
     expect(api.requests.filter((request) => request.method !== "GET")).toEqual([]);
   });

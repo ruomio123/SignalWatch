@@ -21,8 +21,9 @@ import { PaperReproductionView } from "./PaperReproduction";
 import { CitationDetails, CitationText, PaperCitations, type PaperCitation } from "./PaperCitations";
 import { PaperMessageExport } from "./PaperMessageExport";
 import { PaperDocumentStatus } from "./PaperDocumentStatus";
-import { ShieldCheck } from "lucide-react";
+import { BookOpen, ChevronDown, Plus, ShieldCheck } from "lucide-react";
 import { SubscriptionDraftCard, type Draft } from "./SubscriptionDraft";
+import { paperStageLabel } from "../lib/paper-status";
 
 type Conversation = {
   paper_report_ready?: boolean;
@@ -74,17 +75,22 @@ type FailureDetail = {
   unit?: string;
 };
 type Run = {
+  outcome?: "partial";
   failure_detail?: FailureDetail;
   failure_stage?: string;
   review_progress?: { completed: number; total: number };
   retrieval_summary?: {
-    state: "initial_ready" | "pending" | "ready" | "calling" | "completed" | "skipped";
+    state: "initial_ready" | "pending" | "ready" | "calling" | "completed" | "skipped" | "failed";
     selected: number;
     added: number;
-    reason?: "no_queries" | "abstract_only" | "no_new_evidence" | "input_budget" | "time_budget" | "call_budget";
+    reason?: "no_queries" | "abstract_only" | "no_new_evidence" | "input_budget" | "time_budget" | "call_budget" | "processing_failed";
   };
   repair_summary?: {
     field: string;
+    stage?: string;
+    kind?: "format" | "limit" | "truncated";
+    used?: number;
+    limit?: number;
     state: "pending" | "calling" | "completed" | "failed" | "budget_exceeded";
     attempted: boolean;
   };
@@ -179,7 +185,9 @@ function outputLimitDetail(detail: FailureDetail): string | undefined {
 }
 function runProgress(run: Run): string {
   if (run.progress.startsWith("repairing_"))
-    return `正在整理${paperFields[run.progress.slice("repairing_".length)] ?? "论文输出"}`;
+    return run.repair_summary?.kind || run.repair_summary?.used !== undefined
+      ? `正在恢复${paperStageLabel(run.repair_summary.stage ?? run.progress.slice("repairing_".length))}`
+      : `正在整理${paperFields[run.progress.slice("repairing_".length)] ?? "论文输出"}`;
   if (
     /^validating_paper(?:_\d+)?$/.test(run.progress) &&
     run.review_progress &&
@@ -198,6 +206,19 @@ function runProgress(run: Run): string {
 function repairSummary(run: Run): string | undefined {
   const repair = run.repair_summary;
   if (!repair) return undefined;
+  if (repair.kind || repair.used !== undefined) {
+    const target = paperStageLabel(repair.stage ?? repair.field);
+    const action = repair.kind === "truncated" ? "缩短回答后重新生成" : repair.kind === "format" ? "重新生成符合格式的回答" : "整理超限内容";
+    const count = Number.isSafeInteger(repair.used) && repair.used! >= 0 && Number.isSafeInteger(repair.limit) && repair.limit! > 0
+      ? `本轮自动恢复已使用 ${repair.used}/${repair.limit} 次。` : "";
+    if (repair.state === "budget_exceeded") return `恢复所需输入或剩余预算不足，未发起本次恢复。${count}`;
+    if (repair.state === "completed") return `已恢复${target}。${count}`;
+    if (["pending", "running"].includes(run.state)) {
+      if (repair.state === "calling") return `正在${action}：${target}。${count}`;
+      if (repair.state === "pending") return `已安排自动恢复：${target}。${count}`;
+    }
+    return `${repair.attempted ? "本次自动恢复未完成。" : "本次自动恢复未开始。"}${count}`;
+  }
   const field = paperFields[repair.field] ?? "论文输出";
   if (repair.state === "budget_exceeded")
     return "自动整理输入超出 64 KiB 预算，未发起整理。";
@@ -223,6 +244,12 @@ function retrievalSummary(run: Run): string | undefined {
     ["pending", "ready", "calling"].includes(retrieval.state)
   ) return `本轮未完成补充${output}。`;
   switch (retrieval.state) {
+    case "failed":
+      return run.state === "completed"
+        ? `补充${output}未完成，已保留初稿中通过审核的内容。`
+        : ["pending", "running"].includes(run.state)
+          ? `补充${output}未完成，正在审核已有初稿。`
+          : `补充${output}未完成，本轮未发布结果。`;
     case "initial_ready":
       return selected === undefined
         ? "已完成本轮证据检索。"
@@ -255,9 +282,9 @@ function retrievalSummary(run: Run): string | undefined {
       return undefined;
   }
 }
-function failedStepLabel(tool: string): string {
+function failedStepLabel(tool: string, recovery = false): string {
   if (tool.startsWith("repairing_"))
-    return `整理${paperFields[tool.slice("repairing_".length)] ?? "论文输出"}`;
+    return recovery ? paperStageLabel(tool) : `整理${paperFields[tool.slice("repairing_".length)] ?? "论文输出"}`;
   if (tool.startsWith("extracting_batch_"))
     return `第 ${tool.slice("extracting_batch_".length)} 批全文证据提取`;
   if (/^validating_paper_\d+$/.test(tool))
@@ -278,7 +305,7 @@ function finalFailedStep(run: Run, steps: FailedStep[] = []): FailedStep | undef
 }
 const failures: Record<string, string> = {
   document_unavailable: "全文不可用。",
-  context_too_large: "论文或汇总证据超出本次输入上限，未输出部分结果。",
+  context_too_large: "当前材料超出模型可用上下文或本轮输入上限，请缩小问题范围后重试。",
   invalid_output: "本次输出或证据校验未通过，未发布结果。请手动重试。",
   workflow_changed: "论文助手已升级，旧任务已停止。请重新提问，或手动生成论文报告、复现清单。",
   result_unknown: "模型调用结果未知，本次调用未再次执行。你可以手动重新发送。",
@@ -335,6 +362,10 @@ function AgentChatView({
   const olderLoading = useRef(false);
   const historyLoaded = useRef(false);
   const [reportSnapshot, setReportSnapshot] = useState<ReportSnapshot>();
+  const [reportExpanded, setReportExpanded] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const toolsRef = useRef<HTMLDetailsElement>(null);
+  const requestedReport = useRef<{ conversation: string; run: string } | undefined>(undefined);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollAnchor = useRef<{ id: string; offset: number } | undefined>(
@@ -454,11 +485,15 @@ function AgentChatView({
           ...result.run,
           failedStep: finalFailedStep(result.run, result.steps),
         };
-        // Completion may commit between the message read and the run read.
-        // Read again after that commit before stopping the poller.
+        // Completion may commit between the message/report reads and the run
+        // read. Load both published results before stopping the poller.
+        const reportRun = latest.task === "paper_report" ||
+          requestedReport.current?.run === latestRun ||
+          m.items.some((v) => v.run_id === latestRun && v.result?.report);
         if (
           latest.state === "completed" &&
-          !m.items.some((v) => v.run_id === latestRun && v.role === "assistant")
+          (!m.items.some((v) => v.run_id === latestRun && v.role === "assistant") ||
+            (reportRun && report?.report?.run_id !== latestRun))
         ) {
           [c, m, report] = await loadSnapshot();
         }
@@ -484,6 +519,13 @@ function AgentChatView({
         ...Object.fromEntries(ds.map((d) => [d.id, d])),
       }));
       setReportSnapshot(report);
+      if (
+        requestedReport.current?.conversation === targetID &&
+        requestedReport.current.run === report?.report?.run_id
+      ) {
+        setReportExpanded(true);
+        requestedReport.current = undefined;
+      }
       setRun(latest);
     },
     [conversationID, token, kind, paperID],
@@ -502,6 +544,10 @@ function AgentChatView({
     setLoadingOlder(false);
     setLoadingConversations(false);
     setReportSnapshot(undefined);
+    setReportExpanded(false);
+    setToolsOpen(false);
+    if (requestedReport.current?.conversation !== conversationID)
+      requestedReport.current = undefined;
     setBusy(false);
     setQuestion("");
     setMessages([]);
@@ -514,6 +560,14 @@ function AgentChatView({
     });
     return () => controller.abort();
   }, [reload]);
+  useEffect(() => {
+    if (!toolsOpen) return;
+    const dismiss = (event: PointerEvent) => {
+      if (!toolsRef.current?.contains(event.target as Node)) setToolsOpen(false);
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [toolsOpen]);
   useLayoutEffect(() => {
     const anchor = scrollAnchor.current;
     const root = scrollRef.current;
@@ -582,6 +636,7 @@ function AgentChatView({
     const signal = scope();
     setBusy(true);
     setError(undefined);
+    setToolsOpen(false);
     const text = fixedTask ? "" : question;
     const body = JSON.stringify({
       ...(kind === "paper" ? { task: task ?? "paper_followup" } : {}),
@@ -619,6 +674,7 @@ function AgentChatView({
       );
       if (signal.aborted) return;
       submission.current = undefined;
+      if (task === "paper_report") requestedReport.current = { conversation: id, run: value.run_id };
       if (!fixedTask) setQuestion("");
       // Only navigate after both writes finish. The new view owns its reads;
       // switching the URL earlier would cancel this legitimate submission.
@@ -698,16 +754,19 @@ function AgentChatView({
       if (root) {
         const bounds = root.getBoundingClientRect();
         const top = bounds.top;
-        const firstVisible = [
+        const elements = [
           ...root.querySelectorAll<HTMLElement>("[data-message-id]"),
-        ].find((element) => {
+        ];
+        // A short panel can show only the report and pagination control. Keep
+        // the first message's offset even when it sits just below that view.
+        const anchor = elements.find((element) => {
           const rect = element.getBoundingClientRect();
           return rect.bottom > top && rect.top < bounds.bottom;
-        });
-        if (firstVisible)
+        }) ?? elements[0];
+        if (anchor)
           scrollAnchor.current = {
-            id: firstVisible.dataset.messageId!,
-            offset: firstVisible.getBoundingClientRect().top - top,
+            id: anchor.dataset.messageId!,
+            offset: anchor.getBoundingClientRect().top - top,
           };
       }
       historyLoaded.current = true;
@@ -893,57 +952,36 @@ function AgentChatView({
     <div className="agent-messages" aria-live="polite" aria-label="对话记录">
       {kind === "paper" && latestReport?.result?.report && (
         <section className="paper-report-pinned" aria-label="论文报告">
-          <h3>论文报告</h3>
-          {!reportSnapshot?.matches_current_paper && (
-            <p role="status" className="paper-report-stale">
-              这份报告对应旧版论文材料，可按需重新生成。新问题会使用当前材料。
-            </p>
-          )}
-          <PaperReportView
-            key={`${conversationID}:${latestReport.id}`}
-            messageID={`${conversationID}:${latestReport.id}`}
-            result={latestReport.result}
-            content={latestReport.content}
-            citations={latestReport.citations ?? []}
-            onRegenerate={() => void send(undefined, "paper_report")}
-            disabled={reportDisabled}
-          />
-          <small>
-            {latestReport.provider} / {latestReport.model}
-          </small>
+          <details open={reportExpanded}>
+            <summary onClick={(event) => {
+              event.preventDefault();
+              setReportExpanded((open) => !open);
+            }}>
+              <BookOpen size={16} aria-hidden="true" />
+              <span>{reportExpanded ? "收起论文报告" : "查看论文报告"}</span>
+              {latestReport.result.outcome === "partial" && <small>部分完成</small>}
+              {!reportSnapshot?.matches_current_paper && <small>旧版材料</small>}
+              <ChevronDown size={14} aria-hidden="true" />
+            </summary>
+            <div className="paper-report-content">
+              {!reportSnapshot?.matches_current_paper && (
+                <p role="status" className="paper-report-stale">
+                  这份报告对应旧版论文材料，可按需重新生成。新问题会使用当前材料。
+                </p>
+              )}
+              <PaperReportView
+                key={`${conversationID}:${latestReport.id}`}
+                messageID={`${conversationID}:${latestReport.id}`}
+                result={latestReport.result}
+                content={latestReport.content}
+                citations={latestReport.citations ?? []}
+                onRegenerate={() => void send(undefined, "paper_report")}
+                disabled={reportDisabled}
+              />
+              <small>{latestReport.provider} / {latestReport.model}</small>
+            </div>
+          </details>
         </section>
-      )}
-      {kind === "paper" && !latestReport && (
-        <div className="paper-report-start">
-          <p>也可生成论文报告，集中解读问题、方法、实验、结果与局限。</p>
-          <button
-            className="button"
-            disabled={
-              busy ||
-              active ||
-              !usable.length ||
-              !provider ||
-              !model ||
-              (!!conversationID && current?.id !== conversationID)
-            }
-            onClick={() => void send(undefined, "paper_report")}
-          >
-            生成论文报告
-          </button>
-          <small>
-            短论文通常调用 6 次；长论文最多 30 次、15
-            分钟。全文不可用时自动生成摘要版。
-          </small>
-        </div>
-      )}
-      {kind === "paper" && (
-        <div className="paper-reproduction-start">
-          <p>按数据、模型、训练、评估、计算环境和资源整理有证据支持的复现信息。</p>
-          <button className="button" disabled={reportDisabled} onClick={() => void send(undefined, "paper_reproduction")}>
-            生成复现清单
-          </button>
-          <small>复现清单最多 8 次调用、300 秒，合计最多 12 项；缺失信息会明确标注。</small>
-        </div>
       )}
       {older > 0 && (
         <button
@@ -955,11 +993,16 @@ function AgentChatView({
         </button>
       )}
       {!messages.length && !latestReport && (
-        <p className="settings-description">
-          {kind === "paper"
-            ? "直接输入问题即可开始，也可以先生成一份论文报告。"
-            : "描述你想关注的研究方向，例如：关注 cs.AI 中视觉语言模型的论文。"}
-        </p>
+        kind === "paper" ? (
+          <div className="paper-chat-empty">
+            <BookOpen size={24} strokeWidth={1.5} aria-hidden="true" />
+            <h3>围绕这篇论文提问</h3>
+            <p>从方法、实验或一个没读懂的细节开始。</p>
+            <small>回答仅依据当前论文，并附原文引用。</small>
+          </div>
+        ) : (
+          <p className="settings-description">描述你想关注的研究方向，例如：关注 cs.AI 中视觉语言模型的论文。</p>
+        )
       )}
       {messages.filter((m) => m.id !== latestReport?.id).map((m) => (
         <Fragment key={m.id}>
@@ -1041,7 +1084,7 @@ function AgentChatView({
             {active
               ? runProgress(run)
               : run.state === "completed"
-                ? "本轮已完成"
+                ? run.outcome === "partial" ? "本轮部分完成，已保留通过审核的结果。" : "本轮已完成"
                 : (outputFailureMessage(run.failure_code ?? "") ??
                   failures[run.failure_code ?? run.state] ??
                   `本轮未完成（${run.failure_code ?? run.state}），请手动重试。`)}
@@ -1053,7 +1096,7 @@ function AgentChatView({
               <summary>失败详情</summary>
               <p>
                 失败步骤：
-                {failedStepLabel(run.failedStep.tool ?? "")}
+                {failedStepLabel(run.failedStep.tool ?? "", !!run.repair_summary?.kind || run.repair_summary?.used !== undefined)}
               </p>
               <p>原因代码：{run.failedStep.failure_code}</p>
               {run.failure_detail && run.failure_detail.code === run.failure_code && (
@@ -1075,7 +1118,9 @@ function AgentChatView({
                 <p>诊断编号：{run.failedStep.call_id}</p>
               )}
               <p>
-                {run.repair_summary?.attempted
+                {run.repair_summary?.kind || run.repair_summary?.used !== undefined
+                  ? "本轮未发布结果；自动恢复已按阶段和整轮次数上限停止。"
+                  : run.repair_summary?.attempted
                   ? "本轮未发布结果；已尝试自动整理一次，系统不会再次自动整理。"
                   : run.repair_summary
                     ? "本轮未发布结果，未进行自动整理。"
@@ -1151,8 +1196,64 @@ function AgentChatView({
   const modelName =
     providers.find((p) => p.id === provider)?.models.find((m) => m.id === model)
       ?.name ?? model;
+  const paperActions = kind === "paper" ? (
+    <div className="paper-chat-actions">
+      <button
+        type="button"
+        className="button paper-quick-start"
+        disabled={!latestReport?.result?.report && reportDisabled}
+        title={latestReport?.result?.report ? "查看已有报告；展开后可重新生成" : "生成包含问题、方法、实验、结果与局限的报告"}
+        onClick={() => {
+          if (latestReport?.result?.report) {
+            setReportExpanded(true);
+            scrollRef.current?.scrollTo({ top: 0 });
+          } else void send(undefined, "paper_report");
+        }}
+      >
+        <BookOpen size={15} aria-hidden="true" />
+        快速了解论文
+      </button>
+      <details
+        className="paper-tools"
+        ref={toolsRef}
+        open={toolsOpen}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && toolsOpen) {
+            event.preventDefault();
+            event.stopPropagation();
+            setToolsOpen(false);
+            toolsRef.current?.querySelector("summary")?.focus();
+          }
+        }}
+        onBlur={(event) => {
+          if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node))
+            setToolsOpen(false);
+        }}
+      >
+        <summary onClick={(event) => {
+          // Keep the state synchronous with keyboard activation. Native toggle
+          // events are queued and can otherwise reopen a dismissed panel.
+          event.preventDefault();
+          setToolsOpen((open) => !open);
+        }}>
+          <Plus size={15} aria-hidden="true" />论文工具
+        </summary>
+        <div className="paper-tools-content">
+          {paperID && <PaperDocumentStatus paperID={paperID} refreshKey={[run?.id, run?.state, run?.progress].join(":")} />}
+          <div className="paper-reproduction-start">
+            <button type="button" className="button" disabled={reportDisabled} onClick={() => void send(undefined, "paper_reproduction")}>
+              生成复现清单
+            </button>
+            <small>整理数据、训练、评估等六类复现信息，并标注依据与缺口。</small>
+          </div>
+        </div>
+      </details>
+      <span className="paper-scope-hint">{mode === "fulltext" ? "全文优先" : "仅摘要"}</span>
+    </div>
+  ) : undefined;
   return (
     <AssistantView
+      variant={kind === "paper" ? "paper" : undefined}
       scrollRef={scrollRef}
       title={kind === "paper" ? "AI 论文助手" : "订阅助手"}
       subtitle={
@@ -1166,50 +1267,49 @@ function AgentChatView({
           {historyControls}
           {modelControls}
           {kind === "paper" && (
-            <label>
-              解读资料
-              <select
-                value={mode}
-                disabled={active || busy}
-                onChange={(e) => setMode(e.target.value)}
-              >
-                <option value="fulltext">论文文字全文</option>
-                <option value="abstract">仅标题和摘要</option>
-              </select>
-              <small>
-                选择全文模式时，直接提问最多等待全文 20
-                秒；超时或不可用时使用摘要。全文就绪后，下一次全文模式提问可使用全文；已完成的回答不会自动重答。
-              </small>
-            </label>
+            <>
+              <label>
+                解读资料
+                <select
+                  value={mode}
+                  disabled={active || busy}
+                  onChange={(e) => setMode(e.target.value)}
+                >
+                  <option value="fulltext">论文文字全文</option>
+                  <option value="abstract">仅标题和摘要</option>
+                </select>
+              </label>
+              <details className="paper-usage-details">
+                <summary>使用说明</summary>
+                <p>仅围绕当前论文回答。全文模式下，提问最多等待材料 20 秒；超时或不可用时使用摘要，并在回答中标注。</p>
+                <p>问答通常调用 3 次，最多 8 次、180 秒。全文就绪后，下一次提问可使用全文，已完成的回答不会自动重答。</p>
+                <p>快速了解论文按问题、方法、实验、结果与局限五个板块生成报告。短论文通常调用 6 次；长论文最多 32 次、15 分钟。</p>
+                <p>复现清单最多 10 次调用、300 秒，合计最多 12 项；缺失信息会明确标注。</p>
+              </details>
+            </>
           )}
         </>
       }
       notices={
         <>
           {errorNotice}
-          {kind === "paper" && paperID && (
-            <PaperDocumentStatus
-              paperID={paperID}
-              refreshKey={[run?.id, run?.state, run?.progress].join(":")}
-            />
-          )}
           {availability}
         </>
       }
       messages={messagesView}
       status={runStatus}
+      actions={paperActions}
       hint={
         kind === "subscription" ? (
           <>
             <ShieldCheck size={16} aria-hidden="true" />
             助手只生成草案，确认后才会创建订阅。
           </>
-        ) : (
-          `请求资料：${mode === "fulltext" ? "全文优先，最多等待 20 秒后使用摘要" : "仅标题和摘要"}；问答通常调用 3 次，最多 6 次、180 秒。`
-        )
+        ) : undefined
       }
       composer={
         <AssistantComposer
+          compact={kind === "paper"}
           inputRef={inputRef}
           question={question}
           onChange={setQuestion}
@@ -1217,7 +1317,7 @@ function AgentChatView({
           disabled={sendDisabled}
           placeholder={
             kind === "paper"
-              ? "直接提问，例如：这篇论文解决了什么问题？"
+              ? "询问这篇论文…"
               : "描述研究方向、篇数或邮件偏好……"
           }
           modelLabel={[providerName, modelName].filter(Boolean).join(" · ")}

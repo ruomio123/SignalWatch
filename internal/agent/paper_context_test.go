@@ -380,3 +380,30 @@ func TestPaperConversationV6RecoveryPreservesUnknownCallPrecedence(t *testing.T)
 		})
 	}
 }
+
+func TestPaperPartialReportHistoryRetainsCompletionMarker(t *testing.T) {
+	f := newFixture(t)
+	c, _ := workflowPaper(t, f, nil)
+	hash := contextPaperHash(t, f, c)
+	report := contextReport("审核内容")
+	r := seedPaperContextRun(t, f, c, contextSeed{task: TaskPaperReport, hash: hash, question: PaperGoal, answer: "本轮部分完成", report: report})
+	raw, err := json.Marshal(PaperResult{Outcome: "partial", Report: report, PaperHash: hash, WorkflowVersion: PaperWorkflowVersion, ContextMode: "abstract", Issues: []PaperIssue{{Stage: "extracting_batch_1", Code: "output_invalid_json"}}})
+	must(t, err)
+	must(t, f.db.Model(&Message{}).Where("run_id=? AND role='assistant'", r.ID).Update("result", raw).Error)
+	history, err := f.store.PaperHistory(t.Context(), c.ID, hash, "")
+	must(t, err)
+	if history.ReportOutcome != "partial" || history.Report == nil {
+		t.Fatal("partial report history marker lost")
+	}
+	projected := boundedPaperConversationContext(history)
+	if projected.ReportOutcome != "partial" || projected.Report == nil {
+		t.Fatal("context projection lost partial marker")
+	}
+	request, err := paperInputWithContext(map[string]any{"question": "继续说明"}, projected)
+	must(t, err)
+	body, err := json.Marshal(request)
+	must(t, err)
+	if !strings.Contains(string(body), `"report_outcome":"partial"`) {
+		t.Fatal("model history treats unfinished report as complete")
+	}
+}

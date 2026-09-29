@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"signalwatch/internal/generation"
 	"strings"
 	"testing"
+	"time"
 )
 
 type paperBudgetTransport func(*http.Request) (*http.Response, error)
@@ -57,6 +59,41 @@ func TestPaperOutputTokenBudgetsPreserveProviderContracts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPaperTransportHonorsLongerCallerDeadlineAndRetainsTruncationUsage(t *testing.T) {
+	client, err := newClient("qwen", "https://fixture.invalid/v1", "qwen3.8-flash", "fixture-key", configureQwen, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.http.Timeout != 0 {
+		t.Fatal("HTTP client must not shorten the feature-specific caller deadline")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	wantDeadline, _ := ctx.Deadline()
+	client.http.Transport = paperBudgetTransport(func(request *http.Request) (*http.Response, error) {
+		if deadline, _ := request.Context().Deadline(); deadline != wantDeadline {
+			t.Fatalf("caller deadline changed: %v, want %v", deadline, wantDeadline)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"{\"claims\":["},"finish_reason":"length"}],"usage":{"prompt_tokens":7,"completion_tokens":8192}}`))}, nil
+	})
+	result, err := client.GenerateLimit(ctx, "JSON", []byte(`{}`), 8192)
+	var failure *generation.Failure
+	if !errors.As(err, &failure) || failure.Code != "output_truncated" || string(result.Content) != `{"claims":[` || !result.UsageKnown || result.InputTokens != 7 || result.OutputTokens != 8192 {
+		t.Fatalf("truncation outcome lost: result=%+v err=%v", result, err)
+	}
+}
+
+func TestPaperCatalogLimitsUseIndependentModelOverrides(t *testing.T) {
+	custom := generation.ModelLimits{ContextTokens: 65536, MaxOutputTokens: 4096}
+	catalog := Catalog{Limits: map[string]generation.ModelLimits{"qwen/qwen3.8-flash": custom}}
+	if got := catalog.ModelLimits("qwen", "qwen3.8-flash"); got != custom {
+		t.Fatalf("override=%+v", got)
+	}
+	if got := catalog.ModelLimits("qwen", "qwen3.8-max"); got != generation.DefaultModelLimits() {
+		t.Fatalf("default=%+v", got)
 	}
 }
 

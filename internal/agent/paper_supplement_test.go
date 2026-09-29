@@ -74,7 +74,11 @@ func (g *supplementGateway) Generate(ctx context.Context, req ModelRequest) (gen
 		value = map[string]any{"verdicts": verdicts}
 	case strings.HasPrefix(stage, "repairing_"):
 		var candidate paperAnswerOutput
-		must(g.t, json.Unmarshal(input.Candidate, &candidate))
+		if len(input.Candidate) > 0 {
+			must(g.t, json.Unmarshal(input.Candidate, &candidate))
+		} else {
+			candidate = singleQuestionAnswer(fieldOutput{Status: "supported", Claims: []claimOutput{{Text: "重新生成的结论来自论文证据。", Evidence: []evidenceOutput{{ID: input.Evidence[0].ID}}}}})
+		}
 		if !g.repairBad {
 			candidate.Answers[0].Claims = candidate.Answers[0].Claims[:1]
 			candidate.Answers[0].Claims[0].Text = "整理后保留有证据支持的方法结论。"
@@ -187,10 +191,7 @@ func TestPaperSupplementCompletesWithOneAdditionalAnalysis(t *testing.T) {
 func TestPaperSupplementBudgetUsesDeadlineAndReservesReviewAndRepair(t *testing.T) {
 	now := time.Now()
 	for _, repaired := range []bool{false, true} {
-		seconds, allowedCalls := 125, 2
-		if repaired {
-			seconds, allowedCalls = 95, 3
-		}
+		seconds, allowedCalls := 95, 4
 		for _, delta := range []time.Duration{-time.Nanosecond, 0, time.Nanosecond} {
 			cp := Checkpoint{Calls: allowedCalls, Paper: &PaperCheckpoint{}}
 			if repaired {
@@ -244,7 +245,7 @@ func TestPaperSupplementSkipsWithoutCallingAndStillReviews(t *testing.T) {
 			}
 			if reason == "call_budget" {
 				cp := directCheckpoint(t, f, r)
-				cp.Calls, g.initialCalls = 1, 1
+				cp.Calls, g.initialCalls = 4, 4
 				must(t, f.store.Save(t.Context(), r, cp, "ready", nil))
 				r.Checkpoint = budgetJSON(t, cp)
 			}
@@ -261,18 +262,20 @@ func TestPaperSupplementSkipsWithoutCallingAndStillReviews(t *testing.T) {
 	}
 }
 
-func TestPaperSupplementRepairIsSharedAcrossBothAnalyses(t *testing.T) {
+func TestPaperSupplementRecoversEachAnalysisOnceAndRetainsReviewedDraft(t *testing.T) {
 	for _, scenario := range []string{"initial-repair", "supplement-repair", "both-overlimit", "repair-overlimit"} {
 		t.Run(scenario, func(t *testing.T) {
 			f, c, r, g := supplementFixture(t, "fulltext")
-			wantState, wantStage := "completed", "repairing_answer"
+			wantRepairs := []string{"repairing_answer"}
+			wantCalls := 5
 			g.overStages["analyzing_answer"] = scenario == "initial-repair" || scenario == "both-overlimit"
 			g.overStages["analyzing_answer_supplement"] = scenario != "initial-repair"
 			if scenario == "supplement-repair" || scenario == "repair-overlimit" {
-				wantStage = "repairing_answer_supplement"
+				wantRepairs = []string{"repairing_answer_supplement"}
 			}
-			if scenario == "both-overlimit" || scenario == "repair-overlimit" {
-				wantState = "failed"
+			if scenario == "both-overlimit" {
+				wantRepairs = []string{"repairing_answer", "repairing_answer_supplement"}
+				wantCalls = 6
 			}
 			g.repairBad = scenario == "repair-overlimit"
 			f.s.process(t.Context(), f.claim(t, r.ID))
@@ -284,20 +287,21 @@ func TestPaperSupplementRepairIsSharedAcrossBothAnalyses(t *testing.T) {
 					repairs = append(repairs, stage)
 				}
 			}
-			if end.State != wantState || !reflect.DeepEqual(repairs, []string{wantStage}) || cp.Calls != len(g.calls) || cp.Calls > 6 {
+			if end.State != "completed" || !reflect.DeepEqual(repairs, wantRepairs) || cp.Calls != len(g.calls) || cp.Calls != wantCalls || len(messages) != 2 || paperRecoveryUsed(cp.Paper) != len(wantRepairs) {
 				t.Fatalf("repair ownership/limit broken: end=%+v stages=%v count=%d", end, g.stages, cp.Calls)
 			}
-			if wantState == "completed" {
-				if len(g.calls) != 5 || len(messages) != 2 || cp.Paper.Repair.State != "completed" || string(cp.Paper.Outputs[cp.Paper.Repair.Stage]) != string(cp.Paper.Outputs[wantStage]) {
-					t.Fatal("repair did not promote only its original stage")
+			if scenario == "repair-overlimit" {
+				result := directResult(t, f, r)
+				if result.Outcome != "partial" || len(result.Issues) != 1 || result.Issues[0].Code != "output_limit_exceeded" || cp.Paper.QA.Supplement.State != "failed" || cp.Paper.Outputs[paperSupplementStage] != nil || len(result.Answer.Parts[0].Claims) != 1 {
+					t.Fatal("failed optional analysis did not retain only the reviewed initial draft")
 				}
 			} else {
-				stage := "analyzing_answer_supplement"
-				if scenario == "repair-overlimit" {
-					stage = "repairing_answer_supplement"
-				}
-				if len(g.calls) != 4 || len(messages) != 1 || end.FailureCode != "output_limit_exceeded" || end.FailureStage != stage {
-					t.Fatalf("failed supplement published initial answer or wrong failure: %+v calls=%v", end, g.stages)
+				for _, repairStage := range wantRepairs {
+					original := "analyzing_" + strings.TrimPrefix(repairStage, "repairing_")
+					repair := cp.Paper.Repairs[original]
+					if repair == nil || repair.State != "completed" || string(cp.Paper.Outputs[original]) != string(cp.Paper.Outputs[repairStage]) {
+						t.Fatal("repair did not promote only its original stage")
+					}
 				}
 			}
 		})
@@ -416,7 +420,7 @@ func TestPaperSupplementRecoveryNeverReplaysUncertainCalls(t *testing.T) {
 	}
 }
 
-func TestPaperSupplementStartedFailureNeverPublishesInitialAnswer(t *testing.T) {
+func TestPaperSupplementUnknownFailuresStopAndTruncationRegenerates(t *testing.T) {
 	for _, code := range []string{"timeout", "network_error", "result_unknown", "provider_rejected", "output_truncated"} {
 		t.Run(code, func(t *testing.T) {
 			f, c, r, g := supplementFixture(t, "fulltext")
@@ -429,6 +433,12 @@ func TestPaperSupplementStartedFailureNeverPublishesInitialAnswer(t *testing.T) 
 			f.s.process(t.Context(), f.claim(t, r.ID))
 			end, messages := paperOutcome(t, f, c, r)
 			cp := directCheckpoint(t, f, r)
+			if code == "output_truncated" {
+				if end.State != "completed" || len(messages) != 2 || len(g.calls) != 5 || cp.Calls != 5 || cp.Paper.Repair == nil || cp.Paper.Repair.Kind != "truncated" || cp.Paper.Repair.State != "completed" || cp.Paper.TerminalFailure != "" {
+					t.Fatalf("known truncation did not regenerate and review: state=%s code=%s stages=%v", end.State, end.FailureCode, g.stages)
+				}
+				return
+			}
 			if end.State == "completed" || end.FailureCode != code || end.FailureStage != "analyzing_answer_supplement" || len(messages) != 1 || len(g.calls) != 3 || cp.Calls != 3 || cp.Paper.Repair != nil {
 				t.Fatalf("actual supplementary failure was hidden: end=%+v stages=%v", end, g.stages)
 			}
@@ -543,6 +553,12 @@ func TestPaperSupplementInputBudgetKeepsInitialAnswerForCompleteReview(t *testin
 
 func installEscapedSupplementEvidence(t *testing.T, f *fixture, c Conversation, r Run) {
 	t.Helper()
+	if gateway, ok := f.s.Gateway.(*supplementGateway); ok {
+		// Exercise escaping/64 KiB limits without a smaller model window
+		// replacing this fixture's complete source passages first.
+		gateway.limits = generation.ModelLimits{ContextTokens: 262144, MaxOutputTokens: 8192}
+		gateway.callTimeout = 30 * time.Second
+	}
 	var pc Checkpoint
 	_, _, err := f.s.preparePaper(t.Context(), r, c, &pc, func(context.Context) error { return nil })
 	must(t, err)

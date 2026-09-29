@@ -32,11 +32,30 @@ type PaperRetrievalSummary struct {
 var errPaperSupplementSkipped = errors.New("paper supplemental analysis skipped before calling")
 
 func paperSupplementBudget(ctx context.Context, r Run, cp *Checkpoint, now time.Time) string {
-	remainingCalls, remainingTime := paperReviewLimit(r.Task)+2, time.Duration(paperReviewLimit(r.Task)+2)*30*time.Second+5*time.Second
-	if cp.Paper.Repair != nil && cp.Paper.Repair.Attempted {
-		remainingCalls--
-		remainingTime -= 30 * time.Second
+	reviewCalls := paperReviewLimit(r.Task)
+	workflow := paperQuestionPolicy(r.Task)
+	qa := cp.Paper.QA
+	if qa != nil && qa.Initial != nil {
+		if candidate := cp.Paper.Outputs[workflow.AnalysisStage]; candidate != nil {
+			if analysis, err := workflow.DecodeAnalysis(candidate, qa.Initial.Evidence, qa.Questions, true); err == nil {
+				claims := paperAnswerReviewClaims(analysis)
+				if plan, err := planPaperReview(cp.Paper, r.Task, claims, evidenceIndex(qa.Initial.Evidence)); err == nil {
+					reviewCalls = max(1, len(plan))
+				}
+			}
+		}
 	}
+	remainingCalls := reviewCalls + 1
+	if paperRecoveryUsed(cp.Paper) < paperRecoveryLimit {
+		remainingCalls++
+	}
+	timeout := cp.Paper.CallTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	// A hypothetical future recovery must not disable every optional call for
+	// normal 60-second providers. Actual recovery admission checks its own time.
+	remainingTime := time.Duration(reviewCalls+1)*timeout + 5*time.Second
 	if paperCallLimit(r.Task)-cp.Calls < remainingCalls {
 		return "call_budget"
 	}
@@ -65,12 +84,14 @@ func paperRetrievalSummary(qa *PaperQACheckpoint) *PaperRetrievalSummary {
 	public := &PaperRetrievalSummary{State: "initial_ready", Selected: len(qa.Initial.Evidence)}
 	if supplement := qa.Supplement; supplement != nil {
 		switch supplement.State {
-		case "pending", "ready", "calling", "completed", "skipped":
+		case "pending", "ready", "calling", "completed", "skipped", "failed":
 			public.State = supplement.State
 		default:
 			return public
 		}
-		if supplement.State == "skipped" {
+		if supplement.State == "failed" {
+			public.Reason = "processing_failed"
+		} else if supplement.State == "skipped" {
 			if validPaperSupplementReason(supplement.Reason) {
 				public.Reason = supplement.Reason
 			}
@@ -110,6 +131,10 @@ func validatePaperAnswerInput(input *PaperAnswerInput, questions []PaperQuestion
 // followed by uncited old passages, then low-priority new passages. Neither the
 // draft nor any retained passage is truncated to fit the serialized byte budget.
 func packPaperSupplementInput(r Run, pc *PaperCheckpoint, questions []PaperQuestion, initial PaperAnswerInput, candidate []byte, additions []Citation) (PaperAnswerInput, int, error) {
+	workflow := paperQuestionPolicy(r.Task)
+	fit := func(input any) ([]byte, error) {
+		return paperFitsInput(pc, workflow.SupplementStage, workflow.SupplementPrompt, input)
+	}
 	refs, err := paperAnswerCandidateEvidence(candidate)
 	if err != nil {
 		return PaperAnswerInput{}, 0, err
@@ -142,7 +167,7 @@ func packPaperSupplementInput(r Run, pc *PaperCheckpoint, questions []PaperQuest
 	}
 	for len(fresh) > 0 {
 		selected := append(append(append([]Citation{}, pinned...), fresh...), optional...)
-		request := paperInput(pc, paperQuestionPolicy(r.Task).Field, selected)
+		request := paperInput(pc, workflow.Field, selected)
 		request["question"], request["original_question"] = r.Question, r.Question
 		request["questions"], request["coverage"] = questions, "retrieved_passages"
 		request["initial_answer"] = json.RawMessage(candidate)
@@ -151,9 +176,9 @@ func packPaperSupplementInput(r Run, pc *PaperCheckpoint, questions []PaperQuest
 			newIDs = append(newIDs, source.ID)
 		}
 		request["new_evidence_ids"] = newIDs
-		projected, err := paperInputWithContext(request, pc.ConversationContext)
+		projected, err := paperInputWithContextBudget(request, pc.ConversationContext, fit)
 		if err == nil {
-			raw, err := boundedPaperInput(projected)
+			raw, err := fit(projected)
 			return PaperAnswerInput{Request: string(raw), Evidence: selected}, len(fresh), err
 		}
 		if len(optional) > 0 {
@@ -215,6 +240,24 @@ func (s *Service) supplementPaperAnswer(ctx context.Context, r Run, cp *Checkpoi
 		}
 		return initialAnalysis, qa.Initial, nil
 	}
+	if cp.Paper.StageFailures[workflow.SupplementStage] != nil {
+		if cp.Paper.Outputs[workflow.SupplementStage] != nil {
+			return fail(paperError("invalid_checkpoint"))
+		}
+		// A crash can occur after the settled stage failure was saved and before
+		// this optional workflow saved its local fallback state. The durable
+		// stage record is authoritative and must never trigger a new paid call.
+		if supplement.State != "failed" {
+			supplement.State, supplement.Reason = "failed", "processing_failed"
+			if err := save(); err != nil {
+				return fail(err)
+			}
+		}
+		return initialAnalysis, qa.Initial, nil
+	}
+	if supplement.State == "failed" {
+		return fail(paperError("invalid_checkpoint"))
+	}
 	if supplement.State == "pending" {
 		if reason := paperSupplementBudget(ctx, r, cp, time.Now()); reason != "" {
 			return skip(reason)
@@ -259,6 +302,13 @@ func (s *Service) supplementPaperAnswer(ctx context.Context, r Run, cp *Checkpoi
 		return skip(supplement.Reason)
 	}
 	if err != nil {
+		if paperStageIncomplete(err) {
+			supplement.State, supplement.Reason = "failed", "processing_failed"
+			if saveErr := save(); saveErr != nil {
+				return fail(saveErr)
+			}
+			return initialAnalysis, qa.Initial, nil
+		}
 		return fail(err)
 	}
 	analysis, err := workflow.DecodeAnalysis(raw, input.Evidence, qa.Questions, false)

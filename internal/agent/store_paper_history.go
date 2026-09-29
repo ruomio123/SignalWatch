@@ -34,6 +34,9 @@ func (s *MySQLStore) PaperHistory(ctx context.Context, conversation, paperHash, 
 			if json.Unmarshal(row.Result, &result) == nil && result.Reproduction != nil {
 				summary, clipped := reproductionContextSummary(result.Reproduction)
 				row.Answer = summary
+				if result.Outcome == "partial" {
+					row.Answer = "本轮部分完成；仅保留已审核内容。\n" + row.Answer
+				}
 				out.Truncated = out.Truncated || clipped
 			}
 			out.Turns = append(out.Turns, PaperConversationTurn{Question: row.Question, Answer: row.Answer})
@@ -67,6 +70,9 @@ func (s *MySQLStore) PaperHistory(ctx context.Context, conversation, paperHash, 
 			for _, message := range rows {
 				if result, ok := validPaperReport(message, paperHash); ok {
 					out.Report = result.Report
+					if result.Outcome == "partial" {
+						out.ReportOutcome = "partial"
+					}
 					return nil
 				}
 			}

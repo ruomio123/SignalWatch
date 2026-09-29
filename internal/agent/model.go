@@ -39,6 +39,7 @@ type Conversation struct {
 func (Conversation) TableName() string { return "agent_conversations" }
 
 type Run struct {
+	Outcome              string                 `json:"outcome,omitempty" gorm:"-"`
 	FailureStage         string                 `json:"failure_stage,omitempty" gorm:"-"`
 	RepairSummary        *PaperRepairSummary    `json:"repair_summary,omitempty" gorm:"-"`
 	ReviewProgress       *PaperReviewProgress   `json:"review_progress,omitempty" gorm:"-"`
@@ -138,8 +139,10 @@ type SubmitInput struct {
 	ContextMode    string `json:"context_mode"`
 }
 type Selection struct {
-	Generation string
-	Version    uint64
+	Generation  string
+	Version     uint64
+	Limits      generation.ModelLimits
+	CallTimeout time.Duration
 }
 type ModelRequest struct {
 	Schema    *generation.Schema

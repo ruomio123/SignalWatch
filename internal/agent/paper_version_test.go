@@ -13,7 +13,7 @@ import (
 )
 
 // Keep these predecessor versions explicit when workflow semantics change.
-var paperPredecessorVersions = []string{"paper-fixed-v7", "paper-fixed-v8", "paper-fixed-v9", "paper-fixed-v10", "paper-fixed-v11", "paper-fixed-v12"}
+var paperPredecessorVersions = []string{"paper-fixed-v7", "paper-fixed-v8", "paper-fixed-v9", "paper-fixed-v10", "paper-fixed-v11", "paper-fixed-v12", "paper-fixed-v13"}
 
 func TestPaperPredecessorIdempotencyPreservesFailedAndCompletedRuns(t *testing.T) {
 	for _, version := range paperPredecessorVersions {

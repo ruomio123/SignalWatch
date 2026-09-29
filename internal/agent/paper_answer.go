@@ -311,6 +311,7 @@ func renderPaperAnswer(r Run, cp *Checkpoint, questions []PaperQuestion, analysi
 	allIDs := []string{}
 	sections := []string{}
 	retained := 0
+	reviewIncomplete := false
 	for position, analyzed := range analysis.Answers {
 		part := PaperAnswerPart{QuestionID: analyzed.QuestionID, Question: questions[position].Question, Status: analyzed.Status, Claims: []PaperAnswerClaim{}}
 		if analyzed.Status != "supported" {
@@ -318,8 +319,16 @@ func renderPaperAnswer(r Run, cp *Checkpoint, questions []PaperQuestion, analysi
 		}
 		texts := []string{}
 		for i, claim := range analyzed.Claims {
-			if !verdicts[fmt.Sprintf("%s-%d", analyzed.QuestionID, i+1)] {
-				part.Gap = &PaperAnswerGap{Reason: "review_rejected"}
+			supported, reviewed := verdicts[fmt.Sprintf("%s-%d", analyzed.QuestionID, i+1)]
+			if !reviewed {
+				part.Gap = &PaperAnswerGap{Reason: "review_incomplete"}
+				reviewIncomplete = true
+				continue
+			}
+			if !supported {
+				if part.Gap == nil || part.Gap.Reason != "review_incomplete" {
+					part.Gap = &PaperAnswerGap{Reason: "review_rejected"}
+				}
 				continue
 			}
 			ids := []string{}
@@ -338,6 +347,9 @@ func renderPaperAnswer(r Run, cp *Checkpoint, questions []PaperQuestion, analysi
 		}
 		if len(part.Claims) == 0 {
 			part.Status = "insufficient_evidence"
+			if part.Gap != nil && part.Gap.Reason == "review_incomplete" {
+				part.Status = "processing_failed"
+			}
 		} else if part.Gap != nil {
 			part.Status = "partial"
 		} else {
@@ -348,6 +360,8 @@ func renderPaperAnswer(r Run, cp *Checkpoint, questions []PaperQuestion, analysi
 			gap := "当前材料不足以完整回答此问题。"
 			if part.Gap.Reason == "review_rejected" {
 				gap = "部分结论未通过证据审核，当前材料不足以完整回答此问题。"
+			} else if part.Gap.Reason == "review_incomplete" {
+				gap = "本问题的部分结论未完成证据审核，仅展示已通过审核的内容。"
 			}
 			texts = append(texts, gap)
 		}
@@ -362,6 +376,19 @@ func renderPaperAnswer(r Run, cp *Checkpoint, questions []PaperQuestion, analysi
 		status, heading = "partial", "## 回答：部分问题仍有证据缺口"
 	}
 	result.Fields["answer"] = PaperFieldResult{Status: status, CitationIDs: allIDs}
+	applyPaperPartial(&result, pc)
+	if reviewIncomplete {
+		answer.Status = "partial"
+		result.Outcome = "partial"
+		status = "partial"
+		if retained == 0 {
+			status = "processing_failed"
+		}
+		result.Fields["answer"] = PaperFieldResult{Status: status, CitationIDs: allIDs, GapReason: "review_incomplete"}
+	}
+	if result.Outcome == "partial" {
+		heading = "## 回答：部分处理未完成"
+	}
 	parts := []string{heading}
 	if pc.Mode == "abstract" {
 		parts = append(parts, "仅基于摘要；以下缺失判断仅针对当前材料，不代表论文全文没有相关内容。")

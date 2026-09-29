@@ -184,6 +184,7 @@ export function configETag(c: { generation?: string; version?: number }) {
 }
 
 const outputFailures: Record<string, string> = {
+  output_truncated: "模型回答达到输出上限，内容被截断，未发布不完整的回答。",
   output_language_mismatch: "模型未按要求用中文撰写报告，本轮未发布。",
   output_invalid_json: "模型返回的内容不是有效的 JSON。",
   output_schema_mismatch: "模型输出的字段、类型或结构不符合约定。",

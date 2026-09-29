@@ -46,12 +46,12 @@ func boundedPaperInput(value any) ([]byte, error) {
 
 func paperCallLimit(task string) int {
 	if task == TaskPaperReproduction {
-		return 8
+		return 10
 	}
 	if task == TaskPaperReport {
-		return 30
+		return 32
 	}
-	return 6
+	return 8
 }
 
 func paperFailureDetail(err error) *PaperFailure {
@@ -91,8 +91,16 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 	if raw, ok := cp.Paper.Outputs[stage]; ok {
 		return raw, validate(raw)
 	}
-	if repair := cp.Paper.Repair; repair != nil && repair.Stage == stage {
+	contract := paperContract(stage)
+	if failure := cp.Paper.StageFailures[stage]; failure != nil {
+		return nil, &paperStageFailure{paperError(failure.Code)}
+	}
+	if repair := cp.Paper.Repairs[stage]; repair != nil {
+		cp.Paper.Repair = repair
 		return s.runPaperRepair(ctx, r, cp, check)
+	}
+	if contract.OriginalStage != "" {
+		cp.Paper.Repair = cp.Paper.Repairs[contract.OriginalStage]
 	}
 	var raw []byte
 	var err error
@@ -104,10 +112,16 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 	} else {
 		raw, err = boundedPaperInput(input)
 	}
+	if err == nil {
+		err = paperFitsSerialized(cp.Paper, stage, prompt, raw)
+	}
 	if err != nil {
-		return nil, s.failPaperStage(ctx, r, cp, stage, err, nil)
+		return nil, s.incompletePaperStage(ctx, r, cp, stage, err, nil)
 	}
 	for {
+		if contract.OriginalStage != "" && !paperRecoveryBudget(ctx, r, cp, contract.OriginalStage) {
+			return nil, s.skipPaperRecovery(ctx, r, cp, stage)
+		}
 		if cp.Calls >= paperCallLimit(r.Task) {
 			return nil, s.failPaperStage(ctx, r, cp, stage, ErrBudget, nil)
 		}
@@ -130,8 +144,9 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 		}
 		var validationErr error
 		optionalSkip := false
+		recoverySkip := false
 		reserved := false
-		result, callErr := s.Gateway.Generate(ctx, ModelRequest{Run: r, Feature: "paper_qa", System: paperPolicy + "\n" + prompt, Input: raw, Schema: paperStageSchema(stage), MaxTokens: paperStageTokens(stage),
+		result, callErr := s.Gateway.Generate(ctx, ModelRequest{Run: r, Feature: "paper_qa", System: paperPolicy + "\n" + prompt, Input: raw, Schema: paperStageSchema(stage), MaxTokens: paperOutputTokens(cp.Paper, stage),
 			Before: func(call context.Context) error {
 				if err := check(call); err != nil {
 					return err
@@ -144,6 +159,10 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 						cp.Paper.QA.Supplement.Reason, optionalSkip = reason, true
 						return errPaperSupplementSkipped
 					}
+				}
+				if contract.OriginalStage != "" && !paperRecoveryBudget(call, r, cp, contract.OriginalStage) {
+					recoverySkip = true
+					return errPaperRecoverySkipped
 				}
 				if cp.Calls >= paperCallLimit(r.Task) {
 					return ErrBudget
@@ -187,9 +206,13 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 				reserved = true
 				return nil
 			}, Validate: func(res generation.Result) error {
-				validationErr = validate(res.Content)
+				validationErr = validate(normalizePaperJSON(res.Content))
 				return validationErr
 			}})
+		result.Content = normalizePaperJSON(result.Content)
+		if recoverySkip && !reserved {
+			return nil, s.skipPaperRecovery(ctx, r, cp, stage)
+		}
 		if optionalSkip && !reserved {
 			return nil, errPaperSupplementSkipped
 		}
@@ -225,37 +248,42 @@ func (s *Service) paperCall(ctx context.Context, r Run, cp *Checkpoint, check fu
 			if detail := paperFailureDetail(validationErr); detail != nil && detail.Code == step.FailureCode {
 				cp.Paper.Failure = detail
 			}
-			// Only a fully received, settled count/text limit failure is eligible.
-			// Revalidate the returned candidate: some gateways return content on
-			// transport or settlement errors as well as on validation failure.
-			if reserved && paperContract(stage).RepairStage != "" && cp.Paper.Repair == nil && step.FailureCode == "output_limit_exceeded" && repairablePaperLimit(validationErr) && repairablePaperLimit(validate(result.Content)) {
-				permissionErr := ctx.Err()
-				if permissionErr == nil {
-					permissionErr = check(ctx)
-				}
-				if permissionErr != nil {
-					// Save the paid call's original failure and the actual terminal
-					// error atomically; there must be no replayable ready gap.
+			kind := paperRecoveryKind(callErr, validationErr)
+			if kind != "" && kind != "truncated" && paperRecoveryKind(callErr, validate(result.Content)) != kind {
+				kind = ""
+			}
+			if reserved && paperKnownOutputFailure(step.FailureCode) {
+				if permissionErr := check(ctx); permissionErr != nil {
 					return nil, s.failPaperStage(ctx, r, cp, stage, permissionErr, &step)
 				}
-				request, budgetErr := buildPaperRepairRequest(r, cp.Paper, stage, result.Content, raw)
-				if budgetErr != nil && paperFailureCode(budgetErr) != "context_too_large" {
-					return nil, s.failPaperStage(ctx, r, cp, stage, budgetErr, &step)
+				if kind != "" && contract.RepairStage != "" && cp.Paper.Repairs[stage] == nil && paperRecoveryBudget(ctx, r, cp, stage) {
+					failure := cp.Paper.Failure
+					if failure == nil {
+						failure = &PaperFailure{Code: step.FailureCode}
+					}
+					repair, budgetErr := buildPaperRecoveryRequest(r, cp.Paper, stage, prompt, kind, result.Content, raw, failure)
+					if budgetErr != nil && paperFailureCode(budgetErr) != "context_too_large" {
+						return nil, s.failPaperStage(ctx, r, cp, stage, budgetErr, &step)
+					}
+					if cp.Paper.Repairs == nil {
+						cp.Paper.Repairs = map[string]*PaperRepair{}
+					}
+					cp.Paper.Repairs[stage], cp.Paper.Repair = repair, repair
+					if budgetErr != nil {
+						repair.State = "budget_exceeded"
+						return nil, s.incompletePaperStage(ctx, r, cp, stage, callErr, &step)
+					}
+					cp.Phase = "ready"
+					if paperSupplementAnalysisStage(stage) {
+						cp.Paper.QA.Supplement.State = "ready"
+					}
+					cp.Paper.CurrentStage = contract.RepairStage
+					if err := s.Store.Save(ctx, r, *cp, contract.RepairStage, &step); err != nil {
+						return nil, err
+					}
+					return s.runPaperRepair(ctx, r, cp, check)
 				}
-				cp.Paper.Repair = &PaperRepair{Stage: stage, Field: paperContract(stage).Field, Candidate: append(json.RawMessage(nil), result.Content...), Request: request, Failure: cp.Paper.Failure, State: "pending"}
-				if budgetErr != nil {
-					cp.Paper.Repair.State = "budget_exceeded"
-					return nil, s.failPaperStage(ctx, r, cp, stage, callErr, &step)
-				}
-				cp.Phase = "ready"
-				if paperSupplementAnalysisStage(stage) {
-					cp.Paper.QA.Supplement.State = "ready"
-				}
-				cp.Paper.CurrentStage = paperContract(stage).RepairStage
-				if err := s.Store.Save(ctx, r, *cp, paperContract(stage).RepairStage, &step); err != nil {
-					return nil, err
-				}
-				return s.runPaperRepair(ctx, r, cp, check)
+				return nil, s.incompletePaperStage(ctx, r, cp, stage, callErr, &step)
 			}
 			return nil, s.failPaperStage(ctx, r, cp, stage, callErr, &step)
 		}
@@ -301,6 +329,24 @@ func (s *Service) preparePaper(ctx context.Context, r Run, c Conversation, cp *C
 		h := sha256.Sum256([]byte(p.Title + "\n" + p.Abstract))
 		hash := hex.EncodeToString(h[:])
 		cp.Evidence = []Citation{{ID: "abstract", DocumentID: "abstract:" + hash, ContentHash: hash, Quote: p.Title + "\n" + p.Abstract, URL: p.ArXivURL}}
+	}
+	if cp.Paper.BudgetVersion == "" {
+		selection, selectionErr := s.Gateway.Selection(ctx, r.UserID, r.Provider, r.Model, r.Generation)
+		if selectionErr != nil {
+			return document.Document{}, nil, selectionErr
+		}
+		cp.Paper.Limits = selection.Limits
+		if cp.Paper.Limits.ContextTokens == 0 {
+			cp.Paper.Limits = generation.DefaultModelLimits()
+		}
+		cp.Paper.CallTimeout = selection.CallTimeout
+		if cp.Paper.CallTimeout <= 0 {
+			cp.Paper.CallTimeout = 60 * time.Second
+		}
+		cp.Paper.BudgetVersion = generation.BudgetEstimatorVersion
+	}
+	if cp.Paper.BudgetVersion != generation.BudgetEstimatorVersion || !cp.Paper.Limits.Valid() {
+		return document.Document{}, nil, paperError("invalid_checkpoint")
 	}
 	pc := cp.Paper
 	if pc.Outputs == nil || (pc.Mode != "" && pc.Mode != "abstract" && pc.Mode != "fulltext") {
@@ -477,13 +523,16 @@ func partitionPaper(pc *PaperCheckpoint, evidence []Citation) ([][]Citation, err
 	current := []Citation{}
 	for _, ref := range evidence {
 		candidate := append(append([]Citation{}, current...), ref)
-		if _, err := boundedPaperInput(paperInput(pc, "all_fields", candidate)); err != nil {
+		if _, err := paperFitsInput(pc, "extracting_batch_1", batchPrompt, paperInput(pc, "all_fields", candidate)); err != nil {
 			if len(current) == 0 {
 				return nil, err
 			}
 			batches = append(batches, current)
+			if len(batches) >= 18 {
+				return nil, ErrBudget
+			}
 			current = []Citation{ref}
-			if _, err := boundedPaperInput(paperInput(pc, "all_fields", current)); err != nil {
+			if _, err := paperFitsInput(pc, "extracting_batch_1", batchPrompt, paperInput(pc, "all_fields", current)); err != nil {
 				return nil, err
 			}
 		} else {
@@ -511,33 +560,61 @@ func (s *Service) processPaper(ctx context.Context, r Run, c Conversation, cp *C
 	analyses := map[string]FieldAnalysis{}
 	available := map[string][]Citation{}
 	pc := cp.Paper
-	if r.Task == TaskPaperReport {
-		batches, err := partitionPaper(pc, evidence)
-		if err != nil {
-			return err
-		}
-		if len(batches) > 1 {
-			pc.BatchTotal = len(batches)
-		}
-		if err = s.Store.Save(ctx, r, *cp, "planning_paper", nil); err != nil {
-			return err
-		}
-		if len(batches) == 1 {
+	if pc.ReportInputs == nil {
+		batches, batchErr := partitionPaper(pc, evidence)
+		groups := map[string][][]Citation{}
+		if batchErr != nil {
+			if !errors.Is(batchErr, ErrBudget) && paperFailureCode(batchErr) != "context_too_large" {
+				return batchErr
+			}
+			pc.Coverage = "retrieved_passages"
+			for _, field := range fields {
+				available[field] = rankReportEvidence(evidence, field)
+			}
+		} else if len(batches) == 1 {
 			for _, field := range fields {
 				available[field] = evidence
 			}
 		} else {
+			pc.BatchTotal = len(batches)
+			if err = s.Store.Save(ctx, r, *cp, "planning_paper", nil); err != nil {
+				return err
+			}
 			index := evidenceIndex(evidence)
 			for i, batch := range batches {
 				stage := fmt.Sprintf("extracting_batch_%d", i+1)
-				raw, err := s.paperCall(ctx, r, cp, check, stage, batchPrompt, paperInput(pc, "all_fields", batch), func(raw []byte) error { _, e := decodeBatch(raw, batch); return e })
-				if err != nil {
-					return err
+				if pc.Outputs[stage] == nil && pc.StageFailures[stage] == nil && pc.Repairs[stage] == nil && (pc.ExtractionFallback[stage] || !paperExtractionBudget(ctx, r, cp)) {
+					if pc.ExtractionFallback == nil {
+						pc.ExtractionFallback = map[string]bool{}
+					}
+					pc.ExtractionFallback[stage] = true
+					pc.Coverage = "retrieved_passages"
+					for _, field := range fields {
+						groups[field] = append(groups[field], rankReportEvidence(batch, field))
+					}
+					pc.BatchCompleted = i + 1
+					if err = s.Store.Save(ctx, r, *cp, stage, nil); err != nil {
+						return err
+					}
+					continue
 				}
-				candidates, _ := decodeBatch(raw, batch)
-				for _, field := range fields {
-					for _, ref := range candidates[field] {
-						available[field] = append(available[field], index[ref.ID])
+				raw, callErr := s.paperCall(ctx, r, cp, check, stage, batchPrompt, paperInput(pc, "all_fields", batch), func(raw []byte) error { _, e := decodeBatch(raw, batch); return e })
+				if callErr != nil {
+					if !paperStageIncomplete(callErr) {
+						return callErr
+					}
+					pc.Coverage = "retrieved_passages"
+					for _, field := range fields {
+						groups[field] = append(groups[field], rankReportEvidence(batch, field))
+					}
+				} else {
+					candidates, _ := decodeBatch(raw, batch)
+					for _, field := range fields {
+						selected := []Citation{}
+						for _, ref := range candidates[field] {
+							selected = append(selected, index[ref.ID])
+						}
+						groups[field] = append(groups[field], selected)
 					}
 				}
 				pc.BatchCompleted = i + 1
@@ -545,22 +622,45 @@ func (s *Service) processPaper(ctx context.Context, r Run, c Conversation, cp *C
 					return err
 				}
 			}
-		}
-		// Reject oversized aggregation before paying for any final field analysis.
-		for _, field := range fields {
-			if _, err := boundedPaperInput(paperInput(pc, field, available[field])); err != nil {
-				return s.failPaperStage(ctx, r, cp, "analyzing_"+field, err, nil)
+			for _, field := range fields {
+				available[field] = roundRobinPaperEvidence(groups[field])
 			}
+		}
+		inputs := map[string]PaperAnswerInput{}
+		for _, field := range fields {
+			packed, packErr := packPaperReportInput(pc, field, available[field])
+			if packErr != nil {
+				stageErr := s.incompletePaperStage(ctx, r, cp, "analyzing_"+field, packErr, nil)
+				if !paperStageIncomplete(stageErr) {
+					return stageErr
+				}
+				continue
+			}
+			inputs[field] = packed
+		}
+		pc.ReportInputs = inputs
+		if err = s.Store.Save(ctx, r, *cp, "planning_paper", nil); err != nil {
+			return err
 		}
 	}
-	if r.Task == TaskPaperReport {
-		for _, field := range fields {
-			raw, err := s.paperCall(ctx, r, cp, check, "analyzing_"+field, fieldPromptFor(field, true), paperInput(pc, field, available[field]), func(raw []byte) error { _, err := decodeFieldFor(raw, available[field], field, true); return err })
-			if err != nil {
-				return err
-			}
-			analyses[field], _ = decodeFieldFor(raw, available[field], field, true)
+	for _, field := range fields {
+		stage := "analyzing_" + field
+		input, ok := pc.ReportInputs[field]
+		available[field] = input.Evidence
+		if pc.StageFailures[stage] != nil {
+			continue
 		}
+		if !ok {
+			return paperError("invalid_checkpoint")
+		}
+		raw, callErr := s.paperCall(ctx, r, cp, check, stage, fieldPromptFor(field, true), paperSerializedInput(input.Request), func(raw []byte) error { _, e := decodeFieldFor(raw, input.Evidence, field, true); return e })
+		if callErr != nil {
+			if paperStageIncomplete(callErr) {
+				continue
+			}
+			return callErr
+		}
+		analyses[field], _ = decodeFieldFor(raw, input.Evidence, field, true)
 	}
 	claims := reviewClaims(fields, analyses)
 	sources := map[string]Citation{}
@@ -571,6 +671,9 @@ func (s *Service) processPaper(ctx context.Context, r Run, c Conversation, cp *C
 	}
 	verdicts, err := s.reviewPaper(ctx, r, cp, check, claims, sources)
 	if err != nil {
+		return err
+	}
+	if err := s.checkPaperPublication(ctx, r, cp, verdicts); err != nil {
 		return err
 	}
 	content, result, citations := renderPaperResult(r, cp, fields, analyses, available, verdicts)
@@ -589,24 +692,39 @@ func renderPaperResult(r Run, cp *Checkpoint, fields []string, analyses map[stri
 	if r.Task == TaskPaperFollowup || r.Task == TaskPaperReproduction {
 		coverage = "retrieved_passages"
 	}
+	if pc.Coverage != "" {
+		coverage = pc.Coverage
+	}
 	if pc.Mode == "abstract" {
 		coverage = "abstract_only"
 	}
 	result := PaperResult{OriginalQuestion: r.Question, PaperTitle: pc.Context.Title, StructuredGap: pc.StructuredGap, Fields: map[string]PaperFieldResult{}, ContextMode: pc.Mode, FallbackReason: pc.FallbackReason, DocumentID: cp.DocumentID, SourceVersion: pc.SourceVersion, ContentHash: pc.ContentHash, PaperHash: pc.PaperHash, WorkflowVersion: PaperWorkflowVersion, Coverage: coverage}
+	applyPaperPartial(&result, pc)
 	values := map[string]string{}
 	citations := []Citation{}
 	parts := []string{}
+	if result.Outcome == "partial" {
+		parts = append(parts, "本轮部分完成；仅展示已通过证据审核的内容。未完成部分见各板块说明。")
+	}
 	if pc.Mode == "abstract" {
 		parts = append(parts, "仅基于摘要；以下缺失判断仅针对当前材料，不代表论文全文没有相关内容。")
 	}
 	for _, field := range fields {
 		analysis := analyses[field]
 		status := analysis.Status
+		gap := ""
+		if pc.StageFailures["analyzing_"+field] != nil {
+			gap = "processing_failed"
+		}
 		texts := []string{}
 		ids := []string{}
 		index := evidenceIndex(available[field])
 		for i, claim := range analysis.Claims {
-			if !verdicts[fmt.Sprintf("%s-%d", field, i+1)] {
+			approved, reviewed := verdicts[fmt.Sprintf("%s-%d", field, i+1)]
+			if !reviewed {
+				gap = "review_incomplete"
+			}
+			if !approved {
 				continue
 			}
 			markers := []string{}
@@ -622,14 +740,27 @@ func renderPaperResult(r Run, cp *Checkpoint, fields []string, analyses map[stri
 		}
 		if len(texts) == 0 {
 			if status == "not_stated" {
-				texts = []string{"论文未明确说明"}
+				texts = []string{"当前材料未明确说明"}
 			} else {
 				status = "insufficient_evidence"
 				texts = []string{"当前材料不足以可靠回答"}
 			}
 		}
+		if gap != "" {
+			message := "本板块生成未完成；未展示未经审核的内容。"
+			if gap == "review_incomplete" {
+				message = "本板块审核未完成；仅展示已通过审核的内容。"
+			}
+			if len(ids) == 0 {
+				status = "processing_failed"
+				texts = []string{message}
+			} else {
+				status = "partial"
+				texts = append(texts, message)
+			}
+		}
 		values[field] = strings.Join(texts, "\n\n")
-		result.Fields[field] = PaperFieldResult{Status: status, CitationIDs: ids}
+		result.Fields[field] = PaperFieldResult{Status: status, CitationIDs: ids, GapReason: gap}
 		parts = append(parts, "## "+paperLabels[field]+"\n\n"+values[field])
 	}
 	if r.Task == TaskPaperReport {
@@ -644,4 +775,35 @@ func renderPaperResult(r Run, cp *Checkpoint, fields []string, analyses map[stri
 		parts = append(parts, strings.Join(links, "\n"))
 	}
 	return strings.Join(parts, "\n\n"), result, citations
+}
+
+var paperReportQueries = map[string]string{
+	"problem":     "research problem motivation challenge objective contribution",
+	"method":      "method architecture algorithm approach model formulation",
+	"experiments": "experiment dataset evaluation baseline setup protocol",
+	"results":     "results performance metrics comparison ablation table",
+	"limitations": "limitations discussion future work constraints failure",
+}
+
+func rankReportEvidence(evidence []Citation, field string) []Citation {
+	ranked := rankPaperEvidence(evidence, []string{paperReportQueries[field]}, paperTotalPassageLimit)
+	if len(ranked) == 0 {
+		return evidence
+	}
+	return ranked
+}
+func roundRobinPaperEvidence(groups [][]Citation) []Citation {
+	out := []Citation{}
+	for position := 0; ; position++ {
+		added := false
+		for _, group := range groups {
+			if position < len(group) {
+				out = append(out, group[position])
+				added = true
+			}
+		}
+		if !added {
+			return out
+		}
+	}
 }

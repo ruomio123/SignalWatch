@@ -117,13 +117,13 @@ func TestPaperReviewRecoveryReusesRequestsAndCompletedBatches(t *testing.T) {
 		t.Run(fmt.Sprint(after), func(t *testing.T) {
 			f := newFixture(t)
 			c, _ := workflowPaper(t, f, nil)
+			gateway := &workflowGateway{limits: generation.ModelLimits{ContextTokens: 262144, MaxOutputTokens: 8192}}
+			f.s.Gateway = gateway
 			r := f.claim(t, submitReport(t, f, c, "abstract").ID)
 			cp := Checkpoint{Phase: "ready"}
 			_, _, err := f.s.preparePaper(t.Context(), r, c, &cp, func(context.Context) error { return nil })
 			must(t, err)
 			claims, sources := reviewFixture(8, 2000)
-			gateway := &workflowGateway{}
-			f.s.Gateway = gateway
 			f.s.Store = &reviewCrashStore{Store: f.store, stage: "validating_paper", after: after}
 			_, err = f.s.reviewPaper(t.Context(), r, &cp, func(context.Context) error { return nil }, claims, sources)
 			if err == nil || len(gateway.calls) != 1 {
@@ -214,9 +214,10 @@ func TestPaperFiveResultsCompleteWithStageTokenBudgets(t *testing.T) {
 	}
 }
 
-func TestPaperReviewMalformedLaterBatchDoesNotPublish(t *testing.T) {
+func TestPaperReviewIncompleteLaterBatchRetainsPriorVerdicts(t *testing.T) {
 	f := newFixture(t)
 	c, _ := workflowPaper(t, f, nil)
+	f.s.Gateway = &workflowGateway{limits: generation.ModelLimits{ContextTokens: 262144, MaxOutputTokens: 8192}}
 	r := f.claim(t, submitReport(t, f, c, "abstract").ID)
 	cp := Checkpoint{Phase: "ready"}
 	_, _, err := f.s.preparePaper(t.Context(), r, c, &cp, func(context.Context) error { return nil })
@@ -231,12 +232,15 @@ func TestPaperReviewMalformedLaterBatchDoesNotPublish(t *testing.T) {
 		return nil
 	}}
 	f.s.Gateway = g
-	_, err = f.s.reviewPaper(t.Context(), r, &cp, func(context.Context) error { return nil }, claims, sources)
-	if err == nil {
-		t.Fatal("missing review accepted")
-	}
+	verdicts, err := f.s.reviewPaper(t.Context(), r, &cp, func(context.Context) error { return nil }, claims, sources)
+	must(t, err)
 	_, messages := paperOutcome(t, f, c, r)
-	if len(messages) != 1 || len(cp.Paper.Outputs) != 1 {
-		t.Fatal("partial publication or lost successful batch")
+	if len(messages) != 1 || len(cp.Paper.Outputs) != 1 || len(verdicts) != len(cp.Paper.ReviewPlan[0].ClaimIDs) || cp.Paper.StageFailures["validating_paper_2"] == nil {
+		t.Fatal("review published prematurely, lost successful verdicts, or accepted incomplete batch")
+	}
+	for _, id := range cp.Paper.ReviewPlan[1].ClaimIDs {
+		if _, reviewed := verdicts[id]; reviewed {
+			t.Fatal("incomplete batch was treated as successfully reviewed")
+		}
 	}
 }

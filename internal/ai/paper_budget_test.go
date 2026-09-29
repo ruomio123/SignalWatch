@@ -42,10 +42,12 @@ type paperBudgetCallStore struct {
 	settlementError    error
 	result             generation.Result
 	failure            error
+	record             CallRecord
 }
 
-func (s *paperBudgetCallStore) Admit(context.Context, CallRecord, CallPolicy) error {
+func (s *paperBudgetCallStore) Admit(_ context.Context, record CallRecord, _ CallPolicy) error {
 	s.admitted++
+	s.record = record
 	return nil
 }
 func (s *paperBudgetCallStore) Start(context.Context, string, time.Time) error {
@@ -203,7 +205,7 @@ func TestPaperCallFailurePrecedenceNeverReplaysOrExposesRepairableTransportFailu
 			result, err := runner.Run(ctx, CallRequest{UserID: 1, Provider: "qwen", Model: "qwen3.8-flash", Feature: FeaturePaperQA, MaxTokens: 8192, Validate: func(generation.Result) error {
 				validations++
 				if tc.expireLease {
-					now = now.Add(time.Minute)
+					now = now.Add(2 * time.Minute)
 				}
 				return &generation.Failure{Code: "output_limit_exceeded", ValidationPath: "$.claims"}
 			}})
@@ -269,6 +271,44 @@ func TestPaperCredentialChangeAfterSettledLimitBlocksFurtherModelCalls(t *testin
 			_, err = service.GenerateForCredentialLimit(t.Context(), 1, "qwen", "qwen3.8-flash", "fixture", 1, FeaturePaperQA, "run", "Repair", []byte(`{}`), 8192, nil, validate, nil)
 			if !errors.Is(err, tc.failure) || calls != 1 || store.admitted != 1 || store.started != 1 || store.finished != 1 {
 				t.Fatalf("stale credential allowed a second model call: err=%v calls=%d store=%+v", err, calls, store)
+			}
+		})
+	}
+}
+
+func TestPaperCallTimeoutAndLeaseFollowFeaturePolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, feature string
+		configured    time.Duration
+		want          time.Duration
+	}{
+		{name: "paper default", feature: FeaturePaperQA, want: time.Minute},
+		{name: "paper configured", feature: FeaturePaperQA, configured: 2 * time.Minute, want: 2 * time.Minute},
+		{name: "paper minimum", feature: FeaturePaperQA, configured: 10 * time.Second, want: 10 * time.Second},
+		{name: "other calls unchanged", feature: FeatureSubscriptionAgent, configured: 2 * time.Minute, want: 30 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			started := now
+			store := &paperBudgetCallStore{}
+			factory := func([]string, string, string, string) (Generator, error) {
+				return paperBudgetGenerator(func(ctx context.Context, _ string, _ []byte, _ int) (generation.Result, error) {
+					deadline, ok := ctx.Deadline()
+					if remaining := time.Until(deadline); !ok || remaining > tc.want || remaining < tc.want-time.Second {
+						t.Fatalf("call deadline=%s want=%s", remaining, tc.want)
+					}
+					// A known response after 31 seconds must fit the default paper
+					// lease; no sleeping or external provider is needed for this check.
+					if tc.want >= time.Minute {
+						now = now.Add(31 * time.Second)
+					}
+					return generation.Result{Content: []byte(`{}`), UsageKnown: true}, nil
+				}), nil
+			}
+			runner := NewCallRunner(store, CallPolicy{PaperCallTimeout: tc.configured}, factory, []string{"qwen"}, func() time.Time { return now }, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			result, err := runner.Run(t.Context(), CallRequest{UserID: 1, Provider: "qwen", Model: "qwen3.8-flash", Feature: tc.feature, MaxTokens: 8192})
+			if err != nil || result.CallID == "" || store.finished != 1 || store.failure != nil || store.record.LeaseUntil.Sub(started) != max(time.Minute, tc.want+30*time.Second) {
+				t.Fatalf("timeout/lease policy mismatch: result=%+v err=%v record=%+v", result, err, store.record)
 			}
 		})
 	}

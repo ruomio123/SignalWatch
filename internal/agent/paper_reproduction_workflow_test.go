@@ -175,6 +175,12 @@ func reproductionWorkflowFixture(t *testing.T) (*fixture, Conversation, Run, *re
 
 func installReproductionDenseStructures(t *testing.T, f *fixture) {
 	t.Helper()
+	if gateway, ok := f.s.Gateway.(*reproductionWorkflowGateway); ok {
+		// This fixture tests serialized 64 KiB review partitions independently
+		// of model context limits and normal provider call duration.
+		gateway.limits = generation.ModelLimits{ContextTokens: 262144, MaxOutputTokens: 8192}
+		gateway.callTimeout = 30 * time.Second
+	}
 	elements := []document.StructuredElement{}
 	for i := 0; i < 9; i++ {
 		element := structuredAgentTable(i+1, reproductionWorkflowKeywords[i%6])
@@ -208,7 +214,11 @@ func TestPaperReproductionWorkflowNormalThreeCallsAndAllSixQueries(t *testing.T)
 			f.s.process(t.Context(), claimed)
 			end, messages := paperOutcome(t, f, c, r)
 			cp := directCheckpoint(t, f, r)
-			if end.State != "completed" || len(messages) != 2 || cp.Calls != 3 || !reflect.DeepEqual(g.stages, []string{"planning_reproduction", "analyzing_reproduction", "validating_paper"}) {
+			wantStages := []string{"planning_reproduction", "analyzing_reproduction", "validating_paper"}
+			if scenario == "missing" {
+				wantStages = wantStages[:2]
+			}
+			if end.State != "completed" || len(messages) != 2 || cp.Calls != len(wantStages) || !reflect.DeepEqual(g.stages, wantStages) {
 				t.Fatalf("unexpected reproduction execution: %s stages=%v", reproductionRunDiagnostic(end, len(g.calls)), g.stages)
 			}
 			result := directResult(t, f, r)
@@ -236,15 +246,12 @@ func TestPaperReproductionWorkflowNormalThreeCallsAndAllSixQueries(t *testing.T)
 }
 
 func TestPaperReproductionBudgetReservesFourReviewsAndOneRepair(t *testing.T) {
-	if runDuration(Run{Task: TaskPaperReproduction}) != 300*time.Second || paperCallLimit(TaskPaperReproduction) != 8 || paperReviewLimit(TaskPaperReproduction) != 4 {
+	if runDuration(Run{Task: TaskPaperReproduction}) != 300*time.Second || paperCallLimit(TaskPaperReproduction) != 10 || paperReviewLimit(TaskPaperReproduction) != 4 {
 		t.Fatal("reproduction fixed budgets changed")
 	}
 	now := time.Now()
 	for _, repaired := range []bool{false, true} {
-		seconds, calls := 185, 2
-		if repaired {
-			seconds, calls = 155, 3
-		}
+		seconds, calls := 155, 4
 		for _, delta := range []time.Duration{-time.Nanosecond, 0, time.Nanosecond} {
 			deadline := now.Add(time.Duration(seconds)*time.Second + delta)
 			cp := Checkpoint{Calls: calls, Paper: &PaperCheckpoint{}}
@@ -282,7 +289,7 @@ func TestPaperReproductionSupplementAndOneSharedRepair(t *testing.T) {
 				wantCalls = 5
 			}
 			if scenario == "both-overflow" {
-				wantState = "failed"
+				wantCalls = 6
 			}
 			f.s.process(t.Context(), f.claim(t, r.ID))
 			end, messages := paperOutcome(t, f, c, r)
@@ -319,7 +326,7 @@ func TestPaperReproductionRechecksSupplementTimeBeforeReservingCall(t *testing.T
 			g.beforeStart = func(req ModelRequest) error {
 				if req.Schema == paperReproductionSupplementSchemas.full && !changed {
 					changed = true
-					ctx.deadline = time.Now().Add(180 * time.Second)
+					ctx.deadline = time.Now().Add(120 * time.Second)
 					if admission {
 						return &ModelError{Code: "busy", Admission: true}
 					}
@@ -541,7 +548,7 @@ func TestPaperReproductionHistoryKeepsTwelveIndicesForOrdinaryFollowup(t *testin
 	must(t, err)
 	f.s.process(t.Context(), f.claim(t, next.ID))
 	done, _ := paperOutcome(t, f, c, next)
-	if done.State != "completed" || len(qa.calls) != 3 || !strings.Contains(string(qa.calls[0].Input), "12. ") {
+	if done.State != "completed" || len(qa.calls) != 2 || !strings.Contains(string(qa.calls[0].Input), "12. ") {
 		t.Fatalf("ordinary followup lost the reproduction discussion: %s", reproductionRunDiagnostic(done, len(qa.calls)))
 	}
 }

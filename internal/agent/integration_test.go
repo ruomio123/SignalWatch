@@ -37,7 +37,7 @@ type scriptedGateway struct {
 }
 
 func (g *scriptedGateway) Selection(context.Context, uint64, string, string, string) (Selection, error) {
-	return Selection{"agent-fixture", 1}, nil
+	return Selection{Generation: "agent-fixture", Version: 1}, nil
 }
 func (g *scriptedGateway) Generate(ctx context.Context, r ModelRequest) (generation.Result, error) {
 	if err := r.Before(ctx); err != nil {
@@ -377,7 +377,7 @@ func TestPaperConversationRetrievesVersionedEvidenceAndPreservesHistory(t *testi
 	}
 	next := f.submit(t, c, "继续说明")
 	f.s.process(ctx, f.claim(t, next.ID))
-	if f.gateway.calls.Load() != 6 {
+	if f.gateway.calls.Load() != 5 {
 		t.Fatal("unexpected calls")
 	}
 	cached, err := f.s.Documents.Ensure(ctx, src)

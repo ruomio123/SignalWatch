@@ -21,6 +21,8 @@ for test_file in \
   internal/document/structured_test.go \
   internal/platform/document/structured_html_test.go \
   internal/generation/paper_schema_test.go \
+  internal/generation/paper_budget_test.go \
+  internal/platform/config/paper_budget_test.go \
   internal/ai/paper_budget_test.go \
   internal/bootstrap/paper_budget_test.go \
   internal/platform/llm/paper_budget_test.go; do

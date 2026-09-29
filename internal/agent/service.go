@@ -171,15 +171,18 @@ func (s *Service) RunByID(ctx context.Context, uid uint64, id string) (Run, erro
 				r.FailureStage = stage
 			}
 		}
+		if r.State == "completed" && len(cp.Paper.Issues) > 0 {
+			r.Outcome = "partial"
+		}
 		r.RetrievalSummary = paperRetrievalSummary(cp.Paper.QA)
-		if repair := cp.Paper.Repair; repair != nil && paperLabels[repair.Field] != "" {
+		if repair := cp.Paper.Repair; repair != nil && paperStageContracts[repair.Stage].RepairStage != "" {
 			state := repair.State
 			switch state {
 			case "pending", "calling", "completed", "failed", "budget_exceeded":
 				if (r.State == "failed" || r.State == "unknown" || r.State == "cancelled") && (state == "pending" || state == "calling") {
 					state = "failed"
 				}
-				r.RepairSummary = &PaperRepairSummary{Field: repair.Field, State: state, Attempted: repair.Attempted}
+				r.RepairSummary = &PaperRepairSummary{Field: repair.Field, Stage: repair.Stage, Kind: repair.Kind, Used: paperRecoveryUsed(cp.Paper), Limit: paperRecoveryLimit, State: state, Attempted: repair.Attempted}
 			}
 		}
 		if r.State == "failed" && cp.Paper.Failure != nil && cp.Paper.Failure.Code == r.FailureCode {

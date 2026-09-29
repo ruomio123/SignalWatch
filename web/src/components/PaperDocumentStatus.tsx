@@ -91,7 +91,8 @@ function DocumentStatusCard({ paperID, refreshKey }: DocumentStatusProps) {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const visible = () =>
-      !document.hidden && !!root.current && !root.current.closest("[hidden]");
+      !document.hidden && !!root.current &&
+      root.current.getClientRects().length > 0 && !root.current.closest("[hidden]");
     const tick = async () => {
       if (stopped) return;
       if (visible()) await load();

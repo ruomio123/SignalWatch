@@ -132,3 +132,10 @@ __pycache__/
 
 !/internal/agent/paper_reproduction_test.go
 !/internal/agent/paper_reproduction_workflow_test.go
+
+!/internal/generation/paper_budget_test.go
+!/internal/platform/config/paper_budget_test.go
+!/internal/agent/paper_recovery_v14_test.go
+!/internal/agent/paper_partial_budget_test.go
+
+!/internal/agent/paper_partial_review_packing_test.go

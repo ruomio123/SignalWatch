@@ -20,13 +20,14 @@ type PaperConversationTurn struct {
 }
 
 type PaperConversationContext struct {
-	Turns     []PaperConversationTurn `json:"turns"`
-	Report    *PaperReport            `json:"report,omitempty"`
-	Truncated bool                    `json:"truncated,omitempty"`
+	ReportOutcome string                  `json:"report_outcome,omitempty"`
+	Turns         []PaperConversationTurn `json:"turns"`
+	Report        *PaperReport            `json:"report,omitempty"`
+	Truncated     bool                    `json:"truncated,omitempty"`
 }
 
 func copyPaperConversationContext(value PaperConversationContext) PaperConversationContext {
-	copy := PaperConversationContext{Turns: append([]PaperConversationTurn{}, value.Turns...), Truncated: value.Truncated}
+	copy := PaperConversationContext{ReportOutcome: value.ReportOutcome, Turns: append([]PaperConversationTurn{}, value.Turns...), Truncated: value.Truncated}
 	if value.Report != nil {
 		report := *value.Report
 		copy.Report = &report
@@ -104,6 +105,7 @@ func reducePaperConversationContext(context *PaperConversationContext) bool {
 	}
 	if !reduced {
 		context.Report = nil
+		context.ReportOutcome = ""
 	}
 	context.Truncated = true
 	return true
@@ -113,6 +115,12 @@ func reducePaperConversationContext(context *PaperConversationContext) bool {
 // Never trim the current question or evidence to make room for conversation
 // context, and never replace the saved snapshot with this smaller projection.
 func paperInputWithContext(input map[string]any, snapshot PaperConversationContext) (map[string]any, error) {
+	return paperInputWithContextBudget(input, snapshot, boundedPaperInput)
+}
+
+// The caller supplies the complete request budget, including the stage prompt,
+// schema and reserved output. Only optional historical context is reduced here.
+func paperInputWithContextBudget(input map[string]any, snapshot PaperConversationContext, serialize func(any) ([]byte, error)) (map[string]any, error) {
 	request := make(map[string]any, len(input)+1)
 	for key, value := range input {
 		request[key] = value
@@ -120,14 +128,14 @@ func paperInputWithContext(input map[string]any, snapshot PaperConversationConte
 	context := copyPaperConversationContext(snapshot)
 	for {
 		request["conversation_context"] = context
-		if _, err := boundedPaperInput(request); err == nil {
+		if _, err := serialize(request); err == nil {
 			return request, nil
 		}
 		if !reducePaperConversationContext(&context) {
 			// An empty optional object need not make an otherwise bounded
 			// question fail; mandatory content still has the same hard limit.
 			delete(request, "conversation_context")
-			_, err := boundedPaperInput(request)
+			_, err := serialize(request)
 			return request, err
 		}
 	}

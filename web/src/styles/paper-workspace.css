@@ -57,3 +57,22 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+@media (max-height: 640px) {
+  .paper-detail-page {
+    gap: 8px;
+    min-height: 0;
+  }
+  .paper-detail-navigation .button,
+  .paper-detail-page > .workspace-header > .button,
+  .paper-detail-page .split-layout-controls .button {
+    min-height: 30px;
+    padding-block: 4px;
+  }
+  .paper-detail-page .split-layout-controls {
+    padding-bottom: 4px;
+  }
+  .paper-detail-page .split-view-tabs button {
+    padding-block: 4px;
+  }
+}

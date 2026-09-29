@@ -19,13 +19,15 @@ import (
 )
 
 type workflowGateway struct {
-	version    uint64
-	candidates bool
-	calls      []ModelRequest
-	hook       func(ModelRequest) error
-	reject     bool
-	malformed  bool
-	batches    []string
+	limits      generation.ModelLimits
+	callTimeout time.Duration
+	version     uint64
+	candidates  bool
+	calls       []ModelRequest
+	hook        func(ModelRequest) error
+	reject      bool
+	malformed   bool
+	batches     []string
 }
 
 func (g *workflowGateway) Selection(context.Context, uint64, string, string, string) (Selection, error) {
@@ -33,7 +35,7 @@ func (g *workflowGateway) Selection(context.Context, uint64, string, string, str
 	if version == 0 {
 		version = 1
 	}
-	return Selection{"agent-fixture", version}, nil
+	return Selection{Generation: "agent-fixture", Version: version, Limits: g.limits, CallTimeout: g.callTimeout}, nil
 }
 func (g *workflowGateway) Generate(ctx context.Context, req ModelRequest) (generation.Result, error) {
 	if err := req.Before(ctx); err != nil {
@@ -41,8 +43,11 @@ func (g *workflowGateway) Generate(ctx context.Context, req ModelRequest) (gener
 	}
 	g.calls = append(g.calls, req)
 	if g.hook != nil {
+		var candidate generation.Result
+		originalValidate := req.Validate
+		req.Validate = func(result generation.Result) error { candidate = result; return originalValidate(result) }
 		if err := g.hook(req); err != nil {
-			return generation.Result{}, err
+			return candidate, err
 		}
 	}
 	var input struct {
@@ -200,8 +205,13 @@ func TestLongReportCoversEveryChunkAndRespectsBudget(t *testing.T) {
 			f.s.process(context.Background(), f.claim(t, r.ID))
 			end, messages := paperOutcome(t, f, c, r)
 			if pages == 210 {
-				if end.FailureCode != "budget_exhausted" || len(g.calls) != 0 || len(messages) != 1 {
-					t.Fatalf("budget %+v calls=%d", end, len(g.calls))
+				if end.State != "completed" || len(g.calls) != 6 || len(messages) != 2 {
+					t.Fatalf("state=%s calls=%d", end.State, len(g.calls))
+				}
+				var result PaperResult
+				must(t, json.Unmarshal(messages[1].Result, &result))
+				if result.Coverage != "retrieved_passages" {
+					t.Fatal("long paper fallback claimed complete coverage")
 				}
 				return
 			}
@@ -581,7 +591,7 @@ func TestReportPersistsFailedStageAndRuleWithoutPublishing(t *testing.T) {
 	end, messages := paperOutcome(t, f, c, r)
 	steps, err := f.store.Steps(t.Context(), f.u.ID, r.ID)
 	must(t, err)
-	if end.State != "failed" || end.FailureCode != "evidence_id_unknown" || len(messages) != 1 || len(g.calls) != 1 || len(steps) != 1 || steps[0].Tool != "analyzing_problem" || steps[0].FailureCode != end.FailureCode {
+	if end.State != "failed" || end.FailureCode != "evidence_id_unknown" || len(messages) != 1 || len(g.calls) != 5 || len(steps) != 6 || end.FailureStage != "analyzing_problem" || steps[5].Kind != "workflow" || steps[0].Tool != "analyzing_problem" || steps[0].FailureCode != end.FailureCode {
 		t.Fatalf("run=%+v steps=%+v messages=%d calls=%d", end, steps, len(messages), len(g.calls))
 	}
 }
@@ -647,23 +657,23 @@ func TestPaperSchemaFailureIsPersistedAcrossAPIReads(t *testing.T) {
 	r := submitReport(t, f, c, "abstract")
 	f.s.process(t.Context(), f.claim(t, r.ID))
 	end, messages := paperOutcome(t, f, c, r)
-	if end.State != "failed" || calls != 2 || len(messages) != 1 || end.FailureDetail == nil {
-		t.Fatalf("state=%s calls=%d detail=%+v", end.State, calls, end.FailureDetail)
+	if end.State != "completed" || calls != 7 || len(messages) != 2 || end.RepairSummary == nil || end.RepairSummary.Kind != "format" || end.RepairSummary.Used != 1 {
+		t.Fatalf("state=%s calls=%d repair=%+v", end.State, calls, end.RepairSummary)
 	}
-	detail := end.FailureDetail
+	cp := directCheckpoint(t, f, r)
+	detail := cp.Paper.Repairs["analyzing_method"].Failure
 	if detail.Code != "output_schema_mismatch" || detail.Path != "$.claims[0].evidence" || detail.Rule != "expected_array" {
 		t.Fatalf("%+v", detail)
 	}
 	again, err := f.s.RunByID(t.Context(), f.u.ID, r.ID)
 	must(t, err)
-	if again.FailureDetail == nil || *again.FailureDetail != *detail {
-		t.Fatal("diagnostic lost on refresh")
+	if again.RepairSummary == nil || *again.RepairSummary != *end.RepairSummary {
+		t.Fatal("recovery summary lost on refresh")
 	}
-	var cp Checkpoint
-	must(t, json.Unmarshal(again.Checkpoint, &cp))
-	if _, ok := cp.Paper.Outputs["analyzing_method"]; ok {
-		t.Fatal("invalid output saved as completed step")
+	if cp.Paper.Outputs["analyzing_method"] == nil || string(cp.Paper.Outputs["analyzing_method"]) == cp.Paper.Repair.RawCandidate {
+		t.Fatal("invalid candidate promoted")
 	}
+
 }
 
 func TestEnglishReportClaimFailsBeforePublicationWithoutRetry(t *testing.T) {
@@ -689,9 +699,17 @@ func TestEnglishReportClaimFailsBeforePublicationWithoutRetry(t *testing.T) {
 	r := submitReport(t, f, c, "fulltext")
 	f.s.process(t.Context(), f.claim(t, r.ID))
 	end, messages := paperOutcome(t, f, c, r)
-	if end.State != "failed" || end.FailureCode != "output_language_mismatch" || calls != 2 || len(messages) != 1 || end.FailureDetail == nil || end.FailureDetail.Path != "$.claims[1].text" || end.FailureDetail.Rule != "chinese_text_required" {
-		t.Fatalf("state=%s code=%s calls=%d detail=%+v", end.State, end.FailureCode, calls, end.FailureDetail)
+	cp := directCheckpoint(t, f, r)
+	detail := cp.Paper.StageFailures["analyzing_method"]
+	if end.State != "completed" || end.Outcome != "partial" || calls != 6 || len(messages) != 2 || cp.Paper.Repair != nil || detail == nil || detail.Code != "output_language_mismatch" || detail.Path != "$.claims[1].text" {
+		t.Fatalf("state=%s calls=%d detail=%+v", end.State, calls, detail)
 	}
+	var result PaperResult
+	must(t, json.Unmarshal(messages[1].Result, &result))
+	if result.Fields["method"].GapReason != "processing_failed" || strings.Contains(messages[1].Content, "Patch validation") {
+		t.Fatal("invalid language candidate published")
+	}
+
 }
 
 func TestCompletedReportCompatibilityIncludesPreviousLanguagePolicy(t *testing.T) {

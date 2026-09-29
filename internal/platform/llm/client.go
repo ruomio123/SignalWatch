@@ -149,7 +149,9 @@ func newClient(provider, base, model, key string, configure requestConfigurer, c
 		return nil, errors.New("invalid LLM configuration")
 	}
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		// The call runner owns the feature-specific deadline. A shorter HTTP
+		// timeout here would turn a still-running paper call into an unknown result.
+		client = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	}
 	if configure == nil {
 		return nil, errors.New("invalid LLM configuration")
@@ -256,7 +258,16 @@ func retryAfter(value string, now time.Time) time.Duration {
 }
 
 // Catalog supplies allowlisted provider metadata without exposing wire protocols.
-type Catalog struct{}
+type Catalog struct {
+	Limits map[string]generation.ModelLimits
+}
+
+func (c Catalog) ModelLimits(provider, model string) generation.ModelLimits {
+	if limits, ok := c.Limits[provider+"/"+model]; ok && limits.Valid() {
+		return limits
+	}
+	return generation.DefaultModelLimits()
+}
 
 func (Catalog) Providers(enabled []string) []generation.Provider { return Providers(enabled) }
 func (Catalog) SelectionAvailability(enabled []string, p, m string) (bool, string) {
