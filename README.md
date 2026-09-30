@@ -1,291 +1,135 @@
 # SignalWatch
 
-SignalWatch 是一个面向 arXiv 的论文订阅与阅读工具。你可以按分类和关键词订阅论文，在网页查看匹配结果，并按自己的时区接收每日邮件。接入个人模型 API Key 后，还可以使用 AI 创建订阅、生成论文报告、追问论文内容和生成邮件导读。
+**简体中文** | [English](README.en.md)
 
-## 架构
+SignalWatch 是一个面向 arXiv 的论文订阅与阅读工具，支持按研究方向发现论文、每日邮件推送，以及接入个人模型 API Key 的 AI 辅助阅读。
 
-项目使用 React / TypeScript / Vite、Go / Gin、MySQL 和 Redis，前端、HTTP API 与后台 Worker 独立运行。
+## 功能预览
+
+### 发现值得阅读的论文
+
+按 arXiv 分类和关键词追踪研究方向，在你设定的时区和时间接收每日论文邮件。
+
+![SignalWatch 首页：研究订阅、论文发现与每日邮件](images/overreview.png)
+
+### 管理研究订阅
+
+创建、编辑或暂停订阅，为每个订阅设置每日篇数，也可以让 AI 根据研究兴趣生成订阅草案。新订阅会回填最近七天的本地论文。
+
+![订阅管理：分类、关键词、邮件配置与历史回填](images/subscription.png)
+
+### 阅读论文与 AI 问答
+
+查看论文详情，与 AI 助手并排阅读、围绕论文提问或生成阅读报告，并通过原文引用核对回答。
+
+![论文阅读：论文详情与 AI 论文助手](images/paper-reading.png)
+
+## 简要架构
+
+前端使用 React / TypeScript / Vite，后端由 Go / Gin API 和独立 Worker 组成。MySQL 保存业务数据与任务，Redis 用于限速与运行状态；Worker 负责论文采集、订阅匹配、AI 处理和邮件发送。
 
 ```mermaid
-flowchart TD
-    Browser[浏览器 · React] --> Gateway[Nginx · HTTPS]
-    Gateway --> Static[前端静态资源]
-    Gateway -->|/api/v2/* · HTTP / JSON| API[Gin API · 8080]
+flowchart LR
+    Web[React / TypeScript] --> API[Go / Gin API]
     API --> MySQL[(MySQL)]
     API --> Redis[(Redis)]
-    API -->|凭据验证等同步调用| AI[模型服务]
-    Worker[Worker] --> MySQL
+    Worker[Go Worker] --> MySQL
     Worker --> Redis
-    Worker --> Arxiv[arXiv]
-    Worker --> AI
-    Worker --> SMTP[SMTP 邮件服务]
+    Worker --> Services[arXiv / AI / SMTP]
 ```
 
-| 组件 | 职责 | 代码位置 |
-| --- | --- | --- |
-| 前端 | 页面展示、交互、会话管理、任务进度查询 | `web/src/` |
-| API | 鉴权、业务校验、数据读写、创建后台任务 | `cmd/api/`、`internal/` |
-| Worker | 论文采集、订阅匹配、历史回填、AI 处理、邮件调度与发送 | `cmd/worker/`、`internal/` |
-| MySQL | 保存用户、订阅、论文及持久任务状态 | `migrations/` |
-| Redis | 限速与运行状态 | `internal/platform/redis/` |
-| Nginx | 提供静态页面，将 API 请求转发到后端 | `deploy/nginx/` |
-
-本地由 Vite 提供页面并代理 API 请求，生产环境由 Nginx 提供同域入口。API 不包含前端资源；修改和发布前端无需重启 API 或 Worker。
+本地由 Vite 提供页面并代理 API 请求；生产环境由 Nginx 提供静态页面、HTTPS 和 API 反向代理。
 
 ## 本地启动
 
-以下命令均在项目根目录执行。
+需要 **Go 1.26.5、Node.js 22.x、npm、Make、Docker Compose v2**。使用 nvm 时可执行 `nvm install && nvm use`。以下命令均在项目根目录执行。
 
-### 1. 准备环境
-
-需要 Go 1.26.5（以 [go.mod](go.mod) 为准）、Node.js 22.x、npm、Make 和 Docker Compose v2。先确认当前终端的版本：
-
-```bash
-go version
-node --version
-docker compose version
-```
-
-如果使用 nvm，可以通过项目中的 `.nvmrc` 切换 Node：
-
-```bash
-nvm install
-nvm use
-```
-
-新开的前端终端也需要使用 Node 22。Worker 启用论文全文解析时还需 `pdftotext`、`pdfinfo`、`pdfimages` 和 `prlimit`；Debian / Ubuntu 可安装 `poppler-utils` 和 `util-linux`。生产后端镜像已包含这些工具。
-
-### 2. 创建配置
+### 1. 配置环境
 
 ```bash
 test -f .env || cp .env.example .env
 chmod 600 .env
 ```
 
-编辑 `.env`，完整选项见 [.env.example](.env.example)。本地配置重点如下：
+编辑 `.env`，完整选项见 [.env.example](.env.example)：
 
 | 配置 | 说明 |
 | --- | --- |
-| `MYSQL_PASSWORD`、`MYSQL_ROOT_PASSWORD` | MySQL 应用账号和 root 密码 |
-| `MYSQL_DSN` | 数据库连接串；账号、密码和库名需与上述配置一致 |
-| `REDIS_PASSWORD` | Redis 密码 |
+| `MYSQL_DATABASE`、`MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_ROOT_PASSWORD` | 数据库与账号配置；替换示例密码 |
+| `MYSQL_DSN` | 连接串中的账号、密码、库名须与上述配置一致 |
+| `REDIS_PASSWORD` | 替换示例 Redis 密码 |
 | `JWT_SECRET` | 至少 32 字符的随机密钥，可用 `openssl rand -hex 32` 生成 |
-| `APP_PUBLIC_URL` | 本地可设为 `http://127.0.0.1:5173`，用于邮件中的站内链接 |
-| `SMTP_*` | 默认投递到本地 Mailpit；发送真实邮件时填写 SMTP 服务配置 |
-| `AI_ENABLED` | 默认 `false`，普通订阅和邮件功能无需模型服务 |
+| `APP_PUBLIC_URL` | 本地设为 `http://127.0.0.1:5173`，用于邮件中的站内链接 |
+| `SMTP_*` | 默认投递到本地 Mailpit；真实邮件需填写 SMTP 服务配置 |
+| `AI_ENABLED` | 默认 `false`；普通订阅和邮件无需模型服务 |
 
-`make api` 和 `make worker` 会读取根目录 `.env`。真实配置与密钥不提交仓库。
+### 2. 初始化依赖
 
-### 3. 安装迁移工具并初始化数据库
-
-已有可用的 `goose` 命令时可跳过安装。以下方式将工具保存在项目内：
+安装数据库迁移工具（已有 Goose v3.24.3 时可跳过安装），然后启动 MySQL、Redis、Mailpit 并执行迁移：
 
 ```bash
-make prepare-cache
 mkdir -p .tools/bin
-GOBIN="$PWD/.tools/bin" \
-GOCACHE="$PWD/.cache/go-build" \
-GOTMPDIR="$PWD/.cache/tmp" \
-TMPDIR="$PWD/.cache/tmp" \
-go install -tags=no_sqlite3 github.com/pressly/goose/v3/cmd/goose@v3.24.3
-
+GOBIN="$PWD/.tools/bin" go install -tags=no_sqlite3 github.com/pressly/goose/v3/cmd/goose@v3.24.3
 export PATH="$PWD/.tools/bin:$PATH"
+
 make deps-up
 make migrate-up
-make migrate-status
+npm --prefix web ci
 ```
 
-`make deps-up` 启动 MySQL、Redis、Mailpit，并等待服务健康检查通过。迁移需在 API 和 Worker 首次启动前执行。
+### 3. 启动应用
 
-迁移 `00032` 仅删除已停用的 `ai_daily_usage`、`ai_user_call_leases`，完成后保留 24 张应用表（不含 Goose 版本表）。现有用量统计和调用控制继续使用 `ai_user_daily_usage`、`ai_call_admission`。已有数据库升级前请备份这两张旧表；`Down` 只恢复空表结构，历史数据需从备份恢复。`scripts/repair-00017-partial.sql` 仅用于第 17 次迁移失败的历史状态，不适用于已升级的数据库，也不参与正常启动或升级。
-
-### 4. 启动前端、API 和 Worker
-
-先安装前端依赖并完成一次构建：
-
-```bash
-make web-build
-```
-
-然后在三个终端中分别进入项目根目录并运行：
+在三个终端中分别进入项目根目录并运行：
 
 ```bash
 # 终端一：HTTP API
 make api
-```
 
-```bash
 # 终端二：后台任务
 make worker
-```
 
-```bash
-# 终端三：前端页面与热更新
+# 终端三：前端开发服务器
 make web-dev
 ```
 
 | 入口 | 地址 |
 | --- | --- |
 | 网页 | <http://127.0.0.1:5173> |
-| 开发邮件收件箱 | <http://127.0.0.1:8025> |
-| API 存活检查 | <http://127.0.0.1:8080/healthz> |
-| API 依赖就绪检查 | <http://127.0.0.1:8080/readyz> |
+| 本地邮件收件箱 | <http://127.0.0.1:8025> |
+| API 就绪检查 | <http://127.0.0.1:8080/readyz> |
 
-Vite 固定使用 5173 端口，端口占用时会报错。修改 React 或 CSS 后页面自动更新，API 和 Worker 可以持续运行。需要连接其他 API 地址时执行：
+打开网页注册账号，创建订阅，并在「偏好设置」中设置时区和邮件时间。首次采集需要时间，Worker 需持续运行。
 
-```bash
-DEV_API_TARGET=http://127.0.0.1:8081 make web-dev
-```
+`make api` 和 `make worker` 会加载根目录 `.env`。使用 `Ctrl+C` 停止各进程，`make deps-down` 停止依赖容器并保留数据卷。
 
-各终端使用 `Ctrl+C` 停止对应进程；`make deps-down` 停止依赖容器并保留数据卷。
+## 可选：启用 AI
 
-## 编译
-
-前后端可以分别构建，无需启动 API、Worker 或数据库。
-
-```bash
-make backend-build   # 输出 bin/api、bin/worker、bin/ops
-make web-build       # 安装前端依赖、检查类型，输出 web/dist
-```
-
-`make frontend` 是 `make web-build` 的别名。Go 构建不需要 Node 或前端产物。`web/dist` 用于 Nginx 静态部署；本地开发使用 Vite，不能直接双击 HTML 文件运行页面。
-
-后端二进制读取进程环境变量，不会自动加载 `.env`。直接运行 `bin/api`、`bin/worker` 时，应由进程管理器注入相应配置；本地运行可以继续使用 Makefile，容器运行则由 Compose 注入配置。`bin/ops` 用于重试失败的邮件投递或回填任务。
-
-Makefile 默认将 Go 编译缓存、npm 缓存和临时文件放在项目 `.cache/` 下，权限为仅当前用户可访问。`.cache/`、`.tools/`、`bin/` 和 `web/dist/` 均不提交仓库。
-
-也可以通过 Docker 构建，使用容器内的 Go 或 Node 环境：
-
-```bash
-docker build -f deploy/Dockerfile.backend -t signalwatch-backend:local .
-docker build --output type=local,dest=web/dist web
-```
-
-## Agent 回归测试
-
-后端测试使用隔离 MySQL（本机 `13306` 端口）、随机临时数据库和真实 migrations，不读取应用 `.env`，不调用真实模型。需要 Docker Compose、Go 和 `goose`：
-
-```bash
-bash scripts/test-agent.sh
-```
-
-脚本运行 Agent 的集成测试和 race 检查，结束后删除本次数据库，保留隔离测试容器。输出 Schema、凭据调用、Agent 网关与供应商请求的配套回归执行 `bash scripts/test-paper-packages.sh`；该入口使用假模型和精确列出的测试文件，避免纳入本地未入库的历史测试。缺少依赖或数据库时直接失败，不以跳过测试代替验收。
-
-前端回归使用 Node 22 和严格 API mock；测试 Vite 不读取 `.env`、不代理真实后端。安装依赖和浏览器后运行：
-
-```bash
-make ENV_FILE=/dev/null prepare-cache
-export npm_config_cache="$PWD/.cache/npm"
-export NODE_COMPILE_CACHE="$PWD/.cache/node-compile"
-export TMPDIR="$PWD/.cache/tmp"
-export PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright-browsers"
-npm --prefix web ci
-(cd web && npx playwright install chromium)
-npm --prefix web run test:agent
-```
-
-`paper-fixed-v12` 验证：相关包及 race、隔离 MySQL Agent 集成与 race（25.408 秒）、迁移升级／回滚、后端构建、前端类型检查与构建、53 项浏览器回归通过。指定 `2609.31620v1` 的离线 HTML 冒烟提取 10 个表格单元、36 条公式，3 条附录复合公式明确记录结构缺口；表 1 多层表头和公式 2 条件完整，公式 2 通过受限 KaTeX 渲染。真实模型冒烟与这些假模型测试分开记录，不以离线成功代替模型回答质量验收。
-
-`paper-fixed-v13` 验证：相关包及 race、隔离 MySQL Agent 集成与 race（34.383 秒）、后端构建、前端类型检查与构建、62 项浏览器回归通过。新增回归覆盖六类清单、12／13 项边界、审核拒绝后的编号和缺口、四批审核、八次调用预算、两次分析共享一次整理、补检索预留、各落盘边界恢复及编号追问。v12 已提交为 `9561467b2fbd4677536089a9763350045f5e03d6`。
-
-指定论文的真实 PDF／HTML 材料另在隔离数据库中跑通解析与缓存、表 1、公式 2、复现清单和条目追问（假模型流程冒烟 3.211 秒）。前三项各三次假调用，追问另计三次；请求均小于 64 KiB，原文卡与 Markdown 下载另由浏览器回归验证。记录保存在 `.cache/round3-smoke/` 和 `.cache/v13-*.log`。真实模型调用为零、真实 token 用量为零：自动审批拒绝读取本机配置以确认免费默认模型，该项需单独授权后验证；假模型 token 仅为测试桩数据，不作为真实用量或回答质量结论。本轮提交不包含部署。
-
-测试缓存、临时文件、浏览器和失败报告统一放在项目 `.cache/`，不提交仓库。仅本轮维护的 Agent 测试及必要工具入库，其他本地历史测试不属于此验收入口。
-
-## 使用
-
-1. 打开网页，注册账号并登录。
-2. 在「订阅」中新建订阅，选择 arXiv 分类、填写关键词，并设置每日论文上限。订阅可编辑、暂停或删除。
-3. 在「设置」中选择时区和每日邮件时间，例如 `Asia/Shanghai`、`09:00`。
-4. 等待 Worker 完成采集和匹配，在论文列表查看结果、打开论文详情。新订阅会后台回填最近七天的本地论文；首次采集需要时间，Worker 必须保持运行。
-5. 默认邮件在 Mailpit 中查看；配置真实 SMTP 后，邮件发送到账号邮箱。
-
-### 可选：启用 AI
-
-先生成服务端加密主密钥：
+生成服务端加密主密钥：
 
 ```bash
 openssl rand -base64 32
 ```
 
-将结果填入 API 和 Worker 共用的配置：
+将输出填入 `.env`，API 和 Worker 必须使用相同配置：
 
 ```dotenv
 AI_ENABLED=true
-AI_CREDENTIAL_KEYS=v1:<上一步生成的值>
+AI_CREDENTIAL_KEYS=v1:<生成的 Base64 密钥>
 AI_CREDENTIAL_ACTIVE_KEY_VERSION=v1
-AI_ENABLED_PROVIDERS=glm,qwen,deepseek,kimi,openai
 ```
 
-该主密钥用于加密用户提交的模型 API Key，需备份并保持稳定。修改配置后重启 API 和 Worker。
+主密钥用于加密用户的模型 API Key，请备份并保持稳定。修改后重启 API 和 Worker，在网页「API 管理」中添加供应商、模型和个人 API Key，验证后保存；设置默认条目供摘要和邮件使用。
 
-在网页「API 管理」中新建 API Key，填写名称、供应商、模型和个人 Key，验证并保存。可以保存多个条目，并选择默认条目供摘要和邮件使用。
+启用后可使用 AI 创建订阅、论文问答与阅读报告，以及订阅中的每日邮件 AI 导读。全文解析需要 Worker 主机提供 `pdftotext`、`pdfinfo`、`pdfimages` 和 `prlimit`；Debian / Ubuntu 可安装 `poppler-utils`、`util-linux`，生产镜像已包含。全文不可用时，助手会明确标注使用摘要材料。
 
-- **订阅助手**：点击「AI 创建订阅」，描述研究兴趣，检查草案后确认创建。
-- **论文助手**：在论文详情打开「AI 论文助手」，可直接围绕当前论文提问，也可以点击输入框旁的「快速了解论文」，生成包含问题、方法、实验、结果和局限的报告。模型、材料模式和调用预算说明位于「助手设置」。
-- **邮件导读**：在订阅中启用「每日邮件 AI 导读」。
+## Docker Compose 生产部署
 
-全文获取或解析失败时，论文报告会降级为明确标注的摘要版。AI 任务依赖 Worker，调用次数和间隔可通过 `.env.example` 中的 `AI_*` 配置调整。
+<details>
+<summary>展开部署步骤</summary>
 
-问答默认优先使用全文：当前版本未就绪时最多等待 20 秒，随后明确使用摘要回答；已失败的文档不会被每次提问自动重试。普通问答仍为三次模型调用、总预算 180 秒；普通报告仍为六次，维持原有 105 秒准备窗口和 15 分钟总预算。材料模式一旦确定，本轮不再切换。全文稍后准备完成时，下一次提问可以使用全文，旧回答不会被自动改写；摘要报告不会限制后续问题的材料模式。
+生产编排见 [deploy/compose.prod.yaml](deploy/compose.prod.yaml)。以下步骤适用于 Linux 主机，需要 Docker Compose v2、Node.js 22.x、npm、Make 和 Python 3；后端在容器内构建。Nginx 对外开放 80 / 443，HTTP 自动跳转 HTTPS。
 
-连续追问会参考同一对话、同一论文快照下最近三组已完成的完整问答，以及有效报告的五项摘要，用于理解「这个方法」「刚才的实验」等指代。失败、取消、结果未知和旧版论文的问答不会进入上下文；回答中的事实引用仍来自本轮检索材料。
-
-上下文在问题归一化前写入检查点，空上下文也会明确记录；任务恢复不重新读取历史。每组问题最多 2 KiB、回答最多 4 KiB，报告各字段最多 400 字节，序列化上下文最多 24 KiB；截断遵守 UTF-8 边界并带标记。归一化和回答都使用这份快照；如果某一阶段的完整输入超过 64 KiB，先移除最旧的历史，再缩减报告摘要；问答分析仍超限时减少低优先级证据段，不截断原问题或证据原文。不同阶段可使用同一快照的不同裁剪结果，检查点中的原快照保持不变。
-
-问题归一化生成 1–4 个有序子问题及对应查询，复杂问题合并为最多四组，每条查询最多 1000 UTF-8 字节，服务端分配稳定 ID。全文检索直接使用现有证据段：每条查询选 BM25 正分前八段，按常数 60 的倒数排名融合，同分按页码、文本块、段落偏移排序；优先保留各查询最佳命中及同块邻段，再选择其余排名，去重后最多 24 段。无正分命中不会补入无关段落。问题计划、选定证据和完整请求均冻结在 checkpoint，恢复复用原请求。
-
-全文问答的首次合法回答仍有缺口时，可提供最多两条绑定缺口子问题的内部补充查询。工作流最多进行一次本地补检索，按同一排序规则新增至多八段证据，累计最多 32 段；只有找到能够装入请求的新证据才增加一次分析。补充请求保留完整初稿及它实际引用的全部原文，先缩减可选历史背景，再减少未引用的旧证据和低优先级新证据，不截断初稿、问题或保留的原文。补充分析必须返回同一组子问题的完整候选，不能再发起补查询；之后统一审核，审核拒绝也不再补检索。
-
-补充分析开始前，必须保留一次分析、最多两批审核、尚未使用的一次整理以及五秒收尾：整理未使用时至少剩余 125 秒及四次调用名额，已使用时至少剩余 95 秒及三次名额。请求准备时和准入等待结束、实际开调前均检查；等待不占调用数。摘要模式、没有补查询或新证据、输入或时间/调用预算不足时审核初稿并展示缺口。补充调用一旦开始，超时、未知结果、权限失效或校验失败均按实际阶段终止，不静默发布初稿。首次和补充分析共享整任务一次整理，成功结果回填对应分析阶段。
-
-补查询、检索决策、选定证据、精确请求和跳过原因保存在原 checkpoint JSON；恢复复用已冻结请求和成功结果，`calling` 仍按结果未知停止。公开运行状态仅增加受控的检索进度、证据数量及跳过原因，不包含查询文本、初稿或内部请求。问答通常三次调用，最终上限六次；固定报告格式和三十次上限保持不变。
-
-问答按子问题返回「已回答、部分回答、证据不足」，全部子问题合计最多六条结论，所有论文事实必须带引用并通过审核。审核拒绝的结论不发布，服务端重新计算逐项及整体完成度；缺口使用固定原因区分当前材料不足和审核未通过，不声称全文不存在相关信息。消息结果增加可选 `answer`，并保留可读 `content` 和旧字段供历史上下文及旧客户端使用。简单问题直接显示回答，复杂问题按子问题分组；报告与问答共用可点击引用，支持键盘展开、定位原文卡片及跳转对应版本 arXiv PDF 页。跨消息引用包含消息与会话范围，旧消息只转换已知引用标记，不解释任意 HTML。
-
-论文助手保留最近一次已完成报告的折叠入口，不受消息分页影响；本次新生成的报告自动展开，重新打开对话时默认折叠。已有报告时，「快速了解论文」仅展开报告，不重复调用模型；可在报告内显式重新生成。论文更新后，旧报告会标明已过期。助手设置支持继续加载历史对话，对话内可加载更早消息；新回答完成后保留已加载的历史记录。
-
-输入框旁的「论文工具」提供全文状态、准备全文和生成复现清单。材料状态卡可以在创建对话之前使用；打开页面仅查询状态，准备和重试复用后台文档 Worker，不调用模型。解析失败后可显式重试，重复点击不会创建同一版本的多个任务；准备完成后显示可用状态和页数。工具面板支持 Escape 关闭并返回入口焦点，不遮住提问输入框。
-
-相关接口均沿用当前登录用户的访问权限：
-
-| 接口 | 用途 |
-| --- | --- |
-| `GET /api/v2/agent/papers/:id/document` | 只读查看当前论文版本的全文状态、可用性、页数及受控失败码，不创建文档任务 |
-| `POST /api/v2/agent/papers/:id/document/prepare` | 创建缺失的文档任务或显式重试失败任务，复用正在处理或已就绪的同版本材料 |
-| `GET /api/v2/agent/conversations/:id/paper-report` | 独立读取最新已完成报告；没有报告时返回 `report: null`，另用 `matches_current_paper` 标识是否匹配当前论文 |
-
-消息接口每页返回 50 条，使用 `next_before` 加载更早记录；会话列表沿用 `page`，增加 `has_more` 和 `next_page`。论文提问继续使用 `paper_followup`，省略任务类型也会按论文问答处理。
-
-当前论文工作流为 `paper-fixed-v14`（独立问答与多查询检索从 `paper-fixed-v10` 引入，单次整理从 `paper-fixed-v9` 引入）。问题、核心方法、局限性及普通问答最多各 6 条结论，实验验证和主要结果最多各 8 条；每条文字最多 1200 UTF-8 字节，引用 1–3 段本轮证据，完整模型响应最多 50,000 字节。提示词、预建 Schema 和本地校验共用字段策略，问答使用独立结构，并通过显式阶段合同选择 Schema、校验器与 token 预算；字节长度按 JSON 解码后的 UTF-8 计算。Qwen 原生 Schema 仅投影已验证的结构约束，数量和字节上限仍由完整提示词及后端执行；供应商拒绝不会降级协议重试。
-
-分析和恢复阶段输出预算最高为 8192 tokens，规划、证据提取和审核最高为 4096，同时受所选模型的应用输出预算约束。新增 `AI_MODEL_LIMITS_JSON`，按 `供应商/模型` 配置 `context_tokens` 和 `max_output_tokens`；未配置时使用 32,768／8,192 的保守应用预算，不代表供应商规格。预算按 UTF-8 字节保守估算最终提示词、Schema 指令、原生 Schema、序列化业务输入和输出预留，另计 256 token 包装以及至少 1,024 token／上下文 5% 的安全余量。64 KiB 仍是独立的业务输入字节上限。预算与估算版本冻结在检查点中；历史先缩减，保留的证据不裁剪。论文调用默认 60 秒，可用 `AI_PAPER_CALL_TIMEOUT` 设置为 10–120 秒，调用租约至少比超时长 30 秒，其他功能默认仍为 30 秒。
-
-所有模型阶段共享每任务最多三次恢复，每阶段最多一次；报告、追问、复现清单的总调用上限为 32／8／10 次，总时限为 15 分钟／180 秒／300 秒。单一完整 JSON 围栏可直接去除，不占恢复次数；语法、必填字段及字段类型错误可携带具体路径和规则重生成，结论超限可整理，明确截断的响应从原请求重新精简生成，不拼接残片。非法引用、证据不足及语义审核拒绝不能作为格式问题修补。恢复后的候选重新经过完整校验与证据审核；原候选、原请求和实际恢复请求先持久化，非法 JSON 使用字符串保存。组合输入超预算时可省略诊断候选正文，仍保留完整内部快照。
-
-长论文证据汇总按字段去重、跨批次轮询装入完整片段；超过全文提取预算时使用本地检索，裁减、跳过或提取失败的覆盖范围标为 `retrieved_passages`。审核按结论顺序和实际模型预算分批，报告最多六批、追问两批、复现清单四批；空结论直接使用空审核结果，避免无效调用。补充分析和恢复先预留审核及收尾预算。
-
-已确定的输出错误耗尽恢复后只标记相关阶段未完成，独立板块和审核批次继续处理。只发布明确通过审核的结论；技术缺口区别于材料不足和审核拒绝。有可发布事实时保留运行状态 `completed`，结果带 `outcome: "partial"`、受控 `issues` 和板块缺口；所有内容均因技术错误不可发布时保留失败状态。可选补充分析的确定输出失败可退回已保存初稿并审核。页面、历史和导出同步保留部分完成说明，最终发布仍检查权限、论文版本、期限与引用来源。
-
-所有调用在外部请求前持久化占用，确定失败和恢复都计入上限，准入等待不计入。超时、网络失败、结果未知、结算失败、权限或租约变化仍停止，恢复遇到 `calling` 不重放。原候选、错误详情、请求和证据快照仅保存在私有 checkpoint JSON；公开接口返回安全恢复摘要、次数和问题列表。v14 无需数据库迁移。
-
-第三轮的单论文深读保留现有 PDF 正文解析，并在同一材料准备预算内补充固定 arXiv 版本的 HTML 表格和公式。结构材料使用独立解析器 `arxiv-html-structure-v1` 与 HTML 哈希缓存；表格保留完整表头路径、行名、指标方向和注释，公式保留作者 TeX 与附近定义。没有同版本 HTML、解析不完整或请求预算不足时显示受控材料缺口，不把未知内容解释为作者没有说明。结构证据不按普通段落切片，计入 24／32 段及实际 64 KiB 输入预算；明确表号、公式号优先匹配，解释仍须通过统一证据审核。任务检查点冻结结构来源与请求，恢复不重新抓取。
-
-引用卡可展开原始表格、公式或正文。HTML 来源定位固定版本的原文锚点，不冒充 PDF 页码；公式采用受限 KaTeX 渲染，无法识别时保留 TeX。已完成的单条问答和报告可「复制 Markdown」或「下载 .md」，包含已有论文信息、审核通过的回答、缺口和去重的证据附录。导出完全在前端进行，不调用模型，不包含内部请求和候选稿；旧消息使用已有内容与引用导出。
-
-在论文对话的「论文工具」中点击「生成复现清单」，使用现有提交接口的 `paper_reproduction` 任务。清单固定覆盖数据与预处理、模型配置、训练设置、评估协议、计算环境、代码与资源六类，合计最多 12 项，每项仍为 1200 UTF-8 字节、1–3 段引用。规划生成六类各自的检索查询，所有类别均有结果或受控缺口；每项论文事实经过证据审核，不补造参数，不下载或运行作者代码。审核后保留的条目连续编号，支持点击条目填入带编号与原文字段的追问；编号和各项简短摘要也保存在有界历史上下文中，普通追问仍重新检索并审核证据。
-
-复现清单通常三次模型调用，材料没有可审核结论时为两次；最多十次，总时限 300 秒，准备全文最多等待 20 秒。完整业务请求仍限制为 64 KiB、响应 50,000 字节，并执行模型上下文预算；最多四批审核。每任务最多一次补检索，恢复与其他阶段共享三次额度。补充前按已有候选的实际审核批次预留预算；确定的补充输出失败可回退初稿，结果未知的调用仍终止且不重放。
-
-消息结果增加可选 `reproduction`，其分类、条目、引用与缺口均来自审核后的结果；同时保留可读 `content`。复现清单复用表格／公式证据卡和单条 Markdown 导出，不增加笔记编辑器或独立导出接口。
-
-论文工作流升级后，已完成的报告和问答继续保留。同一幂等键重试使用原任务版本校验并返回原任务；旧版本未完成任务会安全停止，结果未知的模型调用不自动重放。此前已经失败的报告不会自动重跑，需要用户重新生成。部署新版本时先停止旧 Worker，执行所需增量迁移，再启动同一版本的 API 和 Worker，避免混用工作流版本。
-
-## Docker Compose 部署
-
-生产编排见 [deploy/compose.prod.yaml](deploy/compose.prod.yaml)。Nginx 对外开放 80 / 443，HTTP 自动跳转 HTTPS；API、Worker、MySQL 和 Redis 通过容器网络通信。
-
-### 1. 准备生产配置
+### 1. 准备配置与证书
 
 ```bash
 test -f deploy/.env.production || cp deploy/.env.example deploy/.env.production
@@ -293,17 +137,22 @@ chmod 600 deploy/.env.production
 mkdir -p .deploy/web .deploy/certs
 ```
 
-编辑 `deploy/.env.production`：
+编辑 `deploy/.env.production`（模板见 [deploy/.env.example](deploy/.env.example)）：
 
-- 将 `SERVER_NAME`、`APP_PUBLIC_URL` 改为实际域名和 HTTPS 站点地址。
-- 将 `WEB_ROOT`、`TLS_CERT_DIR` 分别设为项目 `.deploy/web`、`.deploy/certs` 的**绝对路径**。准备与域名匹配的 `fullchain.pem` 和 `privkey.pem`，放入证书目录。
-- 设置数据库、Redis、JWT 和真实 SMTP 配置。`MYSQL_DSN` 使用容器地址 `mysql:3306`，并与数据库账号配置一致。
-- 设置 `BACKEND_VERSION` 作为本次后端镜像标签。API 和 Worker 共用该镜像及配置。
-- 将 `MYSQL_VOLUME_NAME`、`REDIS_VOLUME_NAME` 填为要使用的数据卷名。已有环境使用实际已有的卷；全新环境先用 `docker volume create <卷名>` 显式创建这两个卷。
+- 设置实际的 `SERVER_NAME` 和 HTTPS `APP_PUBLIC_URL`，将域名解析到部署主机。
+- 将 `WEB_ROOT`、`TLS_CERT_DIR` 分别设为项目 `.deploy/web`、`.deploy/certs` 的**绝对路径**；证书目录需包含与域名匹配的 `fullchain.pem` 和 `privkey.pem`。
+- 配置数据库、Redis、JWT 和真实 SMTP；`MYSQL_DSN` 使用 `mysql:3306`，账号信息须与 `MYSQL_*` 一致。需要 AI 时，在此文件中加入上述 AI 配置。
+- 设置 `BACKEND_VERSION` 作为后端镜像标签，API 和 Worker 共用该镜像。
+- 将 `MYSQL_VOLUME_NAME`、`REDIS_VOLUME_NAME` 设为实际数据卷名。全新部署使用模板中的卷名时，先执行下列命令；已有部署填写原有卷名并复用数据。
 
-### 2. 启动服务并发布页面
+```bash
+docker volume create signalwatch_mysql_data
+docker volume create signalwatch_redis_data
+```
 
-在项目根目录定义命令简写，然后构建后端、启动依赖并执行迁移：
+### 2. 启动后端并发布前端
+
+在项目根目录执行；已有部署升级前先备份数据库并停止旧 Worker，迁移后启动同一版本的 API 和 Worker。
 
 ```bash
 dc() {
@@ -315,32 +164,15 @@ dc build api
 dc up -d --wait mysql redis
 dc run --rm migrate up
 dc up -d api worker nginx
-```
 
-接着构建并发布前端。将检查地址换成实际站点，`WEB_ROOT` 必须与生产配置中的路径一致：
-
-```bash
 make web-build
 make web-publish RELEASE=v1 \
   WEB_ROOT="$PWD/.deploy/web" \
   WEB_CHECK_URL=https://signalwatch.example.com
 ```
 
-Nginx 在首次发布前可以启动，此时页面暂时返回 404。发布检查需要能够通过该 HTTPS 地址访问本机 Nginx；使用私有 CA 时，通过 `WEB_CA_FILE=/绝对路径/ca.pem` 提供证书。完成后访问站点，使用 `dc ps`、`dc logs --tail=100 api worker nginx` 查看运行状态。
+将 `WEB_CHECK_URL` 换成实际站点，`WEB_ROOT` 须与生产配置一致。首次发布前页面暂时返回 404；发布检查需要从部署主机通过该 HTTPS 地址访问 Nginx，使用私有 CA 时追加 `WEB_CA_FILE=/绝对路径/ca.pem`。以后发布使用新的 `RELEASE` 版本号。
 
-### 3. 更新与回滚前端
+部署后访问站点，使用 `dc ps` 查看服务状态，使用 `dc logs --tail=100 api worker nginx` 查看日志。
 
-每次发布使用新的版本号，例如 `v2`；已发布的版本可以直接回滚：
-
-```bash
-make web-build
-make web-publish RELEASE=v2 \
-  WEB_ROOT="$PWD/.deploy/web" \
-  WEB_CHECK_URL=https://signalwatch.example.com
-
-make web-rollback RELEASE=v1 \
-  WEB_ROOT="$PWD/.deploy/web" \
-  WEB_CHECK_URL=https://signalwatch.example.com
-```
-
-发布工具校验构建产物后原子切换版本，网页或资源检查失败时恢复原入口。发布和回滚均不重启 Nginx、API 或 Worker，也不执行数据库迁移。旧版本及哈希资源会保留，便于回滚和继续加载旧页面。迁移已有数据或升级不兼容的后端时，应单独安排备份和服务切换。
+</details>

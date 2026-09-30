@@ -1,4 +1,4 @@
-# Track application source, build inputs, deployment files and the root README.
+# Track application source, build inputs, deployment files and README assets.
 /*
 !/.gitignore
 !/.dockerignore
@@ -56,6 +56,13 @@
 *.rst
 *.adoc
 !/README.md
+!/README.en.md
+# Only the three screenshots referenced by the bilingual READMEs are public.
+!/images/
+/images/*
+!/images/overreview.png
+!/images/subscription.png
+!/images/paper-reading.png
 *_test.go
 *.test.*
 *.spec.*
